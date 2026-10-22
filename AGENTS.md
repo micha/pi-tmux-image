@@ -2,6 +2,8 @@
 
 This file is for coding agents. Human-facing installation, usage and limitations belong in `README.md`; do not turn this file into a second user manual.
 
+The approved next-phase handoff is in `docs/implementation-plan.md`. Read it before implementing native encoding, replay/resizing, capability detection or graphics budgeting. It records the implementation order, acceptance criteria, scope boundaries and reviewed OMP sources.
+
 ## Scope and architecture
 
 - `extensions/index.ts`: Pi commands, tools, standard image attachments and custom local renderer.
