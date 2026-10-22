@@ -1,0 +1,19 @@
+{
+  "name": "pi-tmux-image",
+  "version": "0.1.0",
+  "description": "Scrolling-safe image and PDF display for Pi inside tmux using Kitty Unicode placeholders",
+  "type": "module",
+  "keywords": ["pi-package", "pi", "tmux", "kitty", "images", "pdf"],
+  "files": ["extensions", "src", "README.md", "AGENTS.md"],
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "pi": {
+    "extensions": ["./extensions/index.ts"]
+  }
+}
