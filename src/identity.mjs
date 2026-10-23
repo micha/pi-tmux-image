@@ -42,6 +42,8 @@ export class StableIdAllocator {
     this.#maxAttempts = maxAttempts;
   }
 
+  get size() { return this.#byKey.size; }
+
   allocate(key) {
     if (typeof key !== 'string' || key.length === 0) throw new TypeError('key must be a nonempty string');
     if (this.#byKey.has(key)) return this.#byKey.get(key);
@@ -62,13 +64,27 @@ export class GraphicsIdentityRegistry {
   #allocator;
   constructor(options) { this.#allocator = new StableIdAllocator(options); }
 
-  resolve({ png, occurrenceKey, geometry }) {
+  /** Image-only lookup: an overlay must not allocate inline geometry history. */
+  resolveImage(png) {
     const payloadKey = payloadIdentity(png);
+    return Object.freeze({ payloadKey, imageId: this.#allocator.allocate(`image:${payloadKey}`) });
+  }
+
+  /** Exactly one private slot per runtime, never keyed by view/open/epoch. */
+  reserveViewerPlacement() {
+    const placementKey = "surface:viewer:slot:0";
+    return Object.freeze({ placementKey, placementId: this.#allocator.allocate(placementKey) });
+  }
+
+  get allocatedIds() { return this.#allocator.size; }
+
+  resolve({ png, occurrenceKey, geometry }) {
+    const { payloadKey, imageId } = this.resolveImage(png);
     const placementKey = placementIdentity(payloadKey, occurrenceKey, geometry);
     return Object.freeze({
       payloadKey,
       placementKey,
-      imageId: this.#allocator.allocate(`image:${payloadKey}`),
+      imageId,
       placementId: this.#allocator.allocate(`placement:${placementKey}`),
     });
   }

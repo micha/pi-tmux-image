@@ -265,3 +265,66 @@ test("many unique payloads remain resident; estimates grow rather than silently 
   assert.equal(result.transfer.wireBytes,count*240); assert.equal(result.transfer.uploadChunks,count*2);
   assert.equal(result.scope.evictionEnabled,false);
 });
+
+test("explicit viewer replacements update one surface without mutating immutable inline contracts", () => {
+  const metrics = new GraphicsMetrics(); metrics.recordTransport(event(metrics));
+  const viewer = { ...placement({ placementId: 9, placementKey: "private", occurrenceKey: "page" }), surface: "viewer", operation: "create", uploaded: true };
+  metrics.recordTransport(batch(metrics, [viewer], { imageUploaded: false, uploadChunks: 0, wireBytes: 60 }));
+  for (let n = 0; n < 10000; n++) {
+    metrics.recordTransport(batch(metrics, [{ ...viewer, operation: "replace", geometryKey: `canvas:${n % 2}`, occurrenceKey: `page:${n % 2}` }],
+      { imageUploaded: false, uploadChunks: 0, wireBytes: 61 }));
+  }
+  let result = metrics.snapshot();
+  assert.deepEqual(result.surfaces, { inline: 1, viewer: 1, liveViewer: 1 });
+  assert.equal(result.placements.geometryVersions, 2);
+  assert.equal(result.surfaceTransfer.replacementCommands, 10000);
+  const before = metrics.snapshot();
+  assert.throws(() => metrics.recordTransport(batch(metrics, [{ ...placement(), uploaded: true, operation: "replace", geometryKey: "different" }],
+    { imageUploaded: false, uploadChunks: 0, wireBytes: 61 })), /viewer/);
+  assert.deepEqual(metrics.snapshot(), before);
+  metrics.recordViewerRelease({ imageId: 1, placementId: 9 });
+  result = metrics.snapshot();
+  assert.equal(result.surfaces.liveViewer, 0);
+  assert.equal(result.surfaces.viewer, 1, "released is logically inactive, not proof of terminal deletion");
+  assert.deepEqual(result.transfer, before.transfer);
+});
+
+test("successful owned retirement accounts exact wire once, removes private metadata and preserves shared image", () => {
+  const metrics = new GraphicsMetrics();
+  const viewer = { ...placement({ placementId: 9, placementKey: "private" }), surface: "viewer", uploaded: true };
+  metrics.recordTransport(batch(metrics, [{ ...placement(), uploaded: true }, viewer], { wireBytes: 300 }));
+  const before = metrics.snapshot();
+  assert.throws(() => metrics.recordRetirement({ epoch: metrics.epoch, imageId: 1, placementId: 2, wireBytes: 55 }), /inline/);
+  assert.deepEqual(metrics.snapshot(), before);
+  metrics.recordRetirement({ epoch: metrics.epoch, imageId: 1, placementId: 9, wireBytes: 55 });
+  const result = metrics.snapshot();
+  assert.equal(result.surfaces.viewer, 0); assert.equal(result.placements.geometryVersions, 1);
+  assert.deepEqual(result.resident, before.resident);
+  assert.equal(result.transfer.wireBytes, 355); assert.equal(result.transfer.uploadChunks, 2);
+  assert.equal(result.transfer.placementCommands, 2); assert.equal(result.surfaceTransfer.retirementCommands, 1);
+  assert.equal(result.transfer.successfulCommits, 2);
+});
+
+test("retirement after epoch reset accepts owned old tuple without inventing image residency", () => {
+  const metrics = new GraphicsMetrics();
+  const epoch = metrics.epoch;
+  metrics.beginEpoch(Symbol("new"));
+  const before = metrics.snapshot();
+  assert.equal(metrics.recordRetirement({ epoch, imageId: 1, placementId: 9, wireBytes: 55 }), false);
+  assert.deepEqual(metrics.snapshot(), before);
+  metrics.recordRetirement({ epoch: metrics.epoch, imageId: 1, placementId: 9, wireBytes: 55 });
+  const result = metrics.snapshot();
+  assert.equal(result.resident.imageIds, 0); assert.equal(result.normalization.payloads, 0);
+  assert.equal(result.placements.geometryVersions, 0); assert.equal(result.surfaceTransfer.retirementCommands, 1);
+  assert.equal(result.transfer.wireBytes, 55); assert.equal(result.transfer.uploadChunks, 0);
+});
+
+test("same-ID retransmission can restore changed live private canvas but not mutate inline identity", () => {
+  const metrics = new GraphicsMetrics();
+  const viewer = { ...placement({ placementId: 9, placementKey: "private" }), surface: "viewer", uploaded: true };
+  metrics.recordTransport(batch(metrics, [{ ...placement(), uploaded: true }, viewer], { wireBytes: 300 }));
+  metrics.recordTransport(batch(metrics, [{ ...placement(), uploaded: true, operation: "restore" },
+    { ...viewer, geometryKey: "new canvas", operation: "restore" }], { wireBytes: 301 }));
+  assert.equal(metrics.snapshot().surfaceTransfer.replacementCommands, 0, "restoration is not a user zoom command");
+  assert.equal(metrics.snapshot().placements.geometryVersions, 2);
+});

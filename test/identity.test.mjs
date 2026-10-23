@@ -110,3 +110,22 @@ test('residency epoch tracks successful image/placement upload, rejecting stale 
   assert.equal(cache.markPlacement(1, 2, next), true);
   assert.throws(() => cache.markImage(0, next), RangeError);
 });
+
+test('viewer image lookup and one private allocator slot never allocate motion/open keys', () => {
+  const registry = new GraphicsIdentityRegistry({ random: countingRandom() });
+  const image = registry.resolveImage(bytes), slot = registry.reserveViewerPlacement();
+  assert.equal(registry.allocatedIds, 2);
+  for (let n = 0; n < 10000; n++) {
+    assert.deepEqual(registry.resolveImage(Buffer.from(bytes)), image);
+    assert.deepEqual(registry.reserveViewerPlacement(), slot);
+  }
+  assert.equal(registry.allocatedIds, 2);
+  const inline = registry.resolve({ png: bytes, occurrenceKey: 'inline', geometry });
+  assert.equal(inline.imageId, image.imageId);
+  assert.notEqual(inline.placementId, slot.placementId);
+  assert.equal(registry.allocatedIds, 3);
+  const other = registry.resolveImage(Buffer.concat([bytes, Buffer.from([1])]));
+  assert.notEqual(other.imageId, image.imageId);
+  assert.equal(registry.reserveViewerPlacement().placementId, slot.placementId);
+  assert.equal(registry.allocatedIds, 4, 'new payload adds one image only, never another viewer slot');
+});

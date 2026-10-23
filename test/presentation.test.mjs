@@ -182,3 +182,67 @@ test("failed upload never exposes placeholder rows or retries every frame", asyn
   assert.equal(calls, 1);
   assert.deepEqual(h.events, [["repaint"]]);
 });
+
+test("public TUI binding closes before disconnect/refresh and stale widget disposal cannot detach replacement", () => {
+  const h = harness(), events = [];
+  const stop = h.presentation.bind({
+    onConnect(value) { events.push(["connect", value]); },
+    onDisconnect(value) {
+      events.push(["disconnect", value]);
+      assert.equal(h.presentation.commit({ uploads: "STALE", onUploadFailed() {} }, { epoch: value.epoch }), false);
+    },
+  });
+  h.presentation.attach(h.ctx, true);
+  assert.equal(h.presentation.connection.tui, h.tui);
+  const original = h.widget, first = h.presentation.epoch;
+  h.presentation.refresh();
+  assert.notEqual(h.presentation.epoch, first);
+  assert.deepEqual(events.map(e => e[0]), ["connect", "disconnect", "connect"]);
+  original.dispose(); assert.equal(h.presentation.connection, undefined);
+  h.presentation.attach(h.ctx, true);
+  original.dispose(); assert.ok(h.presentation.connection, "old owner cannot detach newly attached widget");
+  stop(); h.presentation.disconnect();
+  assert.equal(events.length, 5);
+});
+
+test("bounded external viewer commit validates before writing and never publishes cells itself", () => {
+  const h = harness(); h.presentation.attach(h.ctx, true);
+  const epoch = h.presentation.epoch, events = [];
+  let live = true;
+  const prepared = { uploads: "wire", lines: ["private cells"], isCurrent: () => live,
+    onUploaded() { events.push("success"); }, onUploadFailed() { events.push("failure"); } };
+  assert.equal(h.presentation.commit(prepared, { epoch }), true);
+  assert.deepEqual(h.events, [["write", "wire"]]); assert.deepEqual(events, ["success"]);
+  live = false;
+  assert.equal(h.presentation.commit(prepared, { epoch }), false);
+  assert.equal(h.events.length, 1);
+  assert.equal(h.presentation.commit(prepared, { epoch: Symbol() }), false);
+  const controller = new AbortController(); controller.abort(); live = true;
+  assert.equal(h.presentation.commit(prepared, { epoch, signal: controller.signal }), false);
+  h.tui.terminal.write = () => { throw new Error("write failed"); };
+  assert.throws(() => h.presentation.commit(prepared, { epoch }), /write failed/);
+  assert.deepEqual(events, ["success", "failure", "failure", "failure", "failure"]);
+});
+
+test("invalidated inline replay retries without exposing stale rows or retaining a failed cache", async () => {
+  const h = harness(); h.presentation.attach(h.ctx, true);
+  let attempts = 0;
+  const component = h.presentation.component({ key: "inline",
+    prepare() { const n = ++attempts; return { uploads: n === 1 ? "STALE" : "CURRENT", lines: [n === 1 ? "STALE" : "CURRENT"], isCurrent: () => n !== 1 }; },
+    fallback: () => ["waiting"],
+  });
+  component.render(10); await settle(); assert.deepEqual(component.render(10), ["waiting"]);
+  await settle(); assert.deepEqual(component.render(10), ["CURRENT"]);
+  assert.equal(h.events.filter(e => e[0] === "write").length, 1);
+  assert.equal(h.events.some(e => e.includes("STALE")), false);
+});
+
+test("binding cleanup faults are explicit but cannot strand transport or other observers", () => {
+  const h = harness(); let closed = 0;
+  h.presentation.bind({ onConnect() { throw new Error("observer failed"); }, onDisconnect() { throw new Error("cleanup failed"); } });
+  h.presentation.bind({ onDisconnect() { closed++; } });
+  assert.equal(h.presentation.attach(h.ctx, true), true);
+  h.presentation.disconnect();
+  assert.equal(h.presentation.bindingErrors, 2); assert.equal(closed, 1);
+  assert.equal(h.presentation.connection, undefined);
+});

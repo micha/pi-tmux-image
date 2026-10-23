@@ -54,6 +54,8 @@ export class GraphicsMetrics {
   #placements = new Map();
   #transfer = counters();
   #runtimeTransfer = counters();
+  #surfaceTransfer = { replacementCommands: 0, retirementCommands: 0 };
+  #runtimeSurfaceTransfer = { replacementCommands: 0, retirementCommands: 0 };
 
   constructor({ runtimeId = randomUUID(), epoch = Symbol("graphics metrics epoch") } = {}) {
     this.#runtimeId = key(runtimeId,"runtimeId");
@@ -71,6 +73,7 @@ export class GraphicsMetrics {
     this.#epoch = epoch;
     this.#epochNumber++;
     this.#images.clear(); this.#placements.clear(); this.#transfer = counters();
+    this.#surfaceTransfer = { replacementCommands: 0, retirementCommands: 0 };
     return epoch;
   }
 
@@ -110,11 +113,14 @@ export class GraphicsMetrics {
       entries = [{ ...placement, uploaded: placementUploaded }];
     }
     const incoming = new Map();
-    let uploadedPlacements = 0;
+    let uploadedPlacements = 0, replacements = 0;
     for (const entry of entries) {
       if (!entry || typeof entry !== "object" || typeof entry.uploaded !== "boolean") throw new TypeError("Placement entry and boolean uploaded flag required");
       const placementId = id(entry.placementId,"placementId");
-      const metadata = Object.freeze({ imageId, placementId,
+      const surface = entry.surface ?? "inline", operation = entry.operation ?? "create";
+      if (!["inline", "viewer"].includes(surface) || !["create", "replace", "restore"].includes(operation)) throw new TypeError("Invalid surface/placement operation");
+      if (operation === "replace" && (surface !== "viewer" || !entry.uploaded || imageUploaded)) throw new Error("Only resident viewer prototypes may be replaced");
+      const metadata = Object.freeze({ imageId, placementId, surface, live: true,
         placementKey: key(entry.placementKey,"placementKey"),
         occurrenceKey: key(entry.occurrenceKey,"occurrenceKey"),
         geometryKey: key(entry.geometryKey,"geometryKey"),
@@ -122,9 +128,14 @@ export class GraphicsMetrics {
       const slot = `${imageId}:${placementId}`;
       if (incoming.has(slot)) throw new Error("Duplicate placement in transport batch");
       const prior = this.#placements.get(slot);
-      if (prior && Object.keys(metadata).some(name => metadata[name] !== prior[name])) throw new Error("Placement identity metadata changed");
+      const changed = prior && Object.keys(metadata).some(name => name !== "live" && metadata[name] !== prior[name]);
+      const viewerReplacement = prior?.surface === "viewer" && surface === "viewer" &&
+        entry.uploaded && (operation === "replace" || imageUploaded && operation === "restore") && prior.placementKey === metadata.placementKey;
+      if (changed && !viewerReplacement) throw new Error("Placement identity metadata changed");
+      if (operation === "replace" && !prior) throw new Error("Replaced viewer placement is not tracked");
       if (!entry.uploaded && (imageUploaded || !prior)) throw new Error("Reused placement is not tracked after image retransmission or in this epoch");
       if (entry.uploaded) uploadedPlacements++;
+      if (operation === "replace") replacements++;
       incoming.set(slot,{ metadata, uploaded: entry.uploaded });
     }
     const delta = { wireBytes: integer(wireBytes,"wireBytes"), uploadChunks: integer(uploadChunks,"uploadChunks"),
@@ -132,6 +143,8 @@ export class GraphicsMetrics {
     if (imageUploaded !== (uploadChunks > 0) || placementCommands !== uploadedPlacements) throw new Error("Command counts disagree with upload flags");
     if ((imageUploaded || uploadedPlacements > 0) !== (wireBytes > 0)) throw new Error("Wire bytes disagree with upload flags");
     const nextEpoch = addCounters(this.#transfer,delta), nextRuntime = addCounters(this.#runtimeTransfer,delta);
+    const nextSurface = integer(this.#surfaceTransfer.replacementCommands + replacements, "replacementCommands");
+    const nextRuntimeSurface = integer(this.#runtimeSurfaceTransfer.replacementCommands + replacements, "replacementCommands");
     // All validation/counter arithmetic above is atomic: failures change nothing.
     this.#normalized.set(metadata.payloadKey,metadata);
     if (imageUploaded) {
@@ -146,6 +159,34 @@ export class GraphicsMetrics {
       if (entry.uploaded) this.#placements.set(slot,entry.metadata);
     }
     this.#transfer = nextEpoch; this.#runtimeTransfer = nextRuntime;
+    this.#surfaceTransfer.replacementCommands = nextSurface;
+    this.#runtimeSurfaceTransfer.replacementCommands = nextRuntimeSurface;
+    return true;
+  }
+
+  /** Logical release is not transport or proof that terminal storage was freed. */
+  recordViewerRelease({ imageId, placementId } = {}) {
+    id(imageId, "imageId"); id(placementId, "placementId");
+    const slot = `${imageId}:${placementId}`, prior = this.#placements.get(slot);
+    if (prior?.surface === "viewer") this.#placements.set(slot, Object.freeze({ ...prior, live: false }));
+  }
+
+  /** Successful lowercase scoped private-prototype deletion, never pixel eviction.
+   * An epoch reset may have cleared local metadata while the terminal tuple remains.
+   */
+  recordRetirement({ epoch, imageId, placementId, wireBytes } = {}) {
+    if (epoch !== this.#epoch) return false;
+    id(imageId, "imageId"); id(placementId, "placementId");
+    const slot = `${imageId}:${placementId}`, prior = this.#placements.get(slot);
+    if (prior && prior.surface !== "viewer") throw new Error("Cannot retire inline history");
+    const delta = { wireBytes: integer(wireBytes, "wireBytes", 1), uploadChunks: 0, placementCommands: 0, successfulCommits: 1 };
+    const nextEpoch = addCounters(this.#transfer, delta), nextRuntime = addCounters(this.#runtimeTransfer, delta);
+    const next = integer(this.#surfaceTransfer.retirementCommands + 1, "retirementCommands");
+    const nextRuntimeCount = integer(this.#runtimeSurfaceTransfer.retirementCommands + 1, "retirementCommands");
+    this.#placements.delete(slot);
+    this.#transfer = nextEpoch; this.#runtimeTransfer = nextRuntime;
+    this.#surfaceTransfer.retirementCommands = next;
+    this.#runtimeSurfaceTransfer.retirementCommands = nextRuntimeCount;
     return true;
   }
 
@@ -167,6 +208,10 @@ export class GraphicsMetrics {
         uniquePayloadPngBytes: sum(payloads,"pngBytes"), uniquePayloadEstimatedRgbaBytes: sum(payloads,"estimatedRgbaBytes") },
       placements: { geometryVersions: placements.length,
         occurrences: new Set(placements.map(placement => placement.occurrenceKey)).size },
+      surfaces: { inline: placements.filter(p => p.surface === "inline").length,
+        viewer: placements.filter(p => p.surface === "viewer").length,
+        liveViewer: placements.filter(p => p.surface === "viewer" && p.live).length },
+      surfaceTransfer: { ...this.#surfaceTransfer }, runtimeSurfaceTransfer: { ...this.#runtimeSurfaceTransfer },
       transfer: { ...this.#transfer }, runtimeTransfer: { ...this.#runtimeTransfer },
     };
   }

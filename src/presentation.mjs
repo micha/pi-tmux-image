@@ -5,15 +5,45 @@
  */
 export function createPresentation() {
   let connection;
+  const bindings = new Set();
+  let bindingErrors = 0;
+  function callBinding(binding, kind, active) {
+    try { binding[kind]?.({ tui: active.tui, epoch: active.epoch }); }
+    catch { bindingErrors++; }
+  }
+  function notify(kind, active) {
+    for (const binding of bindings) callBinding(binding, kind, active);
+  }
+
+  function commit(prepared, { epoch, signal } = {}) {
+    const active = connection;
+    if (!active || active.disconnecting || active.epoch !== epoch || signal?.aborted || prepared.isCurrent?.() === false) {
+      prepared.onUploadFailed?.(new Error("Image preparation superseded before write"));
+      return false;
+    }
+    try {
+      if (typeof prepared.uploads !== "string") throw new Error("Invalid prepared image transport");
+      // No await between final guards, public synchronous write and commit.
+      if (prepared.uploads) active.tui.terminal.write(prepared.uploads);
+      prepared.onUploaded?.();
+      return true;
+    } catch (error) { prepared.onUploadFailed?.(error); throw error; }
+  }
 
   function disconnect(expected = connection) {
-    if (!expected || connection !== expected) return;
-    connection = undefined;
-    expected.controller.abort();
-    for (const sizes of expected.records.values()) {
-      for (const record of sizes.values()) record.controller.abort();
+    if (!expected || connection !== expected || expected.disconnecting) return;
+    expected.disconnecting = true;
+    // Public raw-overlay owners close/release while their captured TUI is alive.
+    // A cleanup exception must not prevent transport cancellation.
+    try { notify("onDisconnect", expected); }
+    finally {
+      if (connection === expected) connection = undefined;
+      expected.controller.abort();
+      for (const sizes of expected.records.values()) {
+        for (const record of sizes.values()) record.controller.abort();
+      }
+      expected.records.clear();
     }
-    expected.records.clear();
   }
 
   function connect(tui, owner = {}) {
@@ -26,10 +56,20 @@ export function createPresentation() {
       records: new Map(),
     };
     connection = next;
+    notify("onConnect", next);
     return () => { if (connection?.owner === owner) disconnect(); };
   }
 
   return {
+    /** Observe the already supported widget-injected TUI, never own another loop. */
+    bind(binding) {
+      bindings.add(binding);
+      if (connection) callBinding(binding, "onConnect", connection);
+      return () => bindings.delete(binding);
+    },
+    get bindingErrors() { return bindingErrors; },
+    get connection() { return connection && !connection.disconnecting ? { tui: connection.tui, epoch: connection.epoch } : undefined; },
+    commit,
     /** Called from session_start, never from the extension factory. */
     attach(ctx, insideTmux) {
       if (ctx.mode !== "tui" || !insideTmux) return false;
@@ -105,8 +145,15 @@ export function createPresentation() {
               }
               // write() queues all bytes in the host's stream before ready rows can
               // enter a later frame. This is stream order, not a terminal ACK.
-              if (prepared.uploads) active.tui.terminal.write(prepared.uploads);
-              prepared.onUploaded?.();
+              if (!commit(prepared, { epoch: active.epoch, signal: controller.signal })) {
+                // A closed viewer invalidates its captured inline replay batch;
+                // retry from current prototype ownership, never cache stale rows.
+                if (connection === active && sizes.get(captured.key) === record) {
+                  sizes.delete(captured.key);
+                  active.tui.requestRender();
+                }
+                return;
+              }
               record.lines = prepared.lines.slice();
               active.tui.requestRender();
             }).catch((error) => {

@@ -149,6 +149,10 @@ function virtualTerminal() {
           assert.ok(images.has(imageId), "placement preceded image data");
           assert.equal(controls.U, "1");
           images.get(imageId).set(Number(controls.p), { columns: Number(controls.c), rows: Number(controls.r) });
+        } else if (controls.a === "d") {
+          assert.equal(controls.d, "i", "private retirement must not delete pixels or globally delete");
+          assert.ok(Number(controls.p) > 0, "retirement must be placement scoped");
+          images.get(Number(controls.i))?.delete(Number(controls.p));
         }
       }
     },
@@ -317,4 +321,273 @@ test("aborted in-flight transport cannot mark residency after a replacement epoc
   first.onUploaded();
   const next = await native.prepare(job(), { epoch: Symbol("new") });
   assert.ok(next.uploads.includes("a=t")); next.onUploaded();
+});
+
+const canvas = { columns: 4, rows: 3, cellWidthPx: 10, cellHeightPx: 20 };
+const window = { columns: 2, rows: 1, columnOffset: 1, rowOffset: 1 };
+const viewerJob = (lease, overrides = {}) => ({ lease, canvas, window, ...overrides });
+async function openViewer(native, occurrence = "page") {
+  const payload = await native.resolvePayload(attachment);
+  return native.reserveViewerPlacement({ payload, occurrence });
+}
+
+test("production viewer shares inline PNG identity, distinct fixed slot, pan cells and zoom replacement", async () => {
+  const native = fresh(), terminal = virtualTerminal(), epoch = Symbol();
+  const inline = await native.prepare(job(), { epoch }); terminal.write(inline.uploads); inline.onUploaded();
+  const payload = await native.resolvePayload({ ...attachment });
+  assert.equal(payload.imageId, 1); assert.equal(await native.resolvePayload(attachment), payload);
+  const lease = native.reserveViewerPlacement({ payload, occurrence: "page" });
+  assert.notEqual(lease.placementId, 2);
+  const first = await native.prepareViewer(viewerJob(lease), { epoch });
+  assert.equal(first.metrics.uploadChunks, 0);
+  terminal.write(first.uploads); first.onUploaded();
+  const totals = native.stats().transfer;
+  const pan = await native.prepareViewer(viewerJob(lease, { window: { ...window, columnOffset: 2 } }), { epoch });
+  assert.equal(pan.uploads, ""); assert.notDeepEqual(pan.lines, first.lines);
+  assert.ok(pan.lines[0].includes(PLACEHOLDER + DIACRITICS[1] + DIACRITICS[2])); pan.onUploaded();
+  assert.deepEqual(native.stats().transfer, totals);
+  const zoom = await native.prepareViewer(viewerJob(lease, { canvas: { ...canvas, columns: 5 } }), { epoch });
+  assert.equal(zoom.metrics.uploadChunks, 0); assert.equal(zoom.metrics.placementCommands, 1);
+  terminal.write(zoom.uploads); zoom.onUploaded();
+  assert.equal(terminal.images.get(1).size, 2, "zoom overwrote private pair, not inline history");
+  assert.deepEqual(terminal.images.get(1).get(2), { columns: 2, rows: 1 });
+  assert.equal(native.stats().surfaceTransfer.replacementCommands, 1);
+  assert.equal(native.stats().accounting.errors, 0);
+});
+
+test("production 10,000 pan/zoom/open cycles bound allocator, viewer prototypes and metrics", async () => {
+  const native = fresh(), epoch = Symbol();
+  const inline = await native.prepare(job(), { epoch }); inline.onUploaded();
+  const payload = await native.resolvePayload(attachment);
+  let lease = native.reserveViewerPlacement({ payload, occurrence: "page" });
+  const baseline = native.stats().viewer.allocatedIds;
+  for (let n = 0; n < 10000; n++) {
+    const next = await native.prepareViewer(viewerJob(lease, { canvas: { ...canvas, columns: 4 + n % 2 },
+      window: { ...window, columnOffset: n % 2 } }), { epoch }); next.onUploaded();
+    if (n % 10 === 0) {
+      native.releaseViewer(lease);
+      const retire = await native.prepareViewerRetirement({ epoch }); retire.onUploaded();
+      lease = native.reserveViewerPlacement({ payload, occurrence: "page" });
+    }
+  }
+  const stats = native.stats();
+  assert.equal(stats.viewer.allocatedIds, baseline);
+  assert.equal(stats.placements.geometryVersions, 2); assert.equal(stats.surfaces.viewer, 1);
+  assert.equal(stats.surfaces.liveViewer, 1); assert.equal(stats.transfer.uploadChunks, 1);
+  assert.equal(stats.accounting.errors, 0);
+  native.releaseViewer(lease); (await native.prepareViewerRetirement({ epoch })).onUploaded();
+  assert.equal(native.stats().placements.geometryVersions, 1);
+  assert.equal(native.stats().surfaces.viewer, 0);
+});
+
+test("shared epoch upload restores every inline grid and only the current live private canvas", async () => {
+  const native = fresh(), epoch = Symbol(), terminal = virtualTerminal();
+  for (const columns of [2, 3, 4]) {
+    const p = await native.prepare(job("one", { ...geometry, columns }), { epoch }); terminal.write(p.uploads); p.onUploaded();
+  }
+  const lease = await openViewer(native), first = await native.prepareViewer(viewerJob(lease), { epoch });
+  terminal.write(first.uploads); first.onUploaded();
+  const retained = structuredClone(terminal.images.get(1));
+  const replay = await native.prepare(job(), { epoch: Symbol("replay") });
+  assert.equal(replay.metrics.placementCommands, 4); terminal.write(replay.uploads); replay.onUploaded();
+  assert.deepEqual(terminal.images.get(1), retained);
+  native.releaseViewer(lease);
+  const closed = await native.prepare(job(), { epoch: Symbol("closed") });
+  assert.equal(closed.metrics.placementCommands, 3); terminal.write(closed.uploads); closed.onUploaded();
+  assert.equal(terminal.images.get(1).size, 3);
+  assert.equal(native.stats().viewer.retirementPending, true, "epoch replay does not forget unresolved cleanup");
+});
+
+test("closing during captured inline replay prevents private resurrection and presentation retries current history", async () => {
+  const native = fresh(), h = createPresentation(), writes = [];
+  const tui = { terminal: { write(bytes) { writes.push(bytes); } }, requestRender() {} };
+  h.attach({ mode: "tui", ui: { setWidget(_key, factory) { factory(tui); } } }, true);
+  const lease = await openViewer(native);
+  const first = await native.prepareViewer(viewerJob(lease), { epoch: h.epoch }); h.commit(first, { epoch: h.epoch });
+  h.refresh();
+  const prepared = await native.prepare(job(), { epoch: h.epoch });
+  native.releaseViewer(lease);
+  assert.equal(prepared.isCurrent(), false);
+  const before = writes.length;
+  assert.equal(h.commit(prepared, { epoch: h.epoch }), false); assert.equal(writes.length, before);
+  const latest = await native.prepare(job(), { epoch: h.epoch });
+  assert.equal(latest.metrics.placementCommands, 1);
+  assert.equal(h.commit(latest, { epoch: h.epoch }), true);
+  h.disconnect();
+});
+
+test("close immediately revokes pending viewer, safe lowercase retirement retains inline pixels", async () => {
+  const native = fresh(), epoch = Symbol();
+  const inline = await native.prepare(job(), { epoch }); inline.onUploaded();
+  const payload = await native.resolvePayload(attachment), lease = native.reserveViewerPlacement({ payload, occurrence: "page" });
+  const first = await native.prepareViewer(viewerJob(lease), { epoch }); first.onUploaded();
+  const pending = await native.prepareViewer(viewerJob(lease, { canvas: { ...canvas, columns: 5 } }), { epoch });
+  assert.equal(native.releaseViewer(lease), true); assert.equal(native.releaseViewer(lease), false);
+  assert.equal(pending.isCurrent(), false); pending.onUploaded();
+  assert.equal(native.stats().surfaces.liveViewer, 0);
+  assert.throws(() => native.reserveViewerPlacement({ payload, occurrence: "other" }), /unresolved/);
+  const failed = await native.prepareViewerRetirement({ epoch }); failed.onUploadFailed();
+  assert.equal(native.stats().viewer.retirementPending, true);
+  const retirement = await native.prepareViewerRetirement({ epoch: Symbol("reset") });
+  assert.ok(retirement.uploads.includes(`a=d,d=i,i=${lease.imageId},p=${lease.placementId}`));
+  assert.equal(retirement.uploads.includes("d=I"), false); assert.equal(retirement.uploads.includes("a=t"), false);
+  retirement.onUploaded(); retirement.onUploaded();
+  assert.equal(native.stats().viewer.retirementPending, false);
+  assert.equal(native.stats().surfaceTransfer.retirementCommands, 1);
+  const reopened = native.reserveViewerPlacement({ payload, occurrence: "reopened" });
+  assert.equal(reopened.placementId, lease.placementId);
+  assert.equal(native.releaseViewer(lease), false, "late old cleanup cannot close new lease");
+});
+
+test("viewer queue cancellation drains before rebind; inline successor cannot overtake held upload", async () => {
+  const native = fresh(), epoch = Symbol();
+  const payload = await native.resolvePayload(attachment), lease = native.reserveViewerPlacement({ payload, occurrence: "page" });
+  const blocker = await native.prepare(job(), { epoch });
+  const pending = native.prepareViewer(viewerJob(lease), { epoch });
+  await settle();
+  await assert.rejects(native.prepareViewer(viewerJob(lease), { epoch }), /already pending/);
+  native.releaseViewer(lease);
+  assert.throws(() => native.reserveViewerPlacement({ payload, occurrence: "new" }), /draining/);
+  let finished = false;
+  const inline = native.prepare(job("later"), { epoch }).then(p => { finished = true; return p; });
+  await settle(); assert.equal(finished, false);
+  blocker.onUploaded(); await assert.rejects(pending, /abort/i);
+  const successor = await inline; assert.equal(successor.metrics.uploadChunks, 0); successor.onUploaded();
+  const nextLease = native.reserveViewerPlacement({ payload, occurrence: "new" });
+  assert.equal(nextLease.placementId, lease.placementId);
+});
+
+test("viewer preparation validation/failure and stale epochs never commit surfaces or strand queue", async () => {
+  const native = fresh(), epoch = Symbol(), lease = await openViewer(native);
+  await assert.rejects(native.prepareViewer(viewerJob(lease, { window: { ...window, columnOffset: 297 } }), { epoch }));
+  const failed = await native.prepareViewer(viewerJob(lease), { epoch }); failed.onUploadFailed();
+  assert.equal(native.stats().surfaces.viewer, 0);
+  const stale = await native.prepareViewer(viewerJob(lease), { epoch });
+  const inline = await native.prepare(job(), { epoch: Symbol("new") });
+  stale.onUploaded(); inline.onUploaded();
+  assert.equal(native.stats().surfaces.viewer, 0);
+  native.releaseViewer(lease);
+  assert.equal(native.stats().viewer.retirementPending, false, "uncommitted prototype never retained");
+});
+
+test("viewer accounting faults never break replacement, retirement or slot release", async () => {
+  class Bad extends GraphicsMetrics {
+    recordTransport() { throw new Error("bad transport accounting"); }
+    recordViewerRelease() { throw new Error("bad release accounting"); }
+    recordRetirement() { throw new Error("bad retirement accounting"); }
+  }
+  const native = createNativeRenderer({ metrics: new Bad() }), epoch = Symbol();
+  const lease = await openViewer(native);
+  (await native.prepareViewer(viewerJob(lease), { epoch })).onUploaded();
+  const next = await native.prepareViewer(viewerJob(lease, { canvas: { ...canvas, columns: 5 } }), { epoch });
+  assert.equal(next.metrics.uploadChunks, 0); next.onUploaded();
+  assert.doesNotThrow(() => native.releaseViewer(lease));
+  const retire = await native.prepareViewerRetirement({ epoch }); assert.doesNotThrow(() => retire.onUploaded());
+  assert.equal(native.stats().viewer.retirementPending, false);
+  assert.equal(native.stats().accounting.errors, 4);
+  assert.ok(await openViewer(native, "again"));
+});
+
+function secondSnapshot() {
+  // Add a valid ancillary text chunk: same pixels/dimensions, different exact PNG.
+  const payload = Buffer.from("label\0other"), type = Buffer.from("tEXt");
+  let crc = 0xffffffff;
+  for (const byte of Buffer.concat([type, payload])) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+  }
+  const chunk = Buffer.alloc(payload.length + 12);
+  chunk.writeUInt32BE(payload.length); type.copy(chunk, 4); payload.copy(chunk, 8);
+  chunk.writeUInt32BE((crc ^ 0xffffffff) >>> 0, payload.length + 8);
+  const png = Buffer.from(data, "base64");
+  return { ...attachment, data: Buffer.concat([png.subarray(0, -12), chunk, png.subarray(-12)]).toString("base64") };
+}
+
+test("10,000 repeated opens across payloads reuse private allocator and delete only its proven tuple", async () => {
+  const native = fresh(), epoch = Symbol(), terminal = virtualTerminal();
+  const a = await native.resolvePayload(attachment), b = await native.resolvePayload(secondSnapshot());
+  for (const [payload, snapshot] of [[a, attachment], [b, secondSnapshot()]]) {
+    const inline = await native.prepare({ attachment: snapshot, occurrence: "inline", geometry }, { epoch });
+    terminal.write(inline.uploads); inline.onUploaded();
+    assert.equal(terminal.images.get(payload.imageId).size, 1);
+  }
+  let fixed;
+  for (let n = 0; n < 10000; n++) {
+    const payload = n % 2 ? a : b;
+    const lease = native.reserveViewerPlacement({ payload, occurrence: `open:${n}` });
+    fixed ??= lease.placementId; assert.equal(lease.placementId, fixed);
+    const next = await native.prepareViewer(viewerJob(lease), { epoch });
+    assert.equal(next.metrics.uploadChunks, 0); terminal.write(next.uploads); next.onUploaded();
+    native.releaseViewer(lease);
+    const retired = await native.prepareViewerRetirement({ epoch }); terminal.write(retired.uploads); retired.onUploaded();
+    assert.equal(terminal.images.get(payload.imageId).size, 1);
+  }
+  const stats = native.stats();
+  assert.equal(stats.viewer.allocatedIds, 5, "two payload+two inline IDs+one constant private slot");
+  assert.equal(stats.surfaces.viewer, 0); assert.equal(stats.placements.geometryVersions, 2);
+  assert.equal(stats.surfaceTransfer.retirementCommands, 10000); assert.equal(stats.transfer.uploadChunks, 2);
+  assert.equal(stats.accounting.errors, 0);
+  assert.equal(terminal.images.size, 2, "shared pixels survive every scoped retirement");
+});
+
+test("denied/partial retirement remains bounded across epoch and retry frees slot without invented residency", async () => {
+  const native = fresh(), presentation = createPresentation(), writes = [];
+  const tui = { terminal: { write(wire) { writes.push(wire); } }, requestRender() {} };
+  presentation.attach({ mode: "tui", ui: { setWidget(_key, factory) { factory(tui); } } }, true);
+  const payload = await native.resolvePayload(attachment), other = await native.resolvePayload(secondSnapshot());
+  const lease = native.reserveViewerPlacement({ payload, occurrence: "page" });
+  presentation.commit(await native.prepareViewer(viewerJob(lease), { epoch: presentation.epoch }), { epoch: presentation.epoch });
+  native.releaseViewer(lease);
+  const denied = await native.prepareViewerRetirement({ epoch: presentation.epoch });
+  denied.onUploadFailed(new Error("post-preparation capability denied"));
+  const before = writes.length;
+  for (let n = 0; n < 10000; n++) assert.throws(() => native.reserveViewerPlacement({ payload: other, occurrence: "new" }), /unresolved/);
+  assert.equal(writes.length, before);
+  assert.ok(native.stats().viewer.retirementFailure.includes("denied"));
+  presentation.refresh();
+  const failed = await native.prepareViewerRetirement({ epoch: presentation.epoch });
+  tui.terminal.write = () => { throw new Error("partial stream failure"); };
+  assert.throws(() => presentation.commit(failed, { epoch: presentation.epoch }), /partial/);
+  assert.equal(native.stats().viewer.retirementPending, true);
+  assert.equal(native.stats().transfer.wireBytes, 0);
+  assert.equal(native.stats().resident.imageIds, 0);
+  tui.terminal.write = wire => writes.push(wire);
+  const recovered = await native.prepareViewerRetirement({ epoch: presentation.epoch });
+  assert.equal(presentation.commit(recovered, { epoch: presentation.epoch }), true);
+  const stats = native.stats();
+  assert.equal(stats.resident.imageIds, 0); assert.equal(stats.viewer.retirementPending, false);
+  assert.equal(stats.viewer.retirementFailure, undefined);
+  assert.equal(stats.transfer.wireBytes, Buffer.byteLength(recovered.uploads));
+  assert.equal(stats.surfaceTransfer.retirementCommands, 1);
+  assert.ok(native.reserveViewerPlacement({ payload: other, occurrence: "new" }));
+  presentation.disconnect();
+});
+
+test("stale repeated viewer/retirement callbacks cannot clear a later pending slot or lease", async () => {
+  const native = fresh(), epoch = Symbol(), payload = await native.resolvePayload(attachment);
+  const oldLease = native.reserveViewerPlacement({ payload, occurrence: "old" });
+  const old = await native.prepareViewer(viewerJob(oldLease), { epoch }); old.onUploaded();
+  native.releaseViewer(oldLease);
+  const retired = await native.prepareViewerRetirement({ epoch }); retired.onUploaded();
+  const lease = native.reserveViewerPlacement({ payload, occurrence: "new" });
+  const blocker = await native.prepare(job(), { epoch });
+  const pending = native.prepareViewer(viewerJob(lease), { epoch }); await settle();
+  old.onUploaded(); old.onUploadFailed(); retired.onUploaded(); retired.onUploadFailed();
+  assert.equal(native.releaseViewer(oldLease), false);
+  assert.equal(native.stats().viewer.leased, true); assert.equal(native.stats().viewer.pending, true);
+  await assert.rejects(native.prepareViewer(viewerJob(lease), { epoch }), /already pending/);
+  blocker.onUploaded(); const next = await pending; next.onUploaded();
+  assert.equal(native.stats().viewer.livePrototype, true);
+  assert.equal(native.stats().viewer.pending, false);
+});
+
+test("retirement no-op respects epoch/signal final guards and records no transport", async () => {
+  const native = fresh(), epoch = Symbol(), controller = new AbortController();
+  const empty = await native.prepareViewerRetirement({ epoch, signal: controller.signal });
+  assert.equal(empty.uploads, ""); assert.equal(empty.isCurrent(), true);
+  controller.abort(); assert.equal(empty.isCurrent(), false);
+  const stale = await native.prepareViewerRetirement({ epoch });
+  const next = await native.prepare(job(), { epoch: Symbol("replacement") }); next.onUploaded();
+  assert.equal(stale.isCurrent(), false);
+  assert.equal(native.stats().surfaceTransfer.retirementCommands, 0);
 });

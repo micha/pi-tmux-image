@@ -11,8 +11,11 @@ no terminal/provider/session side effects. The metrics module
 has no terminal write or runtime non-built-in dependency and retains metadata,
 not PNG/base64 payloads.
 
-**Eviction and budgeting are disabled.** No automatic image deletion, placement
-deletion, fallback substitution or history truncation is implemented. Preserve the
+**Eviction and budgeting are disabled.** No automatic image-data deletion,
+history placement deletion, fallback substitution or history truncation is
+implemented. The authorized viewer runtime adds explicit private-prototype
+replacement/retirement only; its lowercase scoped delete retains shared pixels
+and every inline history prototype. Preserve the
 existing long-history policy until actual usage demonstrates a need and the owner
 approves the historical-image trade-off. Metrics are not a global graphics-memory
 limit and must not be presented as one.
@@ -201,10 +204,73 @@ base64/session data, native normalization cache and this metadata registry itsel
 Some terminals deduplicate or allocate differently. These are useful estimates
 for choosing experiments, not measured resident-set/GPU bytes.
 
-The metadata registry grows with retained normalized payloads and placements.
-There is no metadata pruning, owned-delete hook or graphics eviction in this
-phase. Adding one requires coherent shared-payload/placement ownership and
-careful historical scrollback semantics, not merely decrementing a counter.
+The inline metadata registry grows with retained normalized payloads/history
+placements. There is no inline metadata pruning or graphics eviction in this
+phase. The separate private viewer surface is bounded and can be logically
+released/scoped-retired as below. Image-payload budgeting remains a separate
+owner decision, not merely decrementing a counter.
+
+## Private viewer surface accounting (authorized runtime phase)
+
+Inline `recordTransport` compatibility fields and totals remain unchanged.
+Placement batch entries additionally accept `surface: "inline" | "viewer"`
+(default inline) and `operation: "create" | "replace" | "restore"` (default create).
+Only a successfully uploaded **viewer** entry may replace geometry/occurrence
+metadata at an existing pair; inline identity remains immutable. An existing
+viewer slot key cannot change through replacement. Same-ID PNG retransmission
+may restore the current viewer geometry along with every retained inline prototype.
+A restore command is not counted as a user zoom replacement.
+
+Additional aggregate fields:
+
+- `surfaces.inline`: tracked inline prototype count in this epoch.
+- `surfaces.viewer`: tracked private prototype count (at most one per runtime
+  owner), including logically released but not yet successfully retired metadata.
+- `surfaces.liveViewer`: tracked private prototype whose live lease remains
+  eligible for replay. Logical close makes this zero immediately.
+- `surfaceTransfer.replacementCommands` / `retirementCommands`: successful
+  current-epoch private replacements and scoped deletion commands.
+- `runtimeSurfaceTransfer`: the corresponding cumulative scalar counters.
+
+The native `releaseViewer` hook calls `recordViewerRelease({imageId,placementId})`
+only for logical ownership: it marks that private record non-live, changing no
+wire/upload totals and making **no terminal deletion claim**. This hook is guarded
+like all accounting; functional replay revocation happens first.
+
+After the UI removes its cells, and the pre/post capability gates allow transport,
+`recordRetirement({epoch,imageId,placementId,wireBytes})` accounts a successful
+**lowercase scoped ID+private-placement delete**. It rejects a known inline pair,
+removes the private metadata and increments complete wrapped wire totals once,
+`successfulCommits` once and the separate retirement count once. PNG chunks and
+prototype `placementCommands` remain zero for that delete. Shared image metadata
+and PNG/RGBA totals are not removed: private retirement is not pixel eviction.
+
+An epoch reset may have cleared all local image/placement trust while a pending
+owned tuple still exists in the terminal. A successful retirement in that new
+epoch therefore accepts absence of resident metadata and counts only actual delete
+wire; it never invents a resident image or normalized payload. A stale retirement
+returns false before validation. Failures, denial, partial writes and no-op reuse
+are not successful transport; the native runtime retains one bounded cleanup
+obligation/failure description, blocks unsafe payload rebinding, and the UI retries
+through capability gates. Clearing local trust or deleting a prototype does not
+establish freed GPU bytes or global storage bounds.
+
+Pan with unchanged whole-canvas residency emits only new addressed cells: zero
+PNG/prototype/retirement transport. Zoom replaces fixed private geometry in place;
+repeated opens reuse its constant allocator slot, not occurrence/geometry IDs.
+No per-motion event log or stale live-view inventory is retained. Normalization
+and resident shared-image PNG/RGBA estimates still deduplicate exact payload bytes.
+Functional residency and queue release precede optional accounting, so injected
+transport/release/retirement diagnostic failures remain explicit but cannot break
+rows, cleanup, replay or reopening.
+
+`test/metrics.test.mjs` adds 10,000 in-place replacement accounting, immutable
+inline rejection, logical release, exact retirement bytes, epoch-stale/no-resident
+delete and live prototype restoration. `test/native.test.mjs` integrates actual
+runtime 10,000 pan/zoom and 10,000 alternating-payload opens with shared identity,
+scoped semantic deletion, bounded allocation, queue/cancel races, failed/denied
+cleanup and current-epoch retry. These tests are successful-write/capture and
+protocol-semantic evidence, not terminal ACK or human-observed memory/pixels.
 
 ## Sample and stress evidence
 

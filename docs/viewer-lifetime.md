@@ -521,6 +521,78 @@ Run portable/host-enabled suites and offline SDK integration under repository
 contracts. UI/crop actual-host reports and owner-observed pixel checks are separate
 coordinator evidence; this architecture report alone does not authorize shipping.
 
+## Production shared-surface implementation (runtime phase)
+
+After the pure helper commit `dd13569`, the authorized runtime phase implements
+the following APIs in `src/native.mjs` / `src/presentation.mjs`. UI integration is
+owned separately; this section does not claim shipped controls or pixel acceptance.
+
+```js
+const payload = await native.resolvePayload(attachment, signal);
+const lease = native.reserveViewerPlacement({ payload, occurrence });
+const context = { epoch: presentation.epoch, signal };
+const prepared = await native.prepareViewer({ lease, canvas, window }, context);
+// Caller performs capability checks before preparation and again after it.
+if (presentation.commit(prepared, context)) publishCurrentRows(prepared.lines);
+
+native.releaseViewer(lease); // immediate closing/focus-loss replay revocation
+// AFTER owned raw overlay hide/dispose has removed cells, with fresh pre/post gates:
+const retirement = await native.prepareViewerRetirement(context);
+presentation.commit(retirement, context);
+```
+
+`canvas` has whole-prototype `{columns,rows,cellWidthPx?,cellHeightPx?}`;
+`window` has bounded `{columns,rows,columnOffset,rowOffset}` from `computeViewport`.
+The separate `encodeViewportRows` helper validates canvas intersection and explicit
+marks; inline `encodePlaceholderRows` is unchanged. Retirement uses
+`encodeOwnedVirtualRetirement` with lowercase ID+placement scoping only.
+
+`resolvePayload` shares immutable normalization and the inline registry's
+image-only lookup. `reserveViewerPlacement` accepts only records returned by that
+renderer, reserves the one fixed private allocator key, and rejects a live lease,
+undrained viewer reservation or unresolved retirement. `prepareViewer` rejects
+concurrent viewer preparations: UI owns one runner/latest intent. Abort does not
+relaunch a native reservation until the predecessor chain drains; closing an
+uncommitted queued lease cannot evade that bound by reopening repeatedly.
+
+Every prepared result includes `isCurrent`, `onUploaded`, `onUploadFailed`,
+`uploads`, `lines` and exact transport metrics. Success/failure callbacks are
+idempotent. Repeated stale callbacks cannot clear a new lease/work slot. Inline
+PNG replay captures only a live committed private prototype; release before write
+invalidates that result, and presentation retries from current ownership without
+caching failed/stale rows. Inline history retains all committed geometries.
+
+Retirement failure leaves one obligation across epoch resets. The UI must retry
+it through fresh pre/post capability checks **before** safe payload rebinding.
+`stats().viewer` reports lease/prototype/work/retirement flags, constant-slot
+allocation totals and one sanitized retirement failure. A successful deletion
+when the current epoch has no resident image metadata records only delete wire;
+it does not invent image residency or normalization. No-op retirement still
+validates its requested epoch/signal and records no transport. This is no ACK or
+proof of GPU resources freed.
+
+`presentation.bind({onConnect,onDisconnect})` and `presentation.connection` expose
+only the existing public widget-injected `{tui,epoch}`. Disconnect observers run
+before record abort/transport detach; UI closes its owned raw overlay there.
+Binding errors are counted by `bindingErrors` but cannot stop other cleanup or
+strand transport. `presentation.commit(prepared,{epoch,signal})` guards current
+connection/epoch/signal/native validity, then writes and calls success synchronously
+without an await; it publishes no rows or repaint itself. Stale results return
+false and release their reservation; thrown writes release and rethrow.
+
+Metrics retain compatible inline totals, add `surfaces` and
+`surfaceTransfer`/`runtimeSurfaceTransfer` replacement/retirement counters, and
+explicitly distinguish a released (non-live) private prototype from one whose
+scoped deletion has committed. Functional ownership commits before guarded
+accounting. See [graphics-memory.md](graphics-memory.md).
+
+Runtime automated coverage adds real native 10,000 motion and 10,000 alternating
+payload open/retire cycles, constant allocator/prototype counts, shared PNG reuse,
+complete inline+live-viewer replay, release during prepared inline replay,
+queued close/drain, stale repeated callbacks, failed/denied/partial retirement
+across epochs and retry without invented residency. These are actual repository
+runtime tests and captured/protocol-semantic streams, not observed pixels.
+
 ## Primary references inspected
 
 - Installed complete `docs/extensions.md`, `docs/tui.md`, `docs/sdk.md`,
