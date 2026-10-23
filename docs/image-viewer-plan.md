@@ -343,5 +343,14 @@ planning and review workers use **`--thinking xhigh`**; implementation workers u
 not historical tested-worker effort records. Use stable named tabs, never window
 indexes. Assign disjoint ownership, review reports, run verification,
 then make local phase commits. Say **thank you** when a worker is safe to close.
+
+Write prompts and follow-up messages in normal, properly spaced prose, with clear
+headings or bullets for scope, file ownership, interfaces, constraints and expected
+verification. Do not minify instructions or join ordinary words to save tokens;
+preserve exact code, command and path literals. Inspect the exact text before
+dispatch, whether it comes from a prompt file or a literal message, and correct
+missing spaces or ambiguous wording. If received text appears corrupted, compare
+it with the original dispatch text before blaming Pi, tmux or workmux.
+
 This planning task spawns no workers; its owned docs freeze after the report at
 `/tmp/pi-image-viewer-plan-report.md` until coordinator review/thank-you.

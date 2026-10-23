@@ -14,6 +14,11 @@ The viewer UI/controller is now implemented in `src/viewer.mjs` and wired by `ex
 
 Use Pi model `us.openai.gpt-6.1-sol`: planning and review workers use `--thinking xhigh`; implementation workers use `--thinking medium`. This owner-updated role policy supersedes the earlier all-workers-medium baseline, not historical tested-worker records. Coordinate through workmux using stable named tabs in the current workspace, never window indexes; say **thank you** when a worker is safe to close.
 
+- Write worker prompts and follow-up messages in normal, properly spaced prose. Use clear headings or bullets for scope, file ownership, interfaces, constraints and expected verification.
+- Do not minify instructions or concatenate ordinary words to save tokens. Preserve exact code, command and path literals where their spacing is meaningful.
+- Inspect the exact prompt text before dispatch, including prompt-file contents and literal follow-up messages. Correct missing spaces, run-together words and ambiguous instructions before sending.
+- If a worker's received prompt looks corrupted, compare it with the text supplied at dispatch before attributing the problem to Pi, tmux or workmux.
+
 ## Scope and architecture
 
 - `extensions/index.ts`: Pi commands, tools, standard image attachments and custom local renderer.
