@@ -4,10 +4,17 @@ import { truncateToWidth } from "@earendil-works/pi-tui";
 import { createReadTool, defineTool, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { MAX_CHAFA_BYTES, renderPlaceholders } from "../src/graphics.mjs";
 import { withPdfPages } from "../src/pdf.mjs";
+import { createPresentation } from "../src/presentation.mjs";
 
 const MESSAGE_TYPE = "pi-tmux-image";
 
 export default function (pi: ExtensionAPI) {
+  const presentation = createPresentation();
+  pi.on("session_start", (_event, ctx) => {
+    presentation.attach(ctx, Boolean(process.env.TMUX));
+  });
+  pi.on("session_shutdown", () => presentation.disconnect());
+
   // Normal Pi image content, with no context filter. Pi's images.blockImages
   // controls model access independently of this local terminal renderer.
   pi.registerMessageRenderer(MESSAGE_TYPE, (message, _options, theme) => {
@@ -52,7 +59,7 @@ export default function (pi: ExtensionAPI) {
       "info",
     );
     // Virtual placement (U=1) does not depend on the outer terminal's cursor.
-    process.stdout.write(uploads);
+    presentation.write(uploads);
     pi.sendMessage({
       customType: MESSAGE_TYPE,
       content: imageResult.content,

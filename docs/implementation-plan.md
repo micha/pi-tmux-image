@@ -3,9 +3,23 @@
 ## Status and authorization
 
 The owner approved the implementation order below and requested this written
-handoff. This change documents the work; it does not implement the next phases.
-The working package was committed first as `d92adcf`:
+handoff. The working package was committed first as `d92adcf`:
 `Package tmux image and PDF viewer for Pi`.
+
+Prerequisite renderer seam now implemented and verified against installed Pi
+1.0.3 with automated public-API host tests: a zero-row widget supplies the TUI
+transport, connection epochs guard stale work, and asynchronous preparation can
+upload before exposing placeholder cells and requesting repaint. Existing Chafa
+command uploads use this supported transport. See `docs/renderer-seam.md` for
+exact API evidence, test invocation, lifecycle behavior and the unsafe wrapped
+line-prefix/forced-native Kitty reset boundaries.
+
+This verification is automated stream/component evidence only; no new
+human-observed image/PDF checks establish native rendering or recovery. Native
+encoding/normalization helpers are prerequisite work, not integrated phases.
+Phases 1–4 below remain pending integration and their full acceptance checks;
+existing fixed-grid, replay and capability limitations remain in force. Preserve
+the detailed handoff below as the implementation and acceptance plan.
 
 Read `AGENTS.md` before working. Keep human documentation in `README.md` and
 implementation instructions here. Inspect Git state and current host APIs before

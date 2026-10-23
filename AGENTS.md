@@ -7,9 +7,10 @@ The approved next-phase handoff is in `docs/implementation-plan.md`. Read it bef
 ## Scope and architecture
 
 - `extensions/index.ts`: Pi commands, tools, standard image attachments and custom local renderer.
+- `src/presentation.mjs`: public zero-row widget/TUI transport seam, connection epochs and asynchronous upload-before-placement/repaint ordering. See `docs/renderer-seam.md` for verified boundaries; native encoding and replay are not integrated yet.
 - `src/graphics.mjs`: Chafa invocation and separation of tmux uploads from Unicode-placeholder rows.
 - `src/pdf.mjs`: bounded two-page Poppler rasterization with temporary-file cleanup.
-- `test/*.test.mjs`: dependency-free Node tests for parsing, subprocess contracts, cleanup and packaging.
+- `test/*.test.mjs`: dependency-free Node tests for parsing, subprocess contracts, cleanup, packaging and presentation; optional `test/host-seam.test.mjs` exercises installed Pi public APIs without model requests.
 - `package.json`: explicit Pi package manifest. Extension imports are supplied by Pi as peer dependencies, never bundled runtime dependencies.
 
 ## Preserve the important contracts
@@ -28,6 +29,7 @@ The approved next-phase handoff is in `docs/implementation-plan.md`. Read it bef
 ## Verification
 
 - Run `npm test` before committing.
+- Run optional actual-host tests with `PI_OFFLINE=1 PI_TEST_HOST_ROOT=/path/to/installed/coding-agent/package npm test`. The root must contain `dist/index.js` and its host-supplied `node_modules/@earendil-works/pi-tui`; do not install physical host dependencies into this repository. Stream/component assertions are automated evidence, not human-observed pixels.
 - Verify `pi install .` using a temporary `PI_CODING_AGENT_DIR`, not the active user's settings. Inspect package discovery/loading without contacting an LLM provider.
 - For changes to Pi APIs, consult the installed Pi docs and extension examples. The tested starting API version is Pi 1.0.3; do not guess newer signatures.
 - For renderer changes, visually test images and PDFs: new text, scroll up/down, pane position, resizing, and switching windows. State explicitly which checks were automated versus human-observed.
