@@ -1,10 +1,14 @@
-# Viewer crop / bounded subset feasibility — Step 1
+# Viewer bounded subset — source feasibility and pure implementation
 
-Investigation date: 2026-10-23. Repository checkpoint inspected:
-`d324d87e2b2f5abf009a23f9fb27550e4bbd1359`. This note and
-`test/viewer-crop-feasibility.test.mjs` are a design/spec harness only. No
-production renderer, terminal uploads, active installation, settings or license
-changes. See [image-viewer-plan.md](image-viewer-plan.md) for the coordinated gate.
+Investigation date: 2026-10-23. Original checkpoint inspected:
+`d324d87e2b2f5abf009a23f9fb27550e4bbd1359`. Feasibility gate committed as
+**`e92b1cd`**; coordinator authorized the pure protocol/viewport phase afterwards.
+`src/viewport.mjs` and additive `src/kitty.mjs` helpers now implement bounded
+subset math/encoding, with production-helper tests in `test/viewport.test.mjs`
+and `test/kitty.test.mjs`. The earlier `test/viewer-crop-feasibility.test.mjs`
+remains a design/spec harness, not implementation evidence. No physical terminal
+uploads, active installation, settings or license changes in this phase. See
+[image-viewer-plan.md](image-viewer-plan.md) for the coordinated gate.
 Context7 quota was already exhausted; primary upstream sources were fetched read-only.
 
 ## Decision / blocker
@@ -37,15 +41,16 @@ several times. Natural 125% would require about 1280 full-image columns and is
 not supported. Never emit that unaddressable canvas. Omitted/inherited marks,
 a high image-ID mark or ordinary positioned placements are not workarounds.
 
-**Recommended gate outcome for this worker: source-backed bounded subset is
-feasible for implementation review; virtual source-crop is not.** Actual Pi
-compositing/lifecycle and owner-observed new pixels remain separate pending
-gates. Proposed v1 UX: 100% means initial fit, `+/-` use 1.25× fit-relative steps
-and stop at the computed maximum; optionally label natural pixel percentage
-separately. Do not claim that 100% means natural pixel size under this convention.
-A 1200px-longest-side PDF at 9x18 cells has a natural canvas around 134x67 for
-portrait or 134x34 for landscape, leaving useful room before 297. No PDF
-rerasterization is needed.
+**Gate accepted for bounded subsets; virtual source-crop remains unsupported.**
+The coordinator reports actual-host UI gate **17/17**, with owned public TUI
+overlay admission, refusal over an existing modal and close on focus loss. That
+is automated UI evidence, not rendered pixels. Chosen v1 UX: 100% means initial
+fit, `+/-` use 1.25× fit-relative steps, minimum 25% fit, dynamic maximum from
+297 mapping (no arbitrary 8× cap), pan four displayed cells, `0` fit/recenter.
+Resize preserves normalized source center and fit factor, clamping new bounds.
+Optional natural percentage is distinct from fit-relative percentage. A 1200x800
+PDF at 9x18 cells has natural canvas 134x45; an 800x1200 page has 89x67, leaving
+useful room before 297. No PDF rerasterization is needed.
 
 Other options, not prerequisites to this honest limited v1: pursue upstream
 virtual-crop support for arbitrary high zoom, or separately approve local cropped
@@ -122,63 +127,72 @@ All line numbers below refer to v1.3.1 unless stated otherwise.
   This supports redefinition being observable, not a claim of flicker-free
   atomicity with Pi redraw.
 
-## Recommended bounded-subset interfaces and math
+## Exported bounded-subset interfaces and math
 
-These are exact proposed signatures for the integration worker, **not production
-exports at this checkpoint**:
+`src/viewport.mjs` exports `MIN_ZOOM_FACTOR=0.25`, `ZOOM_STEP=1.25`,
+`PAN_CELLS=4` and these pure functions (type notation for documentation):
 
 ```ts
-type SubsetState = {
-  mode: 'fit' | 'zoom'; zoomFactor: number; // 1 = fit; +/- multiply/divide 1.25
-  centerX: number; centerY: number; // floating source pixel center, not path/state entry
+type Center = { x: number; y: number }; // normalized SOURCE coordinates, 0..1
+type ViewportInput = {
+  image: { width: number; height: number }; // positive uint32 pixel dimensions
+  area: { columns: number; rows: number }; // AFTER chrome, each integer 1..297
+  cells: { widthPx: number; heightPx: number }; // positive finite live cell pixels
+  zoomFactor?: number; // default 1; positive finite, then clamped to allowed range
+  center?: Center; // default {x:.5,y:.5}; finite normalized input required
 };
-type SubsetInput = {
-  image: { width: number; height: number };
-  area: { columns: number; rows: number }; // AFTER chrome, each capped to 297
-  cells: { widthPx: number; heightPx: number }; // public live cell dimensions
-  state: SubsetState;
-};
-type SubsetResult = {
-  state: SubsetState; fitScale: number; maxScale: number; maxZoomFactor: number;
-  requestedScale: number; effectiveScale: number;
+type ViewportResult = {
+  canvas: { columns: number; rows: number }; // full-image grid, each <=297
+  window: { columns: number; rows: number; columnOffset: number; rowOffset: number };
+  origin: { column: number; row: number }; // centered visible grid in usable area
+  padding: { x: number; y: number }; // pixel padding inside full prototype
+  center: Center; realizedCenter: Center; // clamped vs cell-quantized center
+  zoomFactor: number; minZoomFactor: number; maxZoomFactor: number;
+  fitScale: number; maxScale: number; requestedScale: number; effectiveScale: number;
   fitPercent: number; naturalPercent: number; atZoomLimit: boolean;
-  prototype: { columns: number; rows: number }; // full-image grid, each <=297
-  visible: { columns: number; rows: number; columnOffset: number; rowOffset: number };
-  originColumn: number; originRow: number; // centered visible grid in image area
-  paddingX: number; paddingY: number; // pixel padding inside full prototype
-  realizedCenterX: number; realizedCenterY: number; // diagnostic rounding/clamp
 };
-function computeViewerSubset(input: SubsetInput): SubsetResult;
-function updateViewerSubset(input: SubsetInput,
-  action: 'fit' | 'zoom-in' | 'zoom-out' |
-    { panXCells: number; panYCells: number }): SubsetState;
-function encodePlaceholderViewport(input: {
+function computeViewport(input: ViewportInput): ViewportResult;
+function zoomViewport(input: ViewportInput, direction: 'in' | 'out'):
+  { zoomFactor: number; center: Center };
+function panViewport(input: ViewportInput, delta: { xCells?: number; yCells?: number }):
+  { zoomFactor: number; center: Center };
+function resetViewport(input: ViewportInput): { zoomFactor: number; center: Center };
+// Additive src/kitty.mjs exports:
+function encodeViewportRows(input: {
   imageId: number; placementId: number; columns: number; rows: number;
-  rowOffset: number; columnOffset: number;
+  rowOffset?: number; columnOffset?: number; // default zero
+  canvasColumns: number; canvasRows: number; // required full prototype bounds
 }): string[];
 function encodeOwnedVirtualRetirement(input: { imageId: number; placementId: number }): string;
 ```
 
-Encoding uses the **existing** `encodeVirtualPlacement({ imageId, placementId,
-columns: prototype.columns, rows: prototype.rows })`, without `x/y/w/h`. Emit only
-`visible.columns * visible.rows` cells, each mark `rowOffset+y,columnOffset+x`.
-All offsets are integers; `offset + visibleDimension <= prototypeDimension <=297`.
-Independent marks survive clipped first columns/rows; do not reset coordinates
-when Pi clips a subset. Existing `encodePlaceholderRows` needs an additive offset
-variant, not an upload escape prefix. The pure variant returns text rows only.
+Results and nested geometry/state are frozen. Inputs are not mutated. Controller
+owns the mutable requested zoom/normalized center; reuse returned clamps on each
+operation/resize. `origin` is image-area-relative, not a terminal cursor command.
+`panViewport` accepts signed displayed-cell motion (positive x right, y down).
 
-For W,H image pixels; C,R bounded usable cells; cw,ch actual cell pixels:
+Use existing `encodeVirtualPlacement({...ids,...result.canvas})` with no crop.
+Use `encodeViewportRows({...ids,...result.window,canvasColumns:result.canvas.columns,
+canvasRows:result.canvas.rows})`. Each cell encodes `rowOffset+y,columnOffset+x`.
+All offsets are integers; `offset + windowDimension <= canvasDimension <=297`.
+Independent marks survive clipped first columns/rows; do not reset coordinates
+when Pi clips a subset. Existing `encodePlaceholderRows` signature and zero-origin
+inline output are unchanged; it delegates to the additive validated viewport
+encoder. The pure encoder returns text rows only, never an upload escape prefix.
+
+For W,H image pixels; C,R bounded usable cells; cw,ch actual cell pixels,
+`centerX=center.x*W`, `centerY=center.y*H` in the pixel-space equations below:
 
 - `fit=min(C*cw/W,R*ch/H)`; `maxScale=min(297*cw/W,297*ch/H)`.
   `maxZoomFactor=maxScale/fit >= 1` for area <=297. Cap usable dimensions first;
   center the bounded area in a larger overlay; never synthesize a larger grid.
-- `s=clamp(fit*zoomFactor, policyMin, maxScale)`; proposal `policyMin=fit` (do not
-  zoom below fit in v1). If zoom-out below fit is desired, the same math supports
-  it with smaller-grid letterbox, but choose a positive minimum explicitly.
-  At maximum, repeated `+` is a no-op with a clear limit indication.
+- `s=clamp(fit*zoomFactor,0.25*fit,maxScale)`. At maximum repeated `+` is
+  a no-op; UI must show the limit. Minimum is 25% fit with a minimum 1x1 canvas.
 - `Pc=min(297,max(1,ceil(W*s/cw)))`, `Pr` similarly. The min(297) absorbs tiny
   floating-point overflow at the exact limit; it must not silently permit a
-  requested scale above max. `sEff=min(Pc*cw/W,Pr*ch/H)`.
+  requested scale above max. Values within eight ulps of an integral cell count
+  are snapped before ceiling, preventing spurious extra cells at exact fit.
+  `sEff=min(Pc*cw/W,Pr*ch/H)`.
 - `padX=(Pc*cw-W*sEff)/2`, `padY` similarly. BOTH inspected terminal paths fit
   the full image this way. Independent ceiling does not stretch aspect: uniform
   scale plus padding is required. Integer source/destination roundings in Ghostty
@@ -197,26 +211,24 @@ For W,H image pixels; C,R bounded usable cells; cw,ch actual cell pixels:
   before committing an edge-pan state, so repeated out-of-range pan does not
   accumulate invisible movement. An undersized axis centers and cannot pan.
   Do not round-trip center from cell offsets every repaint (zoom drift).
-- `h/j/k/l` recommendation: move four displayed cells in source units,
-  `deltaSource=4*cellPixels/sEff`; owner/UI worker still chooses increment. `0`
-  resets zoomFactor=1 and source center W/2,H/2 on every new open.
-- Fit-relative resize policy recommendation: retain zoomFactor and source center,
-  recompute fit and dynamic maximum, clamp to newly available max. Changed cell
-  pixels may change natural max/percentage; a fixed pixel-scale resize policy is
-  also possible, but must not be confused with fit-relative zoom. Record final
-  policy in the UX worker's gate before shipping.
+- `h/j/k/l`: move four displayed cells in source units,
+  `deltaSource=4*cellPixels/sEff`; helper converts to normalized source units.
+  `0` resets zoomFactor=1 and normalized source center `{x:.5,y:.5}`.
+- Resize retains zoomFactor and normalized source center, recomputes fit and
+  dynamic maximum, then clamps. Changed cell pixels can change natural max and
+  percentage. The helper does not own lifecycle, rendering or resize events.
 
 Pan changes only cell offsets/text, **not** virtual prototype geometry and not
 PNG bytes. Zoom/resize changes bounded private `c/r` (same pair replacement).
 Natural pixel scale can be shown secondarily as `100*sEff`; fit-relative label
 uses `100*s/fit`, with cell rounding disclosed rather than promising exact zoom.
-Tiny images at 100% fit upscale by policy; if allowed below fit, occupied grid
+Tiny images at 100% fit upscale by policy; below fit the occupied grid
 shrinks and centers, with internal padding. Arbitrary exact 100% natural scaling
 is not guaranteed by `c/r` quantization alone.
 
 The parent crop fallback section retains a natural-pixel convention for future
-review; **v1 subset uses fit-relative 100% instead**. No production gate has
-approved either helper implementation yet.
+review; **v1 subset uses fit-relative 100% instead**. Only the subset pure
+helpers are authorized/implemented; future virtual crop is not.
 
 ## Future crop interfaces (blocked on reviewed targets)
 
@@ -368,7 +380,23 @@ gate. Measurement worker owns counting details.
 
 ## Evidence and remaining checks
 
-Portable capture-only tests independently check proposed bounded-subset
+Production-helper tests are `node --test test/viewport.test.mjs test/kitty.test.mjs`.
+They cover actual exported math/encoders: defaults/reset and selected policies,
+immutable state, odd/portrait/landscape aspect, reversible stable center within
+half a source-cell, four-cell pan/edge clamps, minimum and maximum no-ops,
+small-grid letterbox, no 8x cap, large-image natural limit, resize/cell changes,
+extreme aspect/dimensions, many fractional fit boundaries, decoded absolute
+marks, strict input/bounds rejection, exact scoped deletion and zero stdout/stderr.
+These establish computation/captured protocol, not rendered terminal pixels.
+
+Focused production-helper run: **20/20 passed** (10 viewport tests and 10 Kitty
+protocol tests, including 2 new protocol tests). Shared-worktree `npm test` at
+pure-phase handoff: **143 tests, 117 passed, 26 optional-host skips, 0 failures**;
+this includes simultaneous other-worker changes, so the coordinator verifies an
+isolated staged candidate before committing the pure phase. No commit/reload was
+performed by this worker. `git diff --check` passed.
+
+Portable feasibility tests additionally check the original design models for
 math, stable center and edge clamps, small-image letterbox, changed cells,
 8192-wide below-natural dynamic zoom cap, explicit mark bounds, full-prototype
 command framing, and a small
@@ -395,5 +423,5 @@ Test partial cell-run clipping and borders with both ID colors, tmux pane resize
 zoom/window switch, cell-size change and pending-write close/reopen races. Capture
 streams and public Pi lifecycle tests belong to the other gate workers; they
 cannot establish rendered crop on Ghostty. **All new subset/crop pixel checks
-remain human-pending; this note supports bounded-subset implementation review,
-not completion of the full production/public-Pi gate.**
+remain human-pending. The coordinated feasibility gate authorized these pure
+helpers; full viewer integration and final acceptance remain separately owned.**

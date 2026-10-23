@@ -74,6 +74,13 @@ export function encodeVirtualPlacement({ imageId, placementId, columns, rows }) 
   return command(`a=p,U=1,i=${imageId},p=${placementId},c=${columns},r=${rows},q=2`);
 }
 
+export function encodeOwnedVirtualRetirement({ imageId, placementId }) {
+  validateId(imageId);
+  validateId(placementId, 'placementId');
+  // Only this proven-owned virtual prototype; lowercase retains shared pixels.
+  return command(`a=d,d=i,i=${imageId},p=${placementId},q=2`);
+}
+
 /** All three marks are explicit: no neighboring cell/high-byte inheritance. */
 export function encodePlaceholderCell(row, column) {
   for (const value of [row, column]) {
@@ -88,17 +95,39 @@ function color(id) {
   return `${id >>> 16};${(id >>> 8) & 255};${id & 255}`;
 }
 
-/** Only SGR and independently addressable placeholder cells, no uploads/cursors. */
+/** Only SGR and independently addressable placeholder cells, no uploads/cursors.
+ * Existing inline API remains a zero-origin complete grid.
+ */
 export function encodePlaceholderRows({ imageId, placementId, columns, rows }) {
+  return encodeViewportRows({ imageId, placementId, columns, rows,
+    canvasColumns: columns, canvasRows: rows });
+}
+
+/** Visible window within a bounded full-image virtual prototype. Every cell has
+ * absolute prototype coordinates, so top/left clipping never needs a neighbor.
+ */
+export function encodeViewportRows({ imageId, placementId, columns, rows,
+  columnOffset = 0, rowOffset = 0, canvasColumns, canvasRows }) {
   validateId(imageId);
   validateId(placementId, 'placementId');
   validateGrid({ columns, rows });
+  validateGrid({ columns: canvasColumns, rows: canvasRows });
+  for (const value of [columnOffset, rowOffset]) {
+    if (!Number.isInteger(value) || value < 0 || value >= MAX_GRID_DIMENSION) {
+      throw new RangeError(`viewport offsets must be between 0 and ${MAX_GRID_DIMENSION - 1}`);
+    }
+  }
+  if (columnOffset + columns > canvasColumns || rowOffset + rows > canvasRows) {
+    throw new RangeError('viewport window must be inside its full prototype');
+  }
   // SGR 0 also clears inherited underline/background/style. Placement uses underline
   // color, not the underline text attribute. Colon form is standard for SGR 58.
   const prefix = `${ESC}[0m${ESC}[38;2;${color(imageId)}m${ESC}[58:2::${color(placementId).replaceAll(';', ':')}m`;
   return Array.from({ length: rows }, (_, row) => {
     let line = prefix;
-    for (let column = 0; column < columns; column++) line += encodePlaceholderCell(row, column);
+    for (let column = 0; column < columns; column++) {
+      line += encodePlaceholderCell(row + rowOffset, column + columnOffset);
+    }
     return line + `${ESC}[0m`;
   });
 }

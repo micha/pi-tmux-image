@@ -5,7 +5,8 @@ import { spawnSync } from 'node:child_process';
 import {
   DIACRITICS, MAX_GRID_DIMENSION, PLACEHOLDER, DEFAULT_CHUNK_SIZE,
   encodePngUpload, encodeVirtualPlacement, encodePlaceholderCell,
-  encodePlaceholderRows, validateId, validateGrid, wrapTmux,
+  encodePlaceholderRows, encodeViewportRows, encodeOwnedVirtualRetirement,
+  validateId, validateGrid, wrapTmux,
 } from '../src/kitty.mjs';
 
 const ESC = '\x1b';
@@ -91,6 +92,37 @@ test('virtual placement is quiet, explicitly identified, and never cursor positi
     `${ESC}_Ga=p,U=1,i=42,p=777,c=3,r=2,q=2${ESC}\\`);
 });
 
+test('scoped lowercase deletion names exactly one owned virtual pair and keeps shared pixels', () => {
+  assert.equal(unwrap(encodeOwnedVirtualRetirement({ imageId: 42, placementId: 777 })),
+    `${ESC}_Ga=d,d=i,i=42,p=777,q=2${ESC}\\`);
+  for (const bad of [undefined, 0, -1, 0x1000000, 1.5, NaN, '42']) {
+    assert.throws(() => encodeOwnedVirtualRetirement({ imageId: bad, placementId: 777 }), RangeError);
+    assert.throws(() => encodeOwnedVirtualRetirement({ imageId: 42, placementId: bad }), RangeError);
+  }
+});
+
+test('viewport rows retain independent absolute marks, both colors and strict canvas intersection', () => {
+  const input = { imageId: 0x123456, placementId: 0xabcdef, columns: 2, rows: 2,
+    columnOffset: 295, rowOffset: 295, canvasColumns: 297, canvasRows: 297 };
+  const rows = encodeViewportRows(input);
+  rows.forEach((row, y) => {
+    assert.ok(row.startsWith(`${ESC}[0m${ESC}[38;2;18;52;86m${ESC}[58:2::171:205:239m`));
+    assert.ok(row.endsWith(`${ESC}[0m`));
+    const plain = row.replace(/\x1b\[[0-9:;]*m/g, '');
+    assert.ok(!plain.includes(ESC));
+    plain.split(PLACEHOLDER).slice(1).forEach((cell, x) => {
+      assert.deepEqual(Array.from(cell, (mark) => DIACRITICS.indexOf(mark)), [295 + y, 295 + x, 0]);
+    });
+  });
+  for (const patch of [{ columnOffset: 296 }, { rowOffset: 296 }, { columnOffset: -1 },
+    { rowOffset: 0.5 }, { columnOffset: '0' }, { canvasColumns: undefined },
+    { canvasRows: 298 }, { canvasColumns: 295 }, { columns: 0 }, { imageId: 0 }]) {
+    assert.throws(() => encodeViewportRows({ ...input, ...patch }), RangeError);
+  }
+  const ids = { imageId: 1, placementId: 2, columns: 3, rows: 2 };
+  assert.deepEqual(encodeViewportRows({ ...ids, canvasColumns: 3, canvasRows: 2 }), encodePlaceholderRows(ids));
+});
+
 test('spec diacritics include full 297-entry bounds and supplementary marks', () => {
   assert.equal(DIACRITICS.length, 297);
   assert.equal(new Set(DIACRITICS).size, 297);
@@ -127,7 +159,8 @@ test('helpers emit no stdout or stderr even when generating uploads, rows and id
   const kittyUrl = new URL('../src/kitty.mjs', import.meta.url).href;
   const identityUrl = new URL('../src/identity.mjs', import.meta.url).href;
   const source = `
-    import { encodePngUpload, encodeVirtualPlacement, encodePlaceholderRows } from ${JSON.stringify(kittyUrl)};
+    import { encodePngUpload, encodeVirtualPlacement, encodePlaceholderRows,
+      encodeViewportRows, encodeOwnedVirtualRetirement } from ${JSON.stringify(kittyUrl)};
     import { GraphicsIdentityRegistry, ResidencyCache } from ${JSON.stringify(identityUrl)};
     const png = Buffer.from([137,80,78,71,13,10,26,10,42]);
     const geometry = { columns: 2, rows: 2 };
@@ -135,6 +168,9 @@ test('helpers emit no stdout or stderr even when generating uploads, rows and id
     encodePngUpload(png, ids.imageId);
     encodeVirtualPlacement({ ...ids, ...geometry });
     encodePlaceholderRows({ ...ids, ...geometry });
+    encodeViewportRows({ ...ids, ...geometry, rowOffset: 1, columnOffset: 1,
+      canvasColumns: 3, canvasRows: 3 });
+    encodeOwnedVirtualRetirement(ids);
     const cache = new ResidencyCache();
     cache.markImage(ids.imageId, cache.epoch);
   `;
