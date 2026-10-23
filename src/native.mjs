@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
-import { GraphicsIdentityRegistry, geometryIdentity } from "./identity.mjs";
+import { GraphicsIdentityRegistry, geometryIdentity, payloadIdentity } from "./identity.mjs";
 import { DEFAULT_CHUNK_SIZE, encodePngUpload, encodeVirtualPlacement, encodePlaceholderRows } from "./kitty.mjs";
 import { normalizeAttachment } from "./normalize.mjs";
+import { GraphicsMetrics } from "./metrics.mjs";
 
 export const NATIVE_SCHEMA = "pi-tmux-image/native-v1";
 
@@ -66,8 +67,20 @@ function snapshotKey(attachment) {
 }
 
 /** Native runtime only. Never stores pixels/IDs/residency in message details. */
-export function createNativeRenderer({ convertToPng, identity = new GraphicsIdentityRegistry() } = {}) {
+export function createNativeRenderer({ convertToPng, identity = new GraphicsIdentityRegistry(), metrics = new GraphicsMetrics() } = {}) {
   const snapshots = new Map();
+  let accountingErrors = 0;
+  let lastAccountingError;
+  // Diagnostics must never turn an already-written image into a failed display
+  // or strand the serialized upload reservation. Incomplete accounting is explicit.
+  function account(operation) {
+    try { return operation(); }
+    catch (error) {
+      accountingErrors++;
+      lastAccountingError = sanitizeDisplayText(error instanceof Error ? error.message : "Graphics accounting failed");
+      return undefined;
+    }
+  }
   // Successful prototypes survive connection epochs. Kitty re-transmission of
   // an existing image ID deletes ALL of its placements, including old geometry
   // referenced by retained scrollback, so every known prototype must be replayed.
@@ -81,7 +94,11 @@ export function createNativeRenderer({ convertToPng, identity = new GraphicsIden
     if (!pending) {
       // Shared immutable normalization does not inherit one consumer's abort.
       // Capture primitive snapshot fields now, before the first await.
-      pending = normalizeAttachment({ type: attachment.type, data: attachment.data, mimeType: attachment.mimeType }, { convertToPng });
+      pending = normalizeAttachment({ type: attachment.type, data: attachment.data, mimeType: attachment.mimeType }, { convertToPng }).then((image) => {
+        const payloadKey = payloadIdentity(image.pngBytes);
+        account(() => metrics.recordNormalization({ payloadKey, pngBytes: image.outputBytes, width: image.width, height: image.height }));
+        return { ...image, payloadKey };
+      });
       snapshots.set(key, pending);
       pending.catch(() => { if (snapshots.get(key) === pending) snapshots.delete(key); });
     }
@@ -92,6 +109,13 @@ export function createNativeRenderer({ convertToPng, identity = new GraphicsIden
 
   return {
     normalize,
+    /** Local runtime accounting only; resetting trust never deletes terminal data. */
+    stats(presentationEpoch) {
+      if (presentationEpoch !== undefined) account(() => metrics.beginEpoch(presentationEpoch));
+      const snapshot = account(() => metrics.snapshot());
+      return { ...(snapshot || { scope: { terminalAcknowledged: false, evictionEnabled: false } }),
+        accounting: { errors: accountingErrors, lastError: lastAccountingError, unavailable: !snapshot } };
+    },
     /** Validate local normalization before an attachment is appended by a tool. */
     async describe(attachment, limits, cells, signal) {
       const image = await normalize(attachment, signal);
@@ -106,6 +130,7 @@ export function createNativeRenderer({ convertToPng, identity = new GraphicsIden
       if (!current || current.epoch !== epoch) {
         current = { epoch, images: new Set(), placements: new Set(), tail: Promise.resolve() };
       }
+      account(() => metrics.beginEpoch(epoch));
       const state = current;
       // Serialize the short transport commit, not decoding. Concurrent occurrences
       // sharing a PNG wait for the first successful write before omitting its data.
@@ -114,6 +139,7 @@ export function createNativeRenderer({ convertToPng, identity = new GraphicsIden
       state.tail = new Promise((resolve) => { release = resolve; });
       let finished = false;
       let placementBatch = [];
+      let transport;
       const activePlacement = Object.freeze({ imageId: ids.imageId, placementId: ids.placementId,
         placementKey: ids.placementKey, occurrenceKey: occurrence, geometryKey: geometryIdentity(geometry),
         geometry: Object.freeze({ ...geometry }) });
@@ -129,6 +155,9 @@ export function createNativeRenderer({ convertToPng, identity = new GraphicsIden
           for (const placement of placementBatch) {
             state.placements.add(placement.placementKey);
           }
+          // Residency/prototype commit is functional; accounting is strictly
+          // subordinate and counts the exact successful stream write only once.
+          if (transport?.wireBytes > 0) account(() => metrics.recordTransport(transport));
         }
         // An aborted queued job must not let its successors overtake the job
         // ahead of it: preserve the chain even when cancellation precedes await.
@@ -151,11 +180,21 @@ export function createNativeRenderer({ convertToPng, identity = new GraphicsIden
         }
         const commands = [...imageCommands, ...placementBatch.map((placement) =>
           encodeVirtualPlacement({ imageId: placement.imageId, placementId: placement.placementId, ...placement.geometry }))];
+        const uploads = commands.join("");
+        transport = {
+          epoch, image: { imageId: ids.imageId, payloadKey: ids.payloadKey, pngBytes: image.outputBytes,
+            width: image.width, height: image.height },
+          placements: placementBatch.map((placement) => ({ placementId: placement.placementId,
+            placementKey: placement.placementKey, occurrenceKey: placement.occurrenceKey,
+            geometryKey: placement.geometryKey, uploaded: true })),
+          imageUploaded, wireBytes: Buffer.byteLength(uploads), uploadChunks: imageCommands.length,
+          placementCommands: placementBatch.length,
+        };
         return {
-          uploads: commands.join(""), lines: encodePlaceholderRows({ ...ids, ...geometry }), geometry,
+          uploads, lines: encodePlaceholderRows({ ...ids, ...geometry }), geometry,
           onUploaded: () => finish(true), onUploadFailed: () => finish(false),
-          metrics: { pngBytes: image.outputBytes, transportBytes: Buffer.byteLength(commands.join("")),
-            uploadChunks: imageCommands.length, placementCommands: placementBatch.length },
+          metrics: { pngBytes: image.outputBytes, transportBytes: transport.wireBytes,
+            uploadChunks: transport.uploadChunks, placementCommands: transport.placementCommands },
         };
       } catch (error) { finish(false); throw error; }
     },

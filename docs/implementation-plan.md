@@ -36,8 +36,9 @@ Shutdown/reload deliberately retain terminal resources instead of globally
 deleting pixels and orphaning retained scrollback. Previous-runtime allocations
 may remain until terminal reset; no eviction/budget policy is integrated.
 
-Lifecycle follow-up: Kitty's current specification requires retransmitting an
-existing image ID to delete its image data **and all placements**. Native runtime
+Lifecycle follow-up was committed as `38da556`: Kitty's current specification
+requires retransmitting an existing image ID to delete its image data **and all
+placements**. Native runtime
 now retains successfully committed occurrence/geometry prototypes per image;
 every PNG retransmission restores the complete known prototype set before cells
 are exposed, not only current geometry. This preserves older retained grids when
@@ -69,13 +70,38 @@ stale queries; name-only terminal identity carries an explicit current-version
 assumption/warning. The known current Ghostty/tmux path requires no forced Pi
 Kitty setting. See `docs/capabilities.md` for exact conservative boundaries.
 
+Phase 4 measurement-only integration is now delivered: one `GraphicsMetrics`
+instance per native runtime inventories exact normalized payload metadata, then
+records only successful current-epoch stream writes after functional residency
+commit. Each write includes its full restored placement batch with wire totals
+counted once, explicit PNG chunk count and placement command count. Failed,
+partially failed, stale/canceled preparations and zero-byte reuse are not counted
+as successful transport. Guarded accounting exceptions cannot invalidate rows,
+residency or queue release; diagnostics explicitly report incomplete accounting.
+
+`native.stats(presentationEpoch?)` exposes metadata-only snapshots and
+`/tmux-image-stats` displays local diagnostics with no detector queries, graphics,
+messages or model turns. Epoch changes clear measured residency trust/epoch
+transfer, not terminal resources; normalization inventory and cumulative runtime
+transfer remain. The scope is locally tracked successful writes, not terminal
+ACK or globally observed residency. RGBA is an estimate (`width * height * 4`),
+not measured GPU/RAM allocation; prior-runtime/external resources and
+terminal/decoder/cache/metadata overhead are unobservable. Fixture/stress sample
+commits in `docs/graphics-memory.md` are simulated; integrated tests compare
+actual captured successful stream bytes/chunks/placement batches. No human
+terminal-memory measurements establish a need for a limit.
+
+**Optional budgeting/eviction is not implemented:** no default limit, settings,
+resource deletion or history replacement. A policy requires a separate owner
+choice and measured historical-image trade-off.
+
 Verification remains automated stream/component/pipeline evidence only; native
 image/PDF pixels, scrolling, pane positioning, resize/zoom, partial viewport
 visibility and window switching still require coordinated human observation.
-Phases 1–3 are not claimed visually accepted. Phase 4 remains pending integration:
-optional graphics-memory measurement/budgeting is not integrated, and universal
-automatic reconnect detection is not promised. Preserve the detailed handoff
-below as the implementation and acceptance plan.
+Phases 1–3 are not claimed visually accepted, and Phase 4 measurements do not
+establish terminal memory bounds. Universal automatic reconnect detection is not
+promised. Preserve the detailed handoff below as the implementation and
+acceptance plan.
 
 Read `AGENTS.md` before working. Keep human documentation in `README.md` and
 implementation instructions here. Inspect Git state and current host APIs before
@@ -97,8 +123,8 @@ Repository: `/work/repos/micha/pi-tmux-image`.
 Current code:
 
 - `extensions/index.ts` registers `/tmux-image`, `/tmux-pdf`,
-  `/tmux-image-refresh`, `tmux_show_image`, `tmux_show_pdf`, and the
-  `pi-tmux-image` message renderer.
+  `/tmux-image-refresh`, `/tmux-image-stats`, `tmux_show_image`, `tmux_show_pdf`,
+  and the `pi-tmux-image` message renderer.
 - `src/native.mjs` prepares native PNG uploads/virtual placements from immutable
   image snapshots, caches normalization, aspect-fits live geometry, migrates
   known legacy snapshot metadata at runtime and serializes per-epoch transport
@@ -115,6 +141,10 @@ Current code:
   pre-source tool rejection and pre/post-native preparation guards. Public
   settings are read through `pi.getSettings()`, not private ctx properties/files.
   Refresh invalidates detector and failed presentation/residency together.
+- `src/metrics.mjs` stores normalized payload metadata and success-only current-
+  epoch residency/batched transport counters, with independent runtime totals.
+  Native integrates it defensively after functional success; `/tmux-image-stats`
+  is local-only and measurement errors do not break display. Eviction is disabled.
 - The obsolete `src/graphics.mjs` Chafa parser/subprocess implementation and its
   tests were removed after actual-host advertised-format parity verification.
 - `src/pdf.mjs` uses `pdftoppm` from PATH to rasterize the first two PDF pages
@@ -136,7 +166,9 @@ Current code:
   viewer tools, both image-blocking states, non-TUI zero-graphics behavior,
   source-deleted reload/legacy resume, width/height/cell changes, geometry reversal
   and failed-write/capability-denied recovery via the public refresh command,
-  with unchanged messages/attachments/model requests. It uses a temporary
+  with unchanged messages/attachments/model requests. Local stats command checks
+  compare exact successful captured wire/chunk/prototype counts and assert no
+  graphics, probing, conversation or model effects. It uses a temporary
   PATH-resolved tmux fixture to cover unsupported/disabled/timeout paths without
   active-server changes and an offline test model runtime,
   never the active incompatible model. Public clipping tests retain independent

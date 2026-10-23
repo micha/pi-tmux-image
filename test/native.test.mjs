@@ -4,6 +4,8 @@ import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { captureLayout, createNativeRenderer, fitGeometry, NATIVE_SCHEMA, readLegacyDetails, readNativeDetails, sanitizeDisplayText } from "../src/native.mjs";
 import { GraphicsIdentityRegistry } from "../src/identity.mjs";
+import { GraphicsMetrics } from "../src/metrics.mjs";
+import { createPresentation } from "../src/presentation.mjs";
 import { DIACRITICS, PLACEHOLDER } from "../src/kitty.mjs";
 
 const data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=";
@@ -185,6 +187,98 @@ test("failed/cancelled prototypes never become historical replay candidates", as
   assert.equal(refresh.metrics.placementCommands, 1);
   const terminal = virtualTerminal(); terminal.write(refresh.uploads); refresh.onUploaded();
   assert.equal(terminal.images.get(1).size, 1);
+});
+
+test("integrated metrics separate normalization from successful wire and preserve cumulative totals across epochs", async () => {
+  const native = fresh(), epoch = Symbol("first");
+  await native.describe(attachment, { columns: 60, rows: 24 }, { widthPx: 10, heightPx: 20 });
+  let stats = native.stats(epoch);
+  assert.equal(stats.normalization.payloads, 1);
+  assert.equal(stats.normalization.pngBytes, Buffer.from(data, "base64").length);
+  assert.equal(stats.normalization.estimatedRgbaBytes, 4);
+  assert.equal(stats.resident.imageIds, 0);
+  const first = await native.prepare(job(), { epoch });
+  assert.equal(native.stats().transfer.wireBytes, 0, "preparation is not a write");
+  first.onUploadFailed();
+  assert.equal(native.stats().transfer.successfulCommits, 0);
+  const retry = await native.prepare(job(), { epoch }); retry.onUploaded();
+  stats = native.stats();
+  assert.equal(stats.resident.imageIds, 1); assert.equal(stats.placements.geometryVersions, 1);
+  assert.equal(stats.transfer.wireBytes, Buffer.byteLength(retry.uploads));
+  assert.equal(stats.transfer.uploadChunks, retry.metrics.uploadChunks);
+  assert.equal(stats.transfer.placementCommands, 1);
+  assert.equal(stats.transfer.successfulCommits, 1);
+  assert.equal(stats.scope.terminalAcknowledged, false); assert.equal(stats.scope.evictionEnabled, false);
+  assert.equal(stats.accounting.errors, 0);
+  const reuse = await native.prepare(job(), { epoch }); reuse.onUploaded();
+  assert.deepEqual(native.stats().transfer, stats.transfer, "zero-byte reuse is not an actual transport commit");
+  const geometryB = await native.prepare(job("one", { ...geometry, columns: 1 }), { epoch }); geometryB.onUploaded();
+  const total = native.stats().runtimeTransfer;
+  assert.equal(total.uploadChunks, retry.metrics.uploadChunks);
+  assert.equal(total.placementCommands, 2);
+  const refreshEpoch = Symbol("refresh");
+  stats = native.stats(refreshEpoch);
+  assert.equal(stats.resident.imageIds, 0); assert.equal(stats.placements.geometryVersions, 0);
+  assert.equal(stats.normalization.payloads, 1); assert.deepEqual(stats.runtimeTransfer, total);
+  const restored = await native.prepare(job("one", { ...geometry, columns: 1 }), { epoch: refreshEpoch }); restored.onUploaded();
+  stats = native.stats();
+  assert.equal(stats.resident.imageIds, 1); assert.equal(stats.placements.geometryVersions, 2);
+  assert.equal(stats.transfer.wireBytes, Buffer.byteLength(restored.uploads));
+  assert.equal(stats.transfer.placementCommands, 2, "all replayed prototypes counted once in the batch");
+  assert.equal(stats.runtimeTransfer.wireBytes, total.wireBytes + Buffer.byteLength(restored.uploads));
+});
+
+test("metrics ignores aborted/stale completions and failed writes even when PNG preparation succeeded", async () => {
+  const native = fresh(), controller = new AbortController();
+  const old = await native.prepare(job(), { epoch: Symbol("old"), signal: controller.signal });
+  controller.abort(); old.onUploaded();
+  assert.equal(native.stats().transfer.successfulCommits, 0);
+  assert.equal(native.stats().normalization.payloads, 1);
+  const epoch = Symbol("replacement");
+  const next = await native.prepare(job(), { epoch }); next.onUploadFailed();
+  assert.equal(native.stats().transfer.wireBytes, 0);
+  assert.equal(native.stats().resident.imageIds, 0);
+});
+
+test("accounting exceptions after actual writes never poison rendered cells, residency or shared upload queue", async () => {
+  class ThrowingMetrics extends GraphicsMetrics {
+    recordTransport() { throw new Error("injected accounting fault"); }
+  }
+  let id = 0;
+  const native = createNativeRenderer({ identity: new GraphicsIdentityRegistry({ random: () => ++id }), metrics: new ThrowingMetrics() });
+  const presentation = createPresentation();
+  const writes = [];
+  const ctx = { mode: "tui", ui: { setWidget(_key, factory) { factory({ terminal: { write(bytes) { writes.push(bytes); } }, requestRender() {} }); } } };
+  presentation.attach(ctx, true);
+  const component = presentation.component({ key: "one", prepare: (_width, context) => native.prepare(job(), context), fallback: () => ["loading"] });
+  component.render(10); await settle();
+  assert.ok(component.render(10).some((line) => line.includes(PLACEHOLDER)));
+  assert.equal(writes.length, 1);
+  const epoch = presentation.epoch;
+  const reuse = await native.prepare(job(), { epoch });
+  assert.equal(reuse.uploads, "", "accounting failure did not erase committed native residency"); reuse.onUploaded();
+  const second = await native.prepare(job("two"), { epoch });
+  assert.equal(second.uploads.includes("a=t"), false, "accounting exception released serialized queue"); second.onUploaded();
+  const stats = native.stats(epoch);
+  assert.equal(stats.accounting.errors, 2); assert.equal(stats.accounting.lastError, "injected accounting fault");
+  assert.equal(stats.accounting.unavailable, false);
+  presentation.disconnect();
+});
+
+test("diagnostic failure is explicit without breaking normalization or upload completion", async () => {
+  const native = createNativeRenderer({ metrics: {
+    beginEpoch() { throw new Error("epoch accounting fault"); },
+    recordNormalization() { throw new Error("normalization accounting fault"); },
+    recordTransport() { throw new Error("transport accounting fault"); },
+    snapshot() { throw new Error("snapshot accounting fault"); },
+  } });
+  const prepared = await native.prepare(job(), { epoch: Symbol() });
+  assert.doesNotThrow(() => prepared.onUploaded());
+  const stats = native.stats();
+  assert.equal(stats.accounting.unavailable, true);
+  assert.equal(stats.scope.evictionEnabled, false);
+  assert.equal(stats.scope.terminalAcknowledged, false);
+  assert.equal(stats.accounting.errors, 4);
 });
 
 test("concurrent occurrences share one payload upload per epoch", async () => {

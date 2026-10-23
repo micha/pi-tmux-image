@@ -161,6 +161,27 @@ export default function (pi: ExtensionAPI) {
     return { path, pages };
   }
 
+  pi.registerCommand("tmux-image-stats", {
+    description: "Show local graphics measurement only; no uploads, probing, messages or eviction",
+    handler: async (_args, ctx) => {
+      const stats = native.stats(presentation.epoch);
+      if (stats.accounting.unavailable) {
+        ctx.ui.notify(`Graphics accounting unavailable: ${stats.accounting.lastError || "unknown error"}; display is unaffected`, "warning");
+        return;
+      }
+      ctx.ui.notify(
+        "Graphics: this runtime only; eviction disabled; terminal ACK: no\n" +
+        `Resident: ${stats.resident.imageIds} image IDs / ${stats.resident.payloads} payloads; PNG ${stats.resident.pngBytes} bytes; RGBA estimate ${stats.resident.estimatedRgbaBytes} bytes\n` +
+        `Placements: ${stats.placements.occurrences} occurrences / ${stats.placements.geometryVersions} prototypes; normalized ${stats.normalization.payloads} payloads / ${stats.normalization.pngBytes} PNG bytes\n` +
+        `Epoch transfer: ${stats.transfer.wireBytes} wire bytes / ${stats.transfer.uploadChunks} PNG chunks / ${stats.transfer.placementCommands} placement commands\n` +
+        `Runtime transfer: ${stats.runtimeTransfer.wireBytes} wire bytes / ${stats.runtimeTransfer.uploadChunks} PNG chunks / ${stats.runtimeTransfer.placementCommands} placement commands\n` +
+        `Uncounted: prior-runtime/external resources and terminal/GPU overhead; accounting errors: ${stats.accounting.errors}` +
+        (stats.accounting.errors ? ` (incomplete; display unaffected; ${stats.accounting.lastError})` : ""),
+        stats.accounting.errors ? "warning" : "info",
+      );
+    },
+  });
+
   pi.registerCommand("tmux-image-refresh", {
     description: "Re-upload stored image snapshots after terminal reconnect/reset without adding messages",
     handler: async (_args, ctx) => {

@@ -140,7 +140,46 @@ function placements(writes) {
   return [...writes.join("").matchAll(/a=p,U=1,i=(\d+),p=(\d+),c=(\d+),r=(\d+)/g)]
     .map((match) => ({ imageId: Number(match[1]), placementId: Number(match[2]), columns: Number(match[3]), rows: Number(match[4]) }));
 }
-async function verifyLiveLayoutAndRefresh(h, component, before) {
+function observedWire(writes) {
+  const commands = placements(writes).length;
+  return { wireBytes: writes.reduce((sum, bytes) => sum + Buffer.byteLength(bytes), 0),
+    chunks: [...writes.join("").matchAll(/\x1bPtmux;/g)].length - commands, commands };
+}
+async function verifyStats(h, scratch, expected) {
+  assert.ok(h.loader.getExtensions().extensions[0].commands.has("tmux-image-stats"));
+  const before = JSON.stringify(h.session.messages);
+  const requests = h.requests.length, writes = h.writes.length, repaints = h.transport.repaints;
+  const probes = await readFile(join(scratch, "tmux-queries.log"), "utf8");
+  const notificationCount = h.notifications.length;
+  await h.session.prompt("/tmux-image-stats");
+  const diagnostic = h.notifications.slice(notificationCount).map((n) => n.message).join("\n");
+  assert.equal(JSON.stringify(h.session.messages), before, "stats added or changed transcript content");
+  assert.equal(h.requests.length, requests, "stats triggered model work");
+  assert.equal(h.writes.length, writes, "stats wrote terminal graphics");
+  assert.equal(h.transport.repaints, repaints, "stats requested a repaint");
+  assert.equal(await readFile(join(scratch, "tmux-queries.log"), "utf8"), probes, "stats ran a tmux probe");
+  assert.ok(diagnostic.includes("this runtime only") && diagnostic.includes("eviction disabled") && diagnostic.includes("terminal ACK: no"));
+  assert.ok(diagnostic.includes("prior-runtime/external resources") && diagnostic.includes("terminal/GPU overhead"));
+  assert.ok(diagnostic.includes("accounting errors: 0"), diagnostic);
+  assert.equal(diagnostic.includes(placeholder) || diagnostic.includes("\x1b") || diagnostic.includes(png), false);
+  function fields(pattern) {
+    const match = diagnostic.match(pattern);
+    assert.ok(match, `unrecognized stats diagnostic: ${diagnostic}`);
+    return match.slice(1).map(Number);
+  }
+  const [imageIds, payloads, pngBytes, rgbaBytes] = fields(/Resident: (\d+) image IDs \/ (\d+) payloads; PNG (\d+) bytes; RGBA estimate (\d+) bytes/);
+  const [occurrences, prototypes, normalizedPayloads, normalizedPngBytes] = fields(/Placements: (\d+) occurrences \/ (\d+) prototypes; normalized (\d+) payloads \/ (\d+) PNG bytes/);
+  const transfer = (label) => {
+    const [wireBytes, chunks, commands] = fields(new RegExp(`${label} transfer: (\\d+) wire bytes / (\\d+) PNG chunks / (\\d+) placement commands`));
+    return { wireBytes, chunks, commands };
+  };
+  const stats = { imageIds, payloads, pngBytes, rgbaBytes, occurrences, prototypes, normalizedPayloads, normalizedPngBytes,
+    epoch: transfer("Epoch"), runtime: transfer("Runtime") };
+  for (const [name, value] of Object.entries(expected)) assert.deepEqual(stats[name], value, `stats ${name} mismatch`);
+  return stats;
+}
+
+async function verifyLiveLayoutAndRefresh(h, scratch, component, before) {
   const cells = { ...tuiModule.getCellDimensions() };
   try {
     const initial = placements(h.writes)[0];
@@ -174,6 +213,7 @@ async function verifyLiveLayoutAndRefresh(h, component, before) {
     assert.deepEqual(component.render(80), initialLines, "resize reversal changed retained placement rows");
     assert.equal(h.writes.length, 0, "resize reversal did not reuse ready geometry");
 
+    const beforeFailureStats = await verifyStats(h, scratch, { imageIds: 3, payloads: 3, prototypes: 6, normalizedPayloads: 3 });
     h.transport.writeFaults = 1;
     for (let i = 0; i < 100; i++) {
       const lines = component.render(19);
@@ -184,9 +224,12 @@ async function verifyLiveLayoutAndRefresh(h, component, before) {
     assert.ok(failure.some((line) => line.includes("offline")), "failed transport should have a width-fitted readable error");
     assert.equal(failure.some((line) => line.includes(placeholder)), false, "failed upload exposed cells");
     assert.equal(h.writes.length, 0);
+    assert.deepEqual(await verifyStats(h, scratch, {}), beforeFailureStats, "failed write changed successful transfer accounting");
     const repaints = h.transport.repaints;
     await h.session.prompt("/tmux-image-refresh");
     assert.ok(h.transport.repaints > repaints, "refresh did not request repaint");
+    const zero = await verifyStats(h, scratch, { imageIds: 0, payloads: 0, prototypes: 0, normalizedPayloads: 3,
+      epoch: { wireBytes: 0, chunks: 0, commands: 0 }, runtime: beforeFailureStats.runtime });
     await waitCells([component], 19);
     assert.ok(h.writes.join("").includes("a=t"), "refresh did not invalidate image residency");
     assert.equal([...h.writes.join("").matchAll(/a=t,f=100/g)].length, 1, "refresh retransmitted the same PNG more than once");
@@ -195,6 +238,10 @@ async function verifyLiveLayoutAndRefresh(h, component, before) {
       assert.deepEqual(restored.find((p) => p.placementId === placementId), prototype,
         "same-ID PNG reupload deleted a retained scrollback prototype without restoring it");
     }
+    const afterRefresh = await verifyStats(h, scratch, { imageIds: 1, payloads: 1, occurrences: 1,
+      prototypes: 5, normalizedPayloads: 3, pngBytes: Buffer.from(png, "base64").length, rgbaBytes: 4,
+      epoch: observedWire(h.writes) });
+    for (const name of ["wireBytes", "chunks", "commands"]) assert.equal(afterRefresh.runtime[name], zero.runtime[name] + afterRefresh.epoch[name]);
     assert.equal(h.requests.length, 2, "refresh triggered a model request");
     assert.equal(JSON.stringify(h.session.messages), before, "resize/refresh altered the conversation");
   } finally {
@@ -299,14 +346,14 @@ async function makeSession(scratch, blockImages, mode, restoredManager, policyOv
     { type: "toolCall", id: "image-call", name: "tmux_show_image", arguments: { path: "image.png" } },
     { type: "toolCall", id: "pdf-call", name: "tmux_show_pdf", arguments: { path: "two-pages.pdf" } },
   ];
-  const requests = [], events = [], writes = [], errors = [], widgets = [];
+  const requests = [], events = [], writes = [], errors = [], widgets = [], notifications = [];
   const transport = { writeFaults: 0, repaints: 0 };
   const tui = { terminal: { columns: 80, rows: 40, write(bytes) {
     if (transport.writeFaults > 0) { transport.writeFaults--; throw new Error("offline terminal write failure"); }
     writes.push(bytes);
   } }, requestRender() { transport.repaints++; } };
   const uiContext = {
-    notify() {},
+    notify(message, level) { notifications.push({ message: String(message), level }); },
     setWidget(_key, factory) {
       assert.equal(mode, "tui", "non-TUI execution installed a terminal widget");
       if (typeof factory === "function") widgets.push(factory(tui));
@@ -320,7 +367,7 @@ async function makeSession(scratch, blockImages, mode, restoredManager, policyOv
   });
   session.subscribe((event) => events.push(event));
   await session.bindExtensions({ mode, uiContext, onError: (error) => errors.push(error) });
-  return { session, manager, extension, requests, events, writes, errors, widgets, loader, settingsManager, tui, transport };
+  return { session, manager, extension, requests, events, writes, errors, widgets, loader, settingsManager, tui, transport, notifications };
 }
 
 async function verifySession(scratch, blockImages, mode = "tui", options = {}) {
@@ -395,12 +442,19 @@ async function verifySession(scratch, blockImages, mode = "tui", options = {}) {
       assert.ok(components.every((c) => c.render(80).some((line) => line.includes(placeholder))), "local display failed while model policy was independent");
       assert.ok(h.writes.some((bytes) => bytes.includes("\x1bPtmux;")), "renderer produced no tmux transport");
       assert.equal(JSON.stringify(h.session.messages), before, "rendering mutated stored attachments");
+      const snapshotBytes = imageBlocks(viewers).map((block) => Buffer.from(block.data, "base64"));
+      const inventoryPngBytes = snapshotBytes.reduce((sum, bytes) => sum + bytes.length, 0);
+      const inventoryRgbaBytes = snapshotBytes.reduce((sum, bytes) => sum + 4 * bytes.readUInt32BE(16) * bytes.readUInt32BE(20), 0);
+      const firstStats = await verifyStats(h, scratch, { imageIds: 3, payloads: 3, occurrences: 3, prototypes: 3,
+        normalizedPayloads: 3, normalizedPngBytes: inventoryPngBytes, pngBytes: inventoryPngBytes, rgbaBytes: inventoryRgbaBytes,
+        epoch: observedWire(h.writes), runtime: observedWire(h.writes) });
       const firstWrites = h.writes.length;
       for (const component of components) { component.invalidate(); component.render(80); }
       const rebuilt = viewers.map((m) => h.extension.messageRenderers.get("pi-tmux-image")(m, { expanded: false }, theme));
       for (const component of rebuilt) component.render(80);
       await new Promise((r) => setTimeout(r, 30));
       assert.equal(h.writes.length, firstWrites, "unchanged frames/rebuild retransmitted pixels");
+      assert.deepEqual(await verifyStats(h, scratch, {}), firstStats, "unchanged repaint changed transfer accounting");
       assert.equal(JSON.stringify(h.session.messages), before);
 
       // Public SDK /reload lifecycle recreates extension state. Old paths are
@@ -425,7 +479,7 @@ async function verifySession(scratch, blockImages, mode = "tui", options = {}) {
       assert.ok(h.writes.some((bytes) => bytes.includes("a=t")), "new renderer runtime reused stale residency");
       assert.equal(JSON.stringify(h.session.messages), before, "replay appended or changed session content");
       assert.equal(h.requests.length, 2, "reload/replay triggered model work");
-      await verifyLiveLayoutAndRefresh(h, replay[0], before);
+      await verifyLiveLayoutAndRefresh(h, scratch, replay[0], before);
       await verifyLegacyResume(scratch, blockImages, viewers[0]);
       assert.deepEqual(imageBlocks(await h.session.agent.convertToLlm(h.session.messages)), blockImages ? [] : imageBlocks(viewers));
     }

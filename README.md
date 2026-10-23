@@ -69,6 +69,7 @@ In Pi:
 /tmux-image /path/to/image.png
 /tmux-pdf /path/to/document.pdf
 /tmux-image-refresh
+/tmux-image-stats
 ```
 
 PDFs show the **first two pages**. Paths resolve relative to Pi's working directory. For a slash command, the entire argument is the path; spaces are supported without shell quotes.
@@ -110,13 +111,36 @@ The extension does not override this setting or install a context filter. Termin
 - PNG, JPEG, GIF, WebP and BMP snapshots are supported. Animated GIF/WebP use a still frame. Pi's built-in read detection currently rejects APNG files before this viewer receives an attachment.
 - Display grids aspect-fit within 60 columns by 24 rows using actual component width and Pi's supported cell-pixel dimensions. The vertical policy reserves 8 terminal rows for Pi chrome/editor (minimum one image row); it is a bound, not an exact measurement of every transcript viewport. Width/height/cell-size changes prepare new geometry-versioned placements without retransmitting resident PNGs. Superseded pending resize work is coalesced; completed geometries can be reused when resizing back.
 - Local normalization is bounded to 16 MiB input, 64 MiB PNG output, 8192 pixels per dimension and 16 million pixels. These are local image limits, not PDF file-size limits.
-- Pi reports normalized PNG bytes and anticipated upload chunks. Shared PNGs transmit once per runtime connection; additional occurrences or geometries need only virtual placement commands. There is no graphics-memory eviction policy.
+- Pi reports normalized PNG bytes and anticipated upload chunks; `/tmux-image-stats` measures successful runtime transport and estimated residency. Shared PNGs transmit once per runtime connection; additional occurrences or geometries need only virtual placement commands. There is no graphics-memory eviction policy.
 - PDF scratch PNGs are removed after viewing. Versioned messages keep the standard image snapshot plus label/geometry metadata, not temporary paths as their pixel source or duplicated pixels in details.
 - Native and known unversioned Chafa messages prepare from stored snapshots when rendered, including after reload/resume, without rereading the source file. Legacy migration is runtime-only: old upload IDs/cells are ignored and stored content/details are unchanged. Missing/malformed snapshots and unsupported future schemas show readable fallbacks. Use `/tmux-image-refresh` for explicit terminal-reconnect recovery or retrying failed presentation.
 - The extension deliberately retains terminal pixels/placements across shutdown/reload to avoid orphaning retained scrollback; it never globally deletes images. Within a runtime, PNG retransmission of the same image ID restores **all previously committed occurrence/geometry prototypes** before painting cells: Kitty replaces that image and deletes its placements on retransmit. This preserves known older grids even when refresh is invoked without an actual terminal reset. A fresh runtime rebuilds current-session snapshots with new IDs but cannot discover/rewrite arbitrary previous-process terminal scrollback after a reset. Previous-runtime resources can remain until the terminal resets. Graphics budgeting/eviction is not implemented.
 - Non-PNG normalization uses Pi's in-process converter. Cancellation is cooperative between steps, not preemptive during decoding. PDF conversion retains a bounded 30-second Poppler timeout.
 - Capability subprocesses use argument arrays, PATH, a 300 ms timeout per query and an 8 KiB output bound. Up to three sequential read-only queries establish a path. Results cache for 5 seconds (failures 250 ms); `on` paths resample visibility before source access/upload preparation. This is not a delivery acknowledgement: unannounced client changes can require explicit refresh, and cached/physical old scrollback is not rewritten by policy changes. There is no force override for unsupported paths.
 - The old Chafa renderer was human-tested in Ghostty/tmux. Native encoding, ordering, normalization, reload/resume, legacy snapshots, geometry resizing, clipping, refresh, capability rejection and public-policy behavior have automated checks; native image/PDF pixel correctness and interactive scroll/resize/window-switch checks are still pending.
+
+## Graphics measurements
+
+Run `/tmux-image-stats` for local runtime diagnostics: normalized PNG inventory,
+known resident image/payload counts, occurrence/geometry prototypes, estimated
+RGBA bytes, and exact successful encoded wire bytes/PNG chunks/placement commands
+for the current epoch and cumulatively across this runtime. It does not upload,
+probe tmux, change settings, append messages or start model work.
+
+These are **locally tracked successful writes, not terminal acknowledgments**.
+Wire totals include Kitty/tmux framing but exclude transcript cells and unrelated
+Pi output. RGBA is only `width × height × 4`, not measured RAM/GPU usage. Failed
+writes may have unknown partial effects; prior-runtime/external pixels and
+terminal/GPU/cache/metadata overhead cannot be counted. Refresh resets residency
+trust and epoch totals, not terminal resources; runtime transfer totals and
+normalization inventory remain. Accounting errors produce an explicit diagnostic
+without interrupting display or forcing reuploads.
+
+**Eviction remains disabled**, with no default limit or budget setting. Long
+history and prior-runtime allocations are deliberately retained; measurements do
+not impose a global graphics-memory bound. See `docs/graphics-memory.md` for
+scope and simulated fixture/stress evidence, distinct from actual successful
+captured-stream accounting and still-pending human memory observations.
 
 ## Remove
 
@@ -147,6 +171,6 @@ PI_OFFLINE=1 PI_TEST_HOST_ROOT=/path/to/installed/coding-agent/package \
   node --test test/host-integration.mjs
 ```
 
-See `docs/renderer-seam.md`, `docs/kitty-protocol.md`, `docs/pixel-normalization.md` and `docs/capabilities.md` for integration boundaries, public-policy sourcing and specification attribution. The protocol helpers follow the public Kitty specification; no OMP implementation was copied and no project license has been selected.
+See `docs/renderer-seam.md`, `docs/kitty-protocol.md`, `docs/pixel-normalization.md`, `docs/capabilities.md` and `docs/graphics-memory.md` for integration boundaries, public-policy sourcing and specification attribution. The protocol helpers follow the public Kitty specification; no OMP implementation was copied and no project license has been selected.
 
 After changing the extension, coordinate `/reload` and visually verify images/PDFs, scrolling and pane/window behavior in a real tmux pane. Automated stream/component tests cannot establish that a terminal actually displays the image.

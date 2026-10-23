@@ -108,6 +108,18 @@ The harness:
   the same component without changing stored messages or starting model work.
   A changed public `showImages` policy immediately hides already-ready cells;
   re-enabling unchanged cells does not repeat uploads.
+- Invokes actual `/tmux-image-stats` with blocking both on and off. It changes
+  no session content, starts no model request, writes no graphics, requests no
+  repaint and runs no tmux probe. Diagnostics identify local-runtime successful
+  writes, no terminal ACK and no eviction; prior-runtime/external resources and
+  terminal/GPU overhead are excluded.
+- Parses diagnostic image/payload/prototype counts and exact PNG/RGBA estimates
+  from generated standard snapshots. Epoch and runtime transfer byte/chunk/
+  placement totals match the captured transport. Repaint and failed writes add
+  nothing. Immediately after refresh, current-epoch residency/transfer is zero
+  while normalization inventory and cumulative runtime transfer survive. A
+  successful replay then counts its one image and all restored prototypes,
+  exactly one PNG transfer, and the corresponding runtime counter delta.
 - Disposes sessions/widgets and removes every generated fixture and isolated
   configuration in `finally` cleanup. It does not alter the active user's Pi
   settings, installed package, tmux options or terminal.
@@ -140,21 +152,25 @@ proof that replay after that reset works.
 
 See [pixel-normalization.md](pixel-normalization.md) and
 [kitty-protocol.md](kitty-protocol.md) for converter/encoding contracts and their
-focused tests.
+focused tests. [graphics-memory.md](graphics-memory.md) explains measurement
+scope and why estimates are not an eviction policy or a GPU memory measurement.
 
 ## Observations and remaining manual verification
 
 Automated observation on Pi 1.0.3: the offline integration harness passed twelve
-checks (parent integration plus eleven subtests) against native Phases 1–3,
+checks (parent integration plus eleven subtests) against native Phases 1–4,
 including isolated installation/discovery, both blocking states, source-free
 reload/replay, live width/height/cell sizing, failed-write refresh recovery,
 legacy-session resume, unchanged-frame upload reuse, all non-TUI/outside-tmux
 rejection cases, public local policy precedence, unsupported path/timeouts,
-forced-native/truecolor guards and denied-to-supported refresh recovery. These
+forced-native/truecolor guards, denied-to-supported refresh recovery and
+measurement-only diagnostics. These
 results describe the reviewed working tree, not a pinned release; rerun after
 each integration phase and record the revision under test. They are not human
-visual verification. The latest fully host-enabled suite also passed **88/88**,
+visual verification. The latest fully host-enabled suite also passed **99/99**,
 with zero skips; without both host variables that is not the same coverage.
+Portable `npm test` passed **90**, with **9** explicitly optional host cases
+skipped and zero failures.
 
 A captured public UI transport does not emulate Ghostty's image decoding or tmux
 passthrough. Before declaring a phase complete, independently observe actual
