@@ -78,7 +78,14 @@ The harness:
 - Injects a terminal write failure: no placeholder cells become visible. Invokes
   the actual `/tmux-image-refresh` through `session.prompt()` and confirms a
   requested repaint, new-residency upload and recovery of the existing component
-  without adding messages or starting model work.
+  without adding messages or starting model work. The captured refresh wire also
+  restores all earlier successful geometry-versioned placement IDs for each
+  reuploaded image, with their original dimensions. Kitty replaces the image's
+  placement prototypes when the same image ID is retransmitted: replaying only
+  the currently visible geometry would orphan retained runtime scrollback.
+  The harness checks restoration while sending that PNG only once per epoch.
+  This covers geometry history known to the current renderer runtime, not
+  terminal-native scrollback owned by a terminated process.
 - Resumes a separate public SDK session containing an unversioned legacy custom
   message created with `SessionManager.appendCustomMessageEntry()`. Its old Chafa
   rows are ignored; its standard stored attachment supplies native pixels after

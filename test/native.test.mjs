@@ -127,6 +127,66 @@ test("live height/cell geometry creates new placements without decoding or PNG r
   assert.equal(restored.uploads, ""); assert.deepEqual(restored.lines, first.lines); restored.onUploaded();
 });
 
+// Tiny protocol-semantic terminal: a=t replaces image data AND erases all of
+// that image's virtual prototypes, per Kitty spec. Quiet writes are simulated,
+// never sent to a terminal. This checks lifecycle semantics, not just strings.
+function virtualTerminal() {
+  const images = new Map();
+  let transmissions = 0;
+  return {
+    images,
+    get transmissions() { return transmissions; },
+    write(wire) {
+      for (const match of wire.matchAll(/\x1b\x1b_G([^;\x1b]*)(?:;[^\x1b]*)?\x1b\x1b\\/g)) {
+        const controls = Object.fromEntries(match[1].split(",").map((part) => part.split("=")));
+        if (controls.a === "t") {
+          transmissions++;
+          images.set(Number(controls.i), new Map()); // destroys old prototypes
+        } else if (controls.a === "p") {
+          const imageId = Number(controls.i);
+          assert.ok(images.has(imageId), "placement preceded image data");
+          assert.equal(controls.U, "1");
+          images.get(imageId).set(Number(controls.p), { columns: Number(controls.c), rows: Number(controls.r) });
+        }
+      }
+    },
+  };
+}
+
+test("same-ID refresh restores all committed occurrence/geometry prototypes after a=t clears them", async () => {
+  const native = fresh(), terminal = virtualTerminal(), epoch = Symbol("original");
+  const a = await native.prepare(job("one", { ...geometry, columns: 4 }), { epoch });
+  terminal.write(a.uploads); a.onUploaded();
+  const b = await native.prepare(job("one", { ...geometry, columns: 2 }), { epoch });
+  terminal.write(b.uploads); b.onUploaded();
+  const anotherOccurrence = await native.prepare(job("two", { ...geometry, columns: 1 }), { epoch });
+  terminal.write(anotherOccurrence.uploads); anotherOccurrence.onUploaded();
+  const retained = structuredClone(terminal.images.get(1));
+  assert.equal(retained.size, 3);
+  assert.equal(terminal.transmissions, 1);
+  const refreshEpoch = Symbol("refresh");
+  const refreshed = await native.prepare(job("one", { ...geometry, columns: 2 }), { epoch: refreshEpoch });
+  assert.equal(refreshed.metrics.uploadChunks, 1, "prototype commands are not PNG chunks");
+  assert.equal(refreshed.metrics.placementCommands, 3);
+  terminal.write(refreshed.uploads); refreshed.onUploaded();
+  assert.equal(terminal.transmissions, 2, "one payload upload for each epoch, not one per restored prototype");
+  assert.deepEqual(terminal.images.get(1), retained, "old scrollback and current prototype IDs restored unchanged");
+  assert.deepEqual(refreshed.lines, b.lines);
+  const oldGeometry = await native.prepare(job("one", { ...geometry, columns: 4 }), { epoch: refreshEpoch });
+  assert.equal(oldGeometry.uploads, "", "all restored prototypes are marked resident, not just current geometry");
+  oldGeometry.onUploaded();
+});
+
+test("failed/cancelled prototypes never become historical replay candidates", async () => {
+  const native = fresh(), epoch = Symbol("original");
+  const good = await native.prepare(job("one"), { epoch }); good.onUploaded();
+  const failed = await native.prepare(job("two"), { epoch }); failed.onUploadFailed();
+  const refresh = await native.prepare(job("one"), { epoch: Symbol("refresh") });
+  assert.equal(refresh.metrics.placementCommands, 1);
+  const terminal = virtualTerminal(); terminal.write(refresh.uploads); refresh.onUploaded();
+  assert.equal(terminal.images.get(1).size, 1);
+});
+
 test("concurrent occurrences share one payload upload per epoch", async () => {
   const native = fresh(), epoch = Symbol("connection");
   const first = await native.prepare(job("one"), { epoch });

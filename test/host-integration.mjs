@@ -144,6 +144,7 @@ async function verifyLiveLayoutAndRefresh(h, component, before) {
   const cells = { ...tuiModule.getCellDimensions() };
   try {
     const initial = placements(h.writes)[0];
+    const retained = new Map([[initial.placementId, initial]]);
     const initialLines = component.render(80);
     assert.deepEqual({ columns: initial.columns, rows: initial.rows }, { columns: 48, rows: 24 });
     async function change(width, rows, cellWidth, cellHeight, columns, expectedRows) {
@@ -155,6 +156,7 @@ async function verifyLiveLayoutAndRefresh(h, component, before) {
       const actual = placements(h.writes);
       assert.equal(actual.length, 1, "layout should create one geometry-versioned placement");
       assert.deepEqual({ columns: actual[0].columns, rows: actual[0].rows }, { columns, rows: expectedRows });
+      retained.set(actual[0].placementId, actual[0]);
       assert.equal(actual[0].imageId, initial.imageId, "resize changed payload identity");
       assert.notEqual(actual[0].placementId, initial.placementId, "resize redefined a retained placement");
       assert.equal(h.writes.join("").includes("a=t"), false, "geometry-only resize retransmitted PNG bytes");
@@ -187,6 +189,12 @@ async function verifyLiveLayoutAndRefresh(h, component, before) {
     assert.ok(h.transport.repaints > repaints, "refresh did not request repaint");
     await waitCells([component], 19);
     assert.ok(h.writes.join("").includes("a=t"), "refresh did not invalidate image residency");
+    assert.equal([...h.writes.join("").matchAll(/a=t,f=100/g)].length, 1, "refresh retransmitted the same PNG more than once");
+    const restored = placements(h.writes).filter((p) => p.imageId === initial.imageId);
+    for (const [placementId, prototype] of retained) {
+      assert.deepEqual(restored.find((p) => p.placementId === placementId), prototype,
+        "same-ID PNG reupload deleted a retained scrollback prototype without restoring it");
+    }
     assert.equal(h.requests.length, 2, "refresh triggered a model request");
     assert.equal(JSON.stringify(h.session.messages), before, "resize/refresh altered the conversation");
   } finally {

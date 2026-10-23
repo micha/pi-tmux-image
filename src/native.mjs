@@ -68,6 +68,10 @@ function snapshotKey(attachment) {
 /** Native runtime only. Never stores pixels/IDs/residency in message details. */
 export function createNativeRenderer({ convertToPng, identity = new GraphicsIdentityRegistry() } = {}) {
   const snapshots = new Map();
+  // Successful prototypes survive connection epochs. Kitty re-transmission of
+  // an existing image ID deletes ALL of its placements, including old geometry
+  // referenced by retained scrollback, so every known prototype must be replayed.
+  const ownedPlacements = new Map();
   let current;
 
   async function normalize(attachment, signal) {
@@ -109,13 +113,22 @@ export function createNativeRenderer({ convertToPng, identity = new GraphicsIden
       let release;
       state.tail = new Promise((resolve) => { release = resolve; });
       let finished = false;
+      let placementBatch = [];
+      const activePlacement = Object.freeze({ imageId: ids.imageId, placementId: ids.placementId,
+        placementKey: ids.placementKey, occurrenceKey: occurrence, geometryKey: geometryIdentity(geometry),
+        geometry: Object.freeze({ ...geometry }) });
       const finish = (success) => {
         if (finished) return;
         finished = true;
         signal?.removeEventListener("abort", abort);
         if (success && current === state && !signal?.aborted) {
           state.images.add(ids.imageId);
-          state.placements.add(ids.placementKey);
+          let known = ownedPlacements.get(ids.imageId);
+          if (!known) ownedPlacements.set(ids.imageId, known = new Map());
+          known.set(activePlacement.placementKey, activePlacement);
+          for (const placement of placementBatch) {
+            state.placements.add(placement.placementKey);
+          }
         }
         // An aborted queued job must not let its successors overtake the job
         // ahead of it: preserve the chain even when cancellation precedes await.
@@ -127,14 +140,22 @@ export function createNativeRenderer({ convertToPng, identity = new GraphicsIden
         await previous;
         signal?.throwIfAborted();
         if (current !== state) throw new Error("Native image epoch changed during preparation");
-        const commands = [];
-        if (!state.images.has(ids.imageId)) commands.push(...encodePngUpload(image.pngBytes, ids.imageId));
-        if (!state.placements.has(ids.placementKey)) commands.push(encodeVirtualPlacement({ ...ids, ...geometry }));
+        const imageUploaded = !state.images.has(ids.imageId);
+        const imageCommands = imageUploaded ? encodePngUpload(image.pngBytes, ids.imageId) : [];
+        if (imageUploaded) {
+          const all = new Map(ownedPlacements.get(ids.imageId) || []);
+          all.set(activePlacement.placementKey, activePlacement);
+          placementBatch = [...all.values()];
+        } else if (!state.placements.has(ids.placementKey)) {
+          placementBatch = [activePlacement];
+        }
+        const commands = [...imageCommands, ...placementBatch.map((placement) =>
+          encodeVirtualPlacement({ imageId: placement.imageId, placementId: placement.placementId, ...placement.geometry }))];
         return {
           uploads: commands.join(""), lines: encodePlaceholderRows({ ...ids, ...geometry }), geometry,
           onUploaded: () => finish(true), onUploadFailed: () => finish(false),
           metrics: { pngBytes: image.outputBytes, transportBytes: Buffer.byteLength(commands.join("")),
-            uploadChunks: state.images.has(ids.imageId) ? 0 : commands.length - (state.placements.has(ids.placementKey) ? 0 : 1) },
+            uploadChunks: imageCommands.length, placementCommands: placementBatch.length },
         };
       } catch (error) { finish(false); throw error; }
     },

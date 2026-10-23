@@ -36,7 +36,21 @@ Shutdown/reload deliberately retain terminal resources instead of globally
 deleting pixels and orphaning retained scrollback. Previous-runtime allocations
 may remain until terminal reset; no eviction/budget policy is integrated.
 
-Phase 3 is now integrated and automated-tested: read-only PATH-resolved tmux
+Lifecycle follow-up: Kitty's current specification requires retransmitting an
+existing image ID to delete its image data **and all placements**. Native runtime
+now retains successfully committed occurrence/geometry prototypes per image;
+every PNG retransmission restores the complete known prototype set before cells
+are exposed, not only current geometry. This preserves older retained grids when
+explicit refresh is invoked without a physical terminal reset. This registry is
+runtime-only: a fresh process rebuilds current-session messages from snapshots
+with new IDs, but cannot discover or rewrite arbitrary immutable prior-process
+terminal scrollback IDs/geometry after a reset. Failed/canceled prototypes are
+never added. Upload chunks count PNG commands only; placement
+command batches can exceed one. A protocol-semantic simulator reproduces the
+replacement deletion and verifies old/current prototypes, and actual SDK refresh
+checks all earlier committed placement IDs/geometry with one PNG transmission.
+
+Phase 3 was committed as `6e21a82` and automated-tested: read-only PATH-resolved tmux
 queries check the actual pane's effective inherited `allow-passthrough` and its
 session's single attached client. Conservative Ghostty/Kitty placeholder identity
 checks reject unknown/old/multiplexer clients, multiple/control clients and
