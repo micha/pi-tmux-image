@@ -70,6 +70,20 @@ The harness:
   policy still applies, and no new request is made. Future schemas/missing
   snapshots yield readable no-placeholder fallback. Injected ESC/APC/newline/C1
   controls in copied labels are neutralized without mutating stored content.
+- Checks live component width, height-only terminal changes and public host
+  `setCellDimensions()` changes. Captured placement commands show aspect-fitted
+  geometry, stable payload IDs and new placement IDs; geometry-only changes
+  send no PNG uploads, and reversing a resize reuses cached geometry.
+- Injects a terminal write failure: no placeholder cells become visible. Invokes
+  the actual `/tmux-image-refresh` through `session.prompt()` and confirms a
+  requested repaint, new-residency upload and recovery of the existing component
+  without adding messages or starting model work.
+- Resumes a separate public SDK session containing an unversioned legacy custom
+  message created with `SessionManager.appendCustomMessageEntry()`. Its old Chafa
+  rows are ignored; its standard stored attachment supplies native pixels after
+  source removal. Rebuilding uses stable runtime occurrence identity, does not
+  retransmit, and does not rewrite persisted details. Both model policies remain
+  effective and no provider request is made by resume/rendering.
 - Checks print, JSON, RPC and TUI-outside-tmux rejection through public extension
   bindings: both tools fail, no attachment messages are appended, no terminal
   widget is installed and no graphics bytes are emitted. A separate forced-host
@@ -112,10 +126,11 @@ focused tests.
 ## Observations and remaining manual verification
 
 Automated observation on Pi 1.0.3: the offline integration harness passed eight
-checks (parent integration plus seven subtests) against native Phase 1, including
-isolated installation/discovery, both blocking states, source-free reload/replay,
-unchanged-frame upload reuse, all non-TUI/outside-tmux rejection cases and the
-forced-native Kitty guard. The complete host-enabled `npm test` also passed
+checks (parent integration plus seven subtests) against native Phases 1 and 2,
+including isolated installation/discovery, both blocking states, source-free
+reload/replay, live width/height/cell sizing, failed-write refresh recovery,
+legacy-session resume, unchanged-frame upload reuse, all non-TUI/outside-tmux
+rejection cases and the forced-native Kitty guard. The complete host-enabled `npm test` also passed
 86/86 with neither host option omitted. These counts describe the reviewed
 working tree, not a pinned release; rerun after each integration phase and
 record the revision under test. They are not human visual verification.

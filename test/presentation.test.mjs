@@ -90,6 +90,59 @@ test("disconnect cancels stale completion and a new epoch cannot trust residency
   assert.deepEqual(h.events, [["write", "new upload"], ["repaint"]]);
 });
 
+test("refresh creates new epoch, clears failures and replays existing components under widget owner", async () => {
+  const h = harness();
+  h.presentation.attach(h.ctx, true);
+  const owner = h.widget, oldEpoch = h.presentation.epoch;
+  let calls = 0;
+  const component = h.presentation.component({ key: "snapshot", prepare() {
+    calls++; if (calls === 1) throw new Error("transient conversion error");
+    return { uploads: "replay", lines: ["cells"] };
+  }, fallback: (_width, error) => [error?.message || "preparing"] });
+  component.render(10); await settle();
+  assert.deepEqual(component.render(10), ["transient conversion error"]);
+  h.presentation.refresh();
+  assert.notEqual(h.presentation.epoch, oldEpoch);
+  assert.deepEqual(component.render(10), ["preparing"]);
+  await settle();
+  assert.deepEqual(component.render(10), ["cells"]);
+  assert.equal(calls, 2);
+  owner.dispose();
+  assert.equal(h.presentation.epoch, undefined, "same widget still owns refreshed connection teardown");
+  assert.throws(() => h.presentation.refresh(), /not connected/);
+});
+
+test("captured height/cell layout coalesces obsolete preparation without publishing stale cells", async () => {
+  const h = harness();
+  h.presentation.attach(h.ctx, true);
+  let height = 10, cells = 20, calls = 0;
+  const finishes = [];
+  const component = h.presentation.component({ key: "image",
+    layout: (width) => ({ key: `${width}:${height}:${cells}`, width, height, cells }),
+    prepare(_width, context, captured) {
+      calls++;
+      return new Promise((resolve) => { finishes.push({ resolve, context, captured }); });
+    }, fallback: () => ["loading"],
+  });
+  component.render(10);
+  height = 5;
+  component.render(10); // Before the microtask: only latest captured inputs run.
+  await settle();
+  assert.equal(calls, 1); assert.equal(finishes[0].captured.height, 5);
+  cells = 10;
+  component.render(10);
+  await settle();
+  assert.equal(finishes[0].context.signal.aborted, true);
+  let staleReleased = false;
+  finishes[0].resolve({ uploads: "STALE", lines: ["STALE"], onUploadFailed() { staleReleased = true; } });
+  finishes[1].resolve({ uploads: "CURRENT", lines: ["CURRENT"] });
+  await settle();
+  assert.equal(staleReleased, true);
+  assert.deepEqual(component.render(10), ["CURRENT"]);
+  assert.equal(h.events.some((event) => event.includes("STALE")), false);
+  assert.equal(calls, 2);
+});
+
 test("upload callbacks commit after write; failures and stale completion release reservations", async () => {
   const h = harness();
   h.presentation.attach(h.ctx, true);

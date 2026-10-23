@@ -67,6 +67,7 @@ In Pi:
 ```text
 /tmux-image /path/to/image.png
 /tmux-pdf /path/to/document.pdf
+/tmux-image-refresh
 ```
 
 PDFs show the **first two pages**. Paths resolve relative to Pi's working directory. For a slash command, the entire argument is the path; spaces are supported without shell quotes.
@@ -79,6 +80,8 @@ You can also ask the assistant to display a file. The package exposes:
 | `tmux_show_pdf` | `{ "path": "/path/to/document.pdf" }` | Renders and displays the first two pages |
 
 The tools require interactive Pi inside tmux. They report an error rather than emitting terminal graphics in print, JSON, or RPC mode.
+
+After terminal reconnect/reset, run `/tmux-image-refresh` to invalidate upload residency and repaint existing image snapshots. It does not reread source files, append attachments, or start a model turn. Pi reload/resume rebuilds native presentation automatically; reconnects are not universally detectable, so the explicit refresh is the recovery path.
 
 ## Images and model access
 
@@ -102,13 +105,14 @@ The extension does not override this setting or install a context filter. Termin
 - Only these commands/tools use the placeholder renderer. Built-in `read` and images from other tools are unchanged.
 - PDFs are rasterized to PNG at up to 1200 pixels on the longest side; the original PDF document is not sent to the model.
 - PNG, JPEG, GIF, WebP and BMP snapshots are supported. Animated GIF/WebP use a still frame. Pi's built-in read detection currently rejects APNG files before this viewer receives an attachment.
-- Display grids initially aspect-fit within 60 columns by 24 rows using Pi's supported cell-pixel dimensions. Resizing does not regenerate existing grids yet; narrow panes show a warning.
+- Display grids aspect-fit within 60 columns by 24 rows using actual component width and Pi's supported cell-pixel dimensions. The vertical policy reserves 8 terminal rows for Pi chrome/editor (minimum one image row); it is a bound, not an exact measurement of every transcript viewport. Width/height/cell-size changes prepare new geometry-versioned placements without retransmitting resident PNGs. Superseded pending resize work is coalesced; completed geometries can be reused when resizing back.
 - Local normalization is bounded to 16 MiB input, 64 MiB PNG output, 8192 pixels per dimension and 16 million pixels. These are local image limits, not PDF file-size limits.
 - Pi reports normalized PNG bytes and anticipated upload chunks. Shared PNGs transmit once per runtime connection; additional occurrences or geometries need only virtual placement commands. There is no graphics-memory eviction policy.
 - PDF scratch PNGs are removed after viewing. Versioned messages keep the standard image snapshot plus label/geometry metadata, not temporary paths as their pixel source or duplicated pixels in details.
-- Versioned native messages prepare from their stored snapshots when rendered, including after a reload, without rereading the source file. Explicit terminal-reconnect recovery and resize-aware replay are still pending. Older unversioned Chafa messages show a readable redisplay fallback; legacy snapshot migration is not implemented yet.
+- Native and known unversioned Chafa messages prepare from stored snapshots when rendered, including after reload/resume, without rereading the source file. Legacy migration is runtime-only: old upload IDs/cells are ignored and stored content/details are unchanged. Missing/malformed snapshots and unsupported future schemas show readable fallbacks. Use `/tmux-image-refresh` for explicit terminal-reconnect recovery or retrying failed presentation.
+- The extension deliberately retains terminal pixels/placements across shutdown/reload to avoid orphaning retained scrollback; it never globally deletes images. A fresh runtime can allocate new IDs while previous-runtime resources remain until the terminal resets. Graphics budgeting/eviction is not implemented.
 - Non-PNG normalization uses Pi's in-process converter. Cancellation is cooperative between steps, not preemptive during decoding. PDF conversion retains a bounded 30-second Poppler timeout.
-- The old Chafa renderer was human-tested in Ghostty/tmux. Native encoding, ordering, normalization and reload have automated checks; native image/PDF pixel correctness and interactive scroll/resize/window-switch checks are still pending.
+- The old Chafa renderer was human-tested in Ghostty/tmux. Native encoding, ordering, normalization, reload/resume, legacy snapshots, geometry resizing, clipping and refresh have automated checks; native image/PDF pixel correctness and interactive scroll/resize/window-switch checks are still pending.
 
 ## Remove
 

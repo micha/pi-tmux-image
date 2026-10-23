@@ -10,19 +10,23 @@ export function createPresentation() {
     if (!expected || connection !== expected) return;
     connection = undefined;
     expected.controller.abort();
+    for (const sizes of expected.records.values()) {
+      for (const record of sizes.values()) record.controller.abort();
+    }
     expected.records.clear();
   }
 
-  function connect(tui) {
+  function connect(tui, owner = {}) {
     disconnect();
     const next = {
       tui,
+      owner,
       epoch: Symbol("pi-tmux-image connection"),
       controller: new AbortController(),
       records: new Map(),
     };
     connection = next;
-    return () => disconnect(next);
+    return () => { if (connection?.owner === owner) disconnect(); };
   }
 
   return {
@@ -36,6 +40,13 @@ export function createPresentation() {
       return true;
     },
     disconnect,
+    /** Explicit reconnect recovery: same widget owner, fresh residency epoch. */
+    refresh() {
+      if (!connection) throw new Error("pi-tmux-image terminal transport is not connected");
+      const { tui, owner } = connection;
+      connect(tui, owner);
+      tui.requestRender();
+    },
     get epoch() { return connection?.epoch; },
     get dimensions() {
       return connection ? { columns: connection.tui.terminal.columns, rows: connection.tui.terminal.rows } : undefined;
@@ -46,33 +57,45 @@ export function createPresentation() {
       connection.tui.terminal.write(uploads);
     },
     /**
-     * Future native renderer interface. key identifies an immutable occurrence;
-     * prepare(width, { epoch, signal }) returns { uploads, lines }. Callers cache
-     * normalized PNGs/IDs separately and include geometry/cell-size in key when
-     * width alone does not identify layout. fallback(width, error?) fits width.
+     * Native renderer interface. key identifies an immutable occurrence;
+     * layout(width) optionally captures { key, ...geometryInputs } synchronously.
+     * prepare(width, { epoch, signal }, capturedLayout) returns { uploads, lines,
+     * onUploaded?, onUploadFailed? }. Geometry-only work reuses caller PNG caches.
+     * fallback(width, error?) fits width. Pending superseded layouts are aborted;
+     * ready geometry versions remain reusable for retained grids/resize reversal.
      *
      * Components have no local render cache, so requestRender is sufficient;
      * host invalidate/rebuild can create another component with the same key.
      */
-    component({ key, prepare, fallback }) {
+    component({ key, layout, prepare, fallback }) {
       return {
         render(width) {
           const active = connection;
           if (!active) return fallback(width);
+          const captured = layout ? layout(width) : { key: width };
           let sizes = active.records.get(key);
           if (!sizes) active.records.set(key, sizes = new Map());
-          let record = sizes.get(width);
+          // Coalesce resize drags. Never upload obsolete pending geometry or
+          // publish stale cells into the current layout. Ready versions survive.
+          for (const [sizeKey, pending] of sizes) {
+            if (sizeKey !== captured.key && !pending.lines && !pending.error) {
+              pending.controller.abort();
+              sizes.delete(sizeKey);
+            }
+          }
+          let record = sizes.get(captured.key);
           if (!record) {
-            record = { lines: undefined, error: undefined };
-            sizes.set(width, record);
+            const controller = new AbortController();
+            record = { lines: undefined, error: undefined, controller };
+            sizes.set(captured.key, record);
             // Even synchronous preparation runs outside the synchronous host frame.
             let prepared;
             Promise.resolve().then(() => {
-              active.controller.signal.throwIfAborted();
-              return prepare(width, { epoch: active.epoch, signal: active.controller.signal });
+              controller.signal.throwIfAborted();
+              return prepare(width, { epoch: active.epoch, signal: controller.signal }, captured);
             }).then((result) => {
               prepared = result;
-              if (connection !== active) {
+              if (connection !== active || controller.signal.aborted || sizes.get(captured.key) !== record) {
                 prepared.onUploadFailed?.(new Error("Image connection replaced before upload"));
                 return;
               }
@@ -88,7 +111,7 @@ export function createPresentation() {
               active.tui.requestRender();
             }).catch((error) => {
               prepared?.onUploadFailed?.(error);
-              if (connection !== active) return;
+              if (connection !== active || controller.signal.aborted || sizes.get(captured.key) !== record) return;
               record.error = error;
               active.tui.requestRender();
             });

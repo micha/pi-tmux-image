@@ -13,21 +13,36 @@ uploads before exposing placeholder cells and requesting repaint. See
 `docs/renderer-seam.md` for exact API evidence and the unsafe wrapped line-prefix/
 forced-native Kitty reset boundaries.
 
-Phase 1 native integration is now implemented: fixed initial aspect-fit geometry,
-public Pi PNG normalization, versioned snapshot metadata, randomized stable local
-IDs and successful-write residency commits. PNG/JPEG/GIF/WebP/BMP normalization
-parity and animated still handling have actual-host automated coverage. Chafa's
-implementation/tests were removed after parity verification. Native messages
-regenerate from stored snapshots in a fresh connection;
-legacy unversioned messages currently show a readable redisplay fallback.
+Phase 1 native integration was committed as `594795a`: public Pi PNG
+normalization, versioned snapshot metadata, randomized stable local IDs and
+successful-write residency commits. PNG/JPEG/GIF/WebP/BMP normalization parity and
+animated still handling have actual-host automated coverage. Chafa's
+implementation/tests were removed after parity verification.
 
-Verification is automated stream/component/pipeline evidence only; native
-image/PDF pixel correctness, scrolling and window-switch observations remain
-pending. Phase 1 is not claimed visually accepted. Phases 2–4 remain pending
-integration and their full acceptance checks: actual geometry resizing, legacy
-snapshot migration, explicit reconnect recovery, capability detection and optional
-graphics budgeting are not integrated. Preserve the detailed handoff below as
-the implementation and acceptance plan.
+Phase 2 integration is now implemented and automated-tested: live aspect fitting
+uses actual component width, injected terminal height minus 8 reserved chrome/
+editor rows (minimum one image row, maximum 60x24 grid), and supported cell-pixel
+dimensions. Geometry keys capture all these inputs before async work. Resident
+PNGs are reused; geometry-versioned placements preserve previously retained
+grids, ready resize reversals reuse caches, and superseded pending work is
+coalesced. Known unversioned Chafa messages migrate from standard snapshots at
+runtime only; old cells/IDs/source paths are ignored. Unknown schemas or malformed
+content remain readable fallbacks.
+
+`/tmux-image-refresh` resets the connection epoch/residency and failed prepared
+records, then requests repaint without rereading files, appending messages or
+starting model work. Reload/resume/switch also prepare from stored snapshots.
+Shutdown/reload deliberately retain terminal resources instead of globally
+deleting pixels and orphaning retained scrollback. Previous-runtime allocations
+may remain until terminal reset; no eviction/budget policy is integrated.
+
+Verification remains automated stream/component/pipeline evidence only; native
+image/PDF pixels, scrolling, pane positioning, resize/zoom, partial viewport
+visibility and window switching still require coordinated human observation.
+Phases 1–2 are not claimed visually accepted. Phases 3–4 remain pending integration
+and acceptance: capability detection and optional graphics budgeting are not
+integrated, and universal automatic reconnect detection is not promised. Preserve
+the detailed handoff below as the implementation and acceptance plan.
 
 Read `AGENTS.md` before working. Keep human documentation in `README.md` and
 implementation instructions here. Inspect Git state and current host APIs before
@@ -49,14 +64,19 @@ Repository: `/work/repos/micha/pi-tmux-image`.
 Current code:
 
 - `extensions/index.ts` registers `/tmux-image`, `/tmux-pdf`,
-  `tmux_show_image`, `tmux_show_pdf`, and the `pi-tmux-image` message renderer.
+  `/tmux-image-refresh`, `tmux_show_image`, `tmux_show_pdf`, and the
+  `pi-tmux-image` message renderer.
 - `src/native.mjs` prepares native PNG uploads/virtual placements from immutable
-  image snapshots, caches normalization, aspect-fits the fixed initial grid and
-  serializes per-epoch transport commits. `src/kitty.mjs` and `src/identity.mjs`
+  image snapshots, caches normalization, aspect-fits live geometry, migrates
+  known legacy snapshot metadata at runtime and serializes per-epoch transport
+  commits. `src/kitty.mjs` and `src/identity.mjs`
   are pure protocol/identity helpers; `src/normalize.mjs` uses injected public
   Pi `convertToPng` for non-PNG snapshots.
 - `src/presentation.mjs` separates public TUI transport from synchronous layout,
-  publishes cells only after a successful write callback, and rejects stale work.
+  captures complete geometry keys, coalesces pending resize jobs, publishes cells
+  only after successful write callbacks, and rejects stale work. Explicit refresh
+  resets epochs/caches under the same widget lifetime owner. No resource deletion
+  is performed during refresh/shutdown/reload.
 - The obsolete `src/graphics.mjs` Chafa parser/subprocess implementation and its
   tests were removed after actual-host advertised-format parity verification.
 - `src/pdf.mjs` uses `pdftoppm` from PATH to rasterize the first two PDF pages
@@ -67,15 +87,20 @@ Current code:
   placeholder cells and residency are runtime-only. No extension context filter
   exists, and render preparation never rereads the original path.
 - `pi.sendMessage(..., { triggerTurn: false })` preserves tool-call/result ordering.
-- The initial grid is capped at 60 columns by 24 rows, using supported cell-pixel
-  dimensions for aspect fitting. Existing grids do not resize yet. Native byte/
-  chunk metrics replace Chafa capture messaging. Forced Pi native Kitty graphics
-  are explicitly rejected without changing host capabilities.
+- Live grids are capped at 60 columns by 24 rows, using actual component width,
+  terminal height minus 8 reserved rows, and supported cell-pixel dimensions.
+  Geometry-only changes do not retransmit resident PNGs. Native byte/chunk metrics
+  replace Chafa capture messaging. Forced Pi native Kitty graphics are explicitly
+  rejected without changing host capabilities.
 - `npm test` runs portable protocol, normalization, presentation and lifecycle
   tests; optional host imports exercise actual Pi conversion and renderer APIs.
   `test/host-integration.mjs` checks isolated package installation, sequential
-  viewer tools, both image-blocking states and non-TUI zero-graphics behavior
-  against an offline test model runtime, never the active incompatible model.
+  viewer tools, both image-blocking states, non-TUI zero-graphics behavior,
+  source-deleted reload/legacy resume, width/height/cell changes, geometry reversal
+  and failed-write recovery via the public refresh command, with unchanged
+  messages/attachments/model requests. It uses an offline test model runtime,
+  never the active incompatible model. Public clipping tests retain independent
+  row/column marks and both ID colors when top/left cells are clipped.
 
 Human-observed legacy prototype success: Ghostty behind tmux 3.6a, Pi 1.0.3,
 image/PDF display surviving additional responses and transcript scrolling. This

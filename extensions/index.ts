@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { Type } from "@earendil-works/pi-ai";
 import { getCapabilities, getCellDimensions, truncateToWidth } from "@earendil-works/pi-tui";
 import { convertToPng, createReadTool, defineTool, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createNativeRenderer, NATIVE_SCHEMA, readNativeDetails, sanitizeDisplayText } from "../src/native.mjs";
+import { captureLayout, createNativeRenderer, NATIVE_SCHEMA, readLegacyDetails, readNativeDetails, sanitizeDisplayText } from "../src/native.mjs";
 import { withPdfPages } from "../src/pdf.mjs";
 import { createPresentation } from "../src/presentation.mjs";
 
@@ -12,6 +12,7 @@ const MESSAGE_TYPE = "pi-tmux-image";
 export default function (pi: ExtensionAPI) {
   const presentation = createPresentation();
   const native = createNativeRenderer({ convertToPng });
+  const legacyOccurrences = new WeakMap<object, string>();
   pi.on("session_start", (_event, ctx) => {
     presentation.attach(ctx, Boolean(process.env.TMUX));
   });
@@ -20,23 +21,28 @@ export default function (pi: ExtensionAPI) {
   // Normal Pi image content, with no context filter. Pi's images.blockImages
   // controls model access independently of this local terminal renderer.
   pi.registerMessageRenderer(MESSAGE_TYPE, (message, _options, theme) => {
-    const details = readNativeDetails(message.details);
+    let details = readNativeDetails(message.details);
     const attachment = Array.isArray(message.content) ? message.content.find((block) => block.type === "image") : undefined;
+    if (!details && message.details && typeof message.details === "object" && !("schema" in message.details)) {
+      let occurrence = legacyOccurrences.get(message);
+      if (!occurrence) legacyOccurrences.set(message, occurrence = randomUUID());
+      details = readLegacyDetails(message.details, occurrence);
+    }
     if (!details || !attachment) {
       const reason = message.details && typeof message.details === "object" && "schema" in message.details &&
-        message.details.schema !== NATIVE_SCHEMA ? "unsupported display schema" : "legacy or invalid display; redisplay to regenerate";
+        message.details.schema !== NATIVE_SCHEMA ? "unsupported display schema" : "missing or invalid image snapshot/display";
       return { render: (width: number) => [truncateToWidth(`[Image: ${reason}]`, width)], invalidate() {} };
     }
     const image = presentation.component({
       key: details.occurrence,
-      prepare: (_width: number, context: { epoch: symbol; signal: AbortSignal }) =>
-        native.prepare({ attachment, occurrence: details.occurrence, geometry: details.geometry }, context),
+      layout: (width: number) => captureLayout(width, presentation.dimensions?.rows || 40, getCellDimensions()),
+      prepare: (_width: number, context: { epoch: symbol; signal: AbortSignal }, layout: { limits: { columns: number; rows: number }; cells: { widthPx: number; heightPx: number } }) =>
+        native.prepare({ attachment, occurrence: details.occurrence, limits: layout.limits, cells: layout.cells }, context),
       fallback: (width: number, error?: Error) => [truncateToWidth(error ? `[Image: ${sanitizeDisplayText(error.message || error)}]` : "[Image: preparing native PNG]", width)],
     });
     return {
       render(width: number) {
         if (getCapabilities().images === "kitty") return [truncateToWidth("[Image: forced Pi Kitty graphics unsupported; use auto detection in tmux]", width)];
-        if (width < details.geometry.columns) return [truncateToWidth("[Image: pane too narrow]", width)];
         // Foreground/underline colors encode IDs. Do not restyle placeholder rows.
         return [truncateToWidth(theme.fg("muted", details.label), width), ...image.render(width)];
       },
@@ -97,6 +103,17 @@ export default function (pi: ExtensionAPI) {
     }), { signal });
     return { path, pages };
   }
+
+  pi.registerCommand("tmux-image-refresh", {
+    description: "Re-upload stored image snapshots after terminal reconnect/reset without adding messages",
+    handler: async (_args, ctx) => {
+      try {
+        requireTerminal(ctx);
+        presentation.refresh();
+        ctx.ui.notify("Image residency reset; stored snapshots will repaint without rereading files", "info");
+      } catch (error) { ctx.ui.notify(String(error), "error"); }
+    },
+  });
 
   pi.registerCommand("tmux-image", {
     description: "Display an image through tmux; Pi's blockImages controls model access",

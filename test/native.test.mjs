@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
-import { createNativeRenderer, fitInitialGeometry, NATIVE_SCHEMA, readNativeDetails, sanitizeDisplayText } from "../src/native.mjs";
+import { captureLayout, createNativeRenderer, fitGeometry, NATIVE_SCHEMA, readLegacyDetails, readNativeDetails, sanitizeDisplayText } from "../src/native.mjs";
 import { GraphicsIdentityRegistry } from "../src/identity.mjs";
-import { PLACEHOLDER } from "../src/kitty.mjs";
+import { DIACRITICS, PLACEHOLDER } from "../src/kitty.mjs";
 
 const data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=";
 const attachment = { type: "image", mimeType: "image/png", data };
@@ -11,14 +13,56 @@ const fresh = () => { let id = 0; return createNativeRenderer({ identity: new Gr
 const job = (occurrence = "one", size = geometry) => ({ attachment, occurrence, geometry: size });
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
-test("fixed geometry aspect fits supported cell pixels within 60x24", () => {
-  assert.deepEqual(fitInitialGeometry({ width: 100, height: 100 }, { columns: 100, rows: 100 }, { widthPx: 10, heightPx: 20 }),
+const hostRoot = process.env.PI_TEST_HOST_ROOT;
+const hostTui = hostRoot ? await import(pathToFileURL(join(hostRoot, "node_modules/@earendil-works/pi-tui/dist/index.js")).href) : undefined;
+
+test("actual public Pi clipping preserves independent row/column marks and both ID colors", {
+  skip: !hostTui && "set PI_TEST_HOST_ROOT for native placeholder clipping",
+}, async () => {
+  const native = fresh();
+  const prepared = await native.prepare(job("one", { ...geometry, columns: 3, rows: 3 }), { epoch: Symbol() });
+  prepared.onUploaded();
+  // Simulate a partially visible image: top rows and the leftmost column are gone.
+  const clipped = hostTui.sliceByColumn(prepared.lines[2], 1, 1, true);
+  assert.equal(hostTui.visibleWidth(clipped), 1);
+  assert.ok(clipped.includes("\x1b[38;2;0;0;1m"));
+  assert.ok(clipped.includes("\x1b[58:2::0:0:2m"));
+  assert.ok(clipped.includes(PLACEHOLDER + DIACRITICS[2] + DIACRITICS[1] + DIACRITICS[0]));
+  assert.equal(clipped.includes("Ptmux;"), false);
+});
+
+test("live geometry aspect fits supported cell pixels within 60x24", () => {
+  assert.deepEqual(fitGeometry({ width: 100, height: 100 }, { columns: 100, rows: 100 }, { widthPx: 10, heightPx: 20 }),
     { columns: 48, rows: 24, cellWidthPx: 10, cellHeightPx: 20 });
-  const wide = fitInitialGeometry({ width: 1000, height: 100 }, { columns: 20, rows: 10 }, { widthPx: 10, heightPx: 20 });
+  const wide = fitGeometry({ width: 1000, height: 100 }, { columns: 20, rows: 10 }, { widthPx: 10, heightPx: 20 });
   assert.equal(wide.columns, 20); assert.equal(wide.rows, 1);
-  const tall = fitInitialGeometry({ width: 1, height: 1000 }, { columns: 20, rows: 10 }, { widthPx: 10, heightPx: 20 });
+  const tall = fitGeometry({ width: 1, height: 1000 }, { columns: 20, rows: 10 }, { widthPx: 10, heightPx: 20 });
   assert.equal(tall.columns, 1); assert.equal(tall.rows, 10);
-  assert.throws(() => fitInitialGeometry({ width: 0, height: 1 }, { columns: 1, rows: 1 }, { widthPx: 10, heightPx: 20 }), /Invalid width/);
+  assert.throws(() => fitGeometry({ width: 0, height: 1 }, { columns: 1, rows: 1 }, { widthPx: 10, heightPx: 20 }), /Invalid width/);
+});
+
+test("captured layout keys include usable height and cell pixels, not just width", () => {
+  const cells = { widthPx: 10, heightPx: 20 };
+  const original = captureLayout(80, 40, cells);
+  assert.deepEqual(original.limits, { columns: 60, rows: 24 });
+  assert.deepEqual(captureLayout(5, 10, cells).limits, { columns: 5, rows: 2 });
+  assert.deepEqual(captureLayout(1, 1, cells).limits, { columns: 1, rows: 1 });
+  assert.notEqual(captureLayout(80, 20, cells).key, original.key);
+  assert.notEqual(captureLayout(80, 40, { widthPx: 11, heightPx: 20 }).key, original.key);
+  assert.notEqual(captureLayout(80, 40, { widthPx: 10, heightPx: 21 }).key, original.key);
+  assert.equal(captureLayout(100, 50, cells).key, original.key, "same capped geometry does not need new preparation");
+  cells.widthPx = 100;
+  assert.equal(original.cells.widthPx, 10, "layout captured atomically before async work");
+});
+
+test("legacy details migrate metadata only, with unknown/malformed schema fail closed", () => {
+  const legacy = { label: "deleted.pdf\npage 1", columns: 40, lines: ["OLD ESC bytes"], outputBytes: 123 };
+  const before = structuredClone(legacy);
+  assert.deepEqual(readLegacyDetails(legacy, "runtime-occurrence"), { label: "deleted.pdf page 1", occurrence: "runtime-occurrence" });
+  assert.deepEqual(legacy, before);
+  assert.equal(readLegacyDetails({ ...legacy, schema: "future" }, "id"), undefined);
+  assert.equal(readLegacyDetails({ ...legacy, lines: undefined }, "id"), undefined);
+  assert.equal(readLegacyDetails({ ...legacy, columns: 0 }, "id"), undefined);
 });
 
 test("native schema persists only occurrence/label/geometry, rejecting legacy and malformed details", () => {
@@ -64,6 +108,23 @@ test("residency commits only after successful write and keeps IDs/geometry stabl
   const resize = await native.prepare(job("one", { ...geometry, columns: 1 }), { epoch });
   assert.equal(resize.uploads.includes("a=t"), false); assert.ok(resize.uploads.includes("c=1"));
   resize.onUploaded();
+});
+
+test("live height/cell geometry creates new placements without decoding or PNG retransmit", async () => {
+  const native = fresh(), epoch = Symbol("connection");
+  const original = await native.normalize(attachment);
+  const prepare = (layout) => native.prepare({ attachment, occurrence: "one", ...layout }, { epoch });
+  const first = await prepare(captureLayout(50, 40, { widthPx: 10, heightPx: 20 }));
+  first.onUploaded();
+  const short = await prepare(captureLayout(50, 12, { widthPx: 10, heightPx: 20 }));
+  assert.ok(short.geometry.rows < first.geometry.rows);
+  assert.equal(short.uploads.includes("a=t"), false); short.onUploaded();
+  const changedCells = await prepare(captureLayout(50, 12, { widthPx: 10, heightPx: 10 }));
+  assert.notEqual(changedCells.lines[0], short.lines[0]);
+  assert.equal(changedCells.uploads.includes("a=t"), false); changedCells.onUploaded();
+  assert.equal(await native.normalize({ ...attachment }), original);
+  const restored = await prepare(captureLayout(50, 40, { widthPx: 10, heightPx: 20 }));
+  assert.equal(restored.uploads, ""); assert.deepEqual(restored.lines, first.lines); restored.onUploaded();
 });
 
 test("concurrent occurrences share one payload upload per epoch", async () => {

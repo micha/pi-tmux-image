@@ -118,7 +118,98 @@ function assertCleanModelContent(requests) {
   }
 }
 
-async function makeSession(scratch, blockImages, mode) {
+async function waitCells(components, width) {
+  for (let i = 0; i < 100; i++) {
+    const output = components.map((component) => component.render(width));
+    if (output.every((lines) => lines.some((line) => line.includes(placeholder)))) return output.flat();
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  assert.fail(`images did not prepare at width ${width}: ${components.flatMap((c) => c.render(width)).join(" ")}`);
+}
+function placements(writes) {
+  return [...writes.join("").matchAll(/a=p,U=1,i=(\d+),p=(\d+),c=(\d+),r=(\d+)/g)]
+    .map((match) => ({ imageId: Number(match[1]), placementId: Number(match[2]), columns: Number(match[3]), rows: Number(match[4]) }));
+}
+async function verifyLiveLayoutAndRefresh(h, component, before) {
+  const cells = { ...tuiModule.getCellDimensions() };
+  try {
+    const initial = placements(h.writes)[0];
+    assert.deepEqual({ columns: initial.columns, rows: initial.rows }, { columns: 48, rows: 24 });
+    async function change(width, rows, cellWidth, cellHeight, columns, expectedRows) {
+      h.writes.length = 0;
+      h.tui.terminal.columns = width;
+      h.tui.terminal.rows = rows;
+      tuiModule.setCellDimensions({ widthPx: cellWidth, heightPx: cellHeight });
+      await waitCells([component], width);
+      const actual = placements(h.writes);
+      assert.equal(actual.length, 1, "layout should create one geometry-versioned placement");
+      assert.deepEqual({ columns: actual[0].columns, rows: actual[0].rows }, { columns, rows: expectedRows });
+      assert.equal(actual[0].imageId, initial.imageId, "resize changed payload identity");
+      assert.notEqual(actual[0].placementId, initial.placementId, "resize redefined a retained placement");
+      assert.equal(h.writes.join("").includes("a=t"), false, "geometry-only resize retransmitted PNG bytes");
+      const count = h.writes.length;
+      component.invalidate(); await waitCells([component], width);
+      assert.equal(h.writes.length, count, "unchanged layout repeated transport");
+    }
+    await change(20, 40, 8, 16, 20, 10); // actual component width
+    await change(80, 16, 8, 16, 16, 8); // height-only change
+    await change(80, 40, 16, 16, 24, 24); // public host cell-pixel change
+    h.writes.length = 0;
+    h.tui.terminal.columns = 80; h.tui.terminal.rows = 40;
+    tuiModule.setCellDimensions({ widthPx: 8, heightPx: 16 });
+    await waitCells([component], 80);
+    assert.equal(h.writes.length, 0, "resize reversal did not reuse ready geometry");
+
+    h.transport.writeFaults = 1;
+    for (let i = 0; i < 100; i++) {
+      const lines = component.render(19);
+      if (lines.some((line) => line.includes("offline"))) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    const failure = component.render(19);
+    assert.ok(failure.some((line) => line.includes("offline")), "failed transport should have a width-fitted readable error");
+    assert.equal(failure.some((line) => line.includes(placeholder)), false, "failed upload exposed cells");
+    assert.equal(h.writes.length, 0);
+    const repaints = h.transport.repaints;
+    await h.session.prompt("/tmux-image-refresh");
+    assert.ok(h.transport.repaints > repaints, "refresh did not request repaint");
+    await waitCells([component], 19);
+    assert.ok(h.writes.join("").includes("a=t"), "refresh did not invalidate image residency");
+    assert.equal(h.requests.length, 2, "refresh triggered a model request");
+    assert.equal(JSON.stringify(h.session.messages), before, "resize/refresh altered the conversation");
+  } finally {
+    h.tui.terminal.columns = 80; h.tui.terminal.rows = 40;
+    tuiModule.setCellDimensions(cells);
+  }
+}
+async function verifyLegacyResume(scratch, blockImages, viewer) {
+  const manager = host.SessionManager.inMemory(join(scratch, "workspace"));
+  manager.appendCustomMessageEntry("pi-tmux-image", viewer.content, true, {
+    lines: ["stale-Chafa-ID-DO-NOT-REPLAY"], columns: 60, outputBytes: 1234, label: viewer.details.label,
+  });
+  const h = await makeSession(scratch, blockImages, "tui", manager);
+  try {
+    const before = JSON.stringify(h.session.messages);
+    const message = h.session.messages.find((m) => m.role === "custom");
+    const renderer = h.extension.messageRenderers.get("pi-tmux-image");
+    const theme = { fg: (_color, text) => text };
+    const component = renderer(message, { expanded: false }, theme);
+    const lines = await waitCells([component], 30);
+    assert.equal(lines.join("").includes("stale-Chafa-ID"), false);
+    assert.ok(h.writes.join("").includes("a=t"), "resumed legacy snapshot did not upload");
+    const count = h.writes.length;
+    await waitCells([renderer(message, { expanded: false }, theme)], 30);
+    assert.equal(h.writes.length, count, "legacy occurrence changed identity on rebuild");
+    assert.equal(JSON.stringify(h.session.messages), before, "legacy migration rewrote persisted messages");
+    assert.equal(h.requests.length, 0, "resuming legacy content triggered a request");
+    assert.deepEqual(imageBlocks(await h.session.agent.convertToLlm(h.session.messages)), blockImages ? [] : imageBlocks([viewer]));
+  } finally {
+    h.session.dispose();
+    for (const widget of h.widgets) widget.dispose?.();
+  }
+}
+
+async function makeSession(scratch, blockImages, mode, restoredManager) {
   const cwd = join(scratch, "workspace");
   const agentDir = join(scratch, "agent");
   const settingsManager = host.SettingsManager.create(cwd, agentDir);
@@ -145,7 +236,11 @@ async function makeSession(scratch, blockImages, mode) {
     { type: "toolCall", id: "pdf-call", name: "tmux_show_pdf", arguments: { path: "two-pages.pdf" } },
   ];
   const requests = [], events = [], writes = [], errors = [], widgets = [];
-  const tui = { terminal: { columns: 80, rows: 40, write(bytes) { writes.push(bytes); } }, requestRender() {} };
+  const transport = { writeFaults: 0, repaints: 0 };
+  const tui = { terminal: { columns: 80, rows: 40, write(bytes) {
+    if (transport.writeFaults > 0) { transport.writeFaults--; throw new Error("offline terminal write failure"); }
+    writes.push(bytes);
+  } }, requestRender() { transport.repaints++; } };
   const uiContext = {
     notify() {},
     setWidget(_key, factory) {
@@ -153,7 +248,7 @@ async function makeSession(scratch, blockImages, mode) {
       if (typeof factory === "function") widgets.push(factory(tui));
     },
   };
-  const manager = host.SessionManager.inMemory(cwd);
+  const manager = restoredManager || host.SessionManager.inMemory(cwd);
   const { session } = await host.createAgentSession({
     cwd, agentDir, model, modelRuntime: offlineRuntime(calls, requests), thinkingLevel: "off",
     settingsManager, sessionManager: manager, resourceLoader: loader,
@@ -161,7 +256,7 @@ async function makeSession(scratch, blockImages, mode) {
   });
   session.subscribe((event) => events.push(event));
   await session.bindExtensions({ mode, uiContext, onError: (error) => errors.push(error) });
-  return { session, manager, extension, requests, events, writes, errors, widgets, loader, settingsManager };
+  return { session, manager, extension, requests, events, writes, errors, widgets, loader, settingsManager, tui, transport };
 }
 
 async function verifySession(scratch, blockImages, mode = "tui", forcedNative = false) {
@@ -262,6 +357,8 @@ async function verifySession(scratch, blockImages, mode = "tui", forcedNative = 
       assert.ok(h.writes.some((bytes) => bytes.includes("a=t")), "new renderer runtime reused stale residency");
       assert.equal(JSON.stringify(h.session.messages), before, "replay appended or changed session content");
       assert.equal(h.requests.length, 2, "reload/replay triggered model work");
+      await verifyLiveLayoutAndRefresh(h, replay[0], before);
+      await verifyLegacyResume(scratch, blockImages, viewers[0]);
       assert.deepEqual(imageBlocks(await h.session.agent.convertToLlm(h.session.messages)), blockImages ? [] : imageBlocks(viewers));
     }
     assertCleanModelContent(h.requests);
@@ -280,7 +377,11 @@ test("public Pi SDK: isolated install, sequential viewers, model conversion and 
   const oldPane = process.env.TMUX_PANE;
   const oldPath = process.env.PATH;
   const oldOffline = process.env.PI_OFFLINE;
+  const oldAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = join(scratch, "agent");
   const oldCapabilities = { ...tuiModule.getCapabilities() };
+  const oldCells = { ...tuiModule.getCellDimensions() };
+  tuiModule.setCellDimensions({ widthPx: 8, heightPx: 16 });
   tuiModule.setCapabilities({ images: null, trueColor: true, hyperlinks: false });
   process.env.TMUX = "offline-test-only";
   process.env.TMUX_PANE = "%1";
@@ -328,10 +429,12 @@ else { process.stderr.write("unexpected offline tmux query"); process.exitCode =
     });
   } finally {
     tuiModule.setCapabilities(oldCapabilities);
+    tuiModule.setCellDimensions(oldCells);
     if (oldTmux === undefined) delete process.env.TMUX; else process.env.TMUX = oldTmux;
     if (oldPane === undefined) delete process.env.TMUX_PANE; else process.env.TMUX_PANE = oldPane;
     if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath;
     if (oldOffline === undefined) delete process.env.PI_OFFLINE; else process.env.PI_OFFLINE = oldOffline;
+    if (oldAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = oldAgentDir;
     await rm(scratch, { recursive: true, force: true });
   }
 });

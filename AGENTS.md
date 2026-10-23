@@ -8,7 +8,7 @@ The approved next-phase handoff is in `docs/implementation-plan.md`. Read it bef
 
 - `extensions/index.ts`: Pi commands, tools, standard image attachments and custom local renderer.
 - `src/presentation.mjs`: public zero-row widget/TUI transport seam, connection epochs and asynchronous upload-before-placement/repaint ordering; successful-write callbacks commit runtime residency. See `docs/renderer-seam.md` for verified host boundaries.
-- `src/native.mjs`: snapshot normalization cache, fixed-grid aspect fitting, versioned display metadata and serialized per-epoch upload commits; uses pure `src/kitty.mjs`/`src/identity.mjs` helpers and injected public Pi conversion via `src/normalize.mjs`.
+- `src/native.mjs`: snapshot normalization cache, live aspect fitting keyed by actual component width/usable height/cell pixels, versioned metadata/legacy runtime migration and serialized per-epoch upload commits; uses pure `src/kitty.mjs`/`src/identity.mjs` helpers and injected public Pi conversion via `src/normalize.mjs`. Vertical policy reserves 8 terminal rows, caps image grids at 60x24 and is not an exact viewport measurement.
 - `src/kitty.mjs`, `src/kitty-diacritics.mjs`, `src/identity.mjs` and `src/normalize.mjs`: pure/bounded native protocol, stable IDs and immutable snapshot normalization; no terminal side effects. The obsolete Chafa implementation was removed after advertised format parity checks passed.
 - `src/pdf.mjs`: bounded two-page Poppler rasterization with temporary-file cleanup.
 - `test/*.test.mjs`: dependency-free Node tests for parsing, subprocess contracts, cleanup, packaging and presentation; optional `test/host-seam.test.mjs` exercises installed Pi public APIs without model requests.
@@ -34,7 +34,8 @@ The approved next-phase handoff is in `docs/implementation-plan.md`. Read it bef
 - Verify `pi install .` using a temporary `PI_CODING_AGENT_DIR`, not the active user's settings. Inspect package discovery/loading without contacting an LLM provider.
 - For changes to Pi APIs, consult the installed Pi docs and extension examples. The tested starting API version is Pi 1.0.3; do not guess newer signatures.
 - For renderer changes, visually test images and PDFs: new text, scroll up/down, pane position, resizing, and switching windows. State explicitly which checks were automated versus human-observed.
-- Fixed-grid resizing, legacy snapshot migration, explicit terminal-reconnect recovery and the two-page PDF default remain current boundaries. Versioned native snapshots can prepare again in a fresh connection; do not equate this with complete Phase 2 replay/resize acceptance.
+- Snapshot replay, runtime-only legacy migration and `/tmux-image-refresh` are automated-tested. Refresh clears failed prepared records and residency, without file rereads, new messages or model turns. Shutdown/reload deliberately retains prior-runtime terminal resources to avoid orphaning scrollback; never globally delete images. Prior-runtime graphics memory can remain until terminal reset; budgeting and universal reconnect detection are not implemented.
+- Native visual acceptance remains pending: image/PDF pixels, transcript scrolling, pane position, shrink/expand/zoom, partial viewport visibility and window switching still require coordinated human observation. Automated geometry/stream tests do not establish those pixels. Preserve the two-page PDF default.
 - Keep README installation examples and limitations consistent with the code.
 
 ## Repository hygiene

@@ -10,8 +10,8 @@ export function sanitizeDisplayText(text) {
   return String(text).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, " ");
 }
 
-/** Fixed Phase 1 grid: aspect fit in pixel space, capped at 60 x 24 cells. */
-export function fitInitialGeometry(image, limits, cells) {
+/** Live grid: aspect fit in pixel space, capped at 60 x 24 cells. */
+export function fitGeometry(image, limits, cells) {
   for (const [name, value] of Object.entries({ width: image.width, height: image.height,
     cellWidthPx: cells.widthPx, cellHeightPx: cells.heightPx })) {
     if (!Number.isFinite(value) || value <= 0) throw new Error(`Invalid ${name}`);
@@ -35,6 +35,27 @@ export function readNativeDetails(details) {
   const { columns, rows, cellWidthPx, cellHeightPx } = details.geometry;
   return { schema: NATIVE_SCHEMA, occurrence: details.occurrence, label: sanitizeDisplayText(details.label),
     geometry: { columns, rows, cellWidthPx, cellHeightPx } };
+}
+
+export function captureLayout(width, terminalRows, cells) {
+  const limits = { columns: Math.min(60, Math.max(1, Math.floor(width))),
+    rows: Math.min(24, Math.max(1, Math.floor(terminalRows) - 8)) };
+  const capturedCells = { widthPx: cells.widthPx, heightPx: cells.heightPx };
+  for (const value of [limits.columns, limits.rows, capturedCells.widthPx, capturedCells.heightPx]) {
+    if (!Number.isFinite(value) || value <= 0) throw new Error("Invalid live image layout");
+  }
+  return { key: JSON.stringify([limits.columns, limits.rows, capturedCells.widthPx, capturedCells.heightPx]),
+    limits, cells: capturedCells };
+}
+
+/** Only the known unversioned Chafa shape migrates; never trust its old cells. */
+export function readLegacyDetails(details, occurrence) {
+  if (!details || typeof details !== "object" || "schema" in details ||
+      typeof details.label !== "string" || !Number.isInteger(details.columns) || details.columns < 1 ||
+      details.columns > 297 || !Array.isArray(details.lines) || details.lines.length < 1 ||
+      details.lines.length > 297 || !details.lines.every((line) => typeof line === "string") ||
+      typeof occurrence !== "string" || !occurrence) return undefined;
+  return { occurrence, label: sanitizeDisplayText(details.label) };
 }
 
 function snapshotKey(attachment) {
@@ -70,12 +91,13 @@ export function createNativeRenderer({ convertToPng, identity = new GraphicsIden
     /** Validate local normalization before an attachment is appended by a tool. */
     async describe(attachment, limits, cells, signal) {
       const image = await normalize(attachment, signal);
-      return { geometry: fitInitialGeometry(image, limits, cells), pngBytes: image.outputBytes,
+      return { geometry: fitGeometry(image, limits, cells), pngBytes: image.outputBytes,
         uploadChunks: Math.ceil(4 * Math.ceil(image.outputBytes / 3) / DEFAULT_CHUNK_SIZE) };
     },
-    async prepare({ attachment, occurrence, geometry }, { epoch, signal }) {
+    async prepare({ attachment, occurrence, geometry, limits, cells }, { epoch, signal }) {
       signal?.throwIfAborted();
       const image = await normalize(attachment, signal);
+      geometry = geometry || fitGeometry(image, limits, cells);
       const ids = identity.resolve({ png: image.pngBytes, occurrenceKey: occurrence, geometry });
       if (!current || current.epoch !== epoch) {
         current = { epoch, images: new Set(), placements: new Set(), tail: Promise.resolve() };
@@ -109,7 +131,7 @@ export function createNativeRenderer({ convertToPng, identity = new GraphicsIden
         if (!state.images.has(ids.imageId)) commands.push(...encodePngUpload(image.pngBytes, ids.imageId));
         if (!state.placements.has(ids.placementKey)) commands.push(encodeVirtualPlacement({ ...ids, ...geometry }));
         return {
-          uploads: commands.join(""), lines: encodePlaceholderRows({ ...ids, ...geometry }),
+          uploads: commands.join(""), lines: encodePlaceholderRows({ ...ids, ...geometry }), geometry,
           onUploaded: () => finish(true), onUploadFailed: () => finish(false),
           metrics: { pngBytes: image.outputBytes, transportBytes: Buffer.byteLength(commands.join("")),
             uploadChunks: state.images.has(ids.imageId) ? 0 : commands.length - (state.placements.has(ids.placementKey) ? 0 : 1) },
