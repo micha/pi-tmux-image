@@ -191,16 +191,26 @@ Human-observed native display on Ghostty 1.3.1 behind tmux 3.6a with Pi 1.0.3:
   and observed correct appearance, repeating this after zoom. Images survived
   continued conversation and scrolling in this live sequence; this was not a
   separate standalone experiment.
+- tmux window switching: the owner switched to a different tmux window and back,
+  reporting “all good”.
+- Explicit refresh: the owner ran `/tmux-image-refresh`, reporting “still looking
+  good”.
+- Reload recovery appearance: after being asked to run `/reload` and revisit the
+  earlier PNG and both PDF pages, the owner ran it and reported “still looking
+  good after /reload”. No source files were removed in this live check;
+  source-deleted/no-reread replay remains automated SDK evidence only.
 
 The follow-up observations used the same `terminal.images: auto` and
 `images.blockImages: true` settings: standard attachments remained blocked from
 model requests while local display worked.
 
-A captured public UI transport does not emulate Ghostty's image decoding or tmux
-passthrough. Separate pane-position checks, width/height drags, isolated
-height/cell-size resizing, deliberate partial-edge cropping and tmux window
-switching remain pending human observation. So do
-explicit reconnect/refresh and reload/resume/source-deleted replay. Zoom/unzoom
-and successful scrolling do not separately establish those outcomes. Record
-which checks were automated versus human-observed; do not infer the remaining
-pixels or latency from a green offline harness.
+The core requested live checks now pass on this setup; the full visual matrix
+still has narrower pending corners. A captured public UI transport does not
+emulate Ghostty's image decoding or tmux passthrough. Separate pane-position
+checks, width/height drags, isolated height/cell-size resizing, deliberate
+partial-edge cropping, reconnect/resume, other image formats and other terminals
+remain pending human observation. The live reload check does not establish
+source-deletion or no-reread behavior; those are automated SDK checks above.
+These remaining corners are not prerequisites for using the package on the
+observed setup. Record which checks were automated versus human-observed; do not
+infer the remaining pixels or latency from a green offline harness.

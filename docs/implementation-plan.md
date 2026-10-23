@@ -108,17 +108,23 @@ in that live sequence, not a separate standalone experiment. PDF speed
 feedback (“it was very fast!”) is subjective, not measured latency. Forced
 `terminal.images: kitty` was correctly refused before the owner-authorized change
 to `auto`; the follow-up observations retained those settings and model blocking.
+The owner then switched to another tmux window and back (“all good”), ran
+`/tmux-image-refresh` (“still looking good”), and ran `/reload` after being asked
+to revisit the earlier PNG and both PDF pages (“still looking good after
+/reload”). These establish human-observed window switching, explicit refresh and
+reload recovery appearance on the same setup. No source files were removed in
+this live check; source-deleted/no-reread replay is automated SDK evidence only.
 
-This does not establish full visual acceptance: separate pane-position checks,
-width/height drags, isolated height/cell-size resizing, deliberate partial-edge
-cropping, tmux window switching and explicit
-reconnect/refresh/reload/resume/source-deleted replay remain pending human
-observation. Other verification remains automated stream/component/pipeline
-evidence. Phases 1–3 are not claimed fully visually accepted, and Phase 4
-measurements do not establish terminal memory bounds. Universal automatic
-reconnect detection is not promised. See `docs/verification.md` for the evidence
-split; preserve the detailed handoff below as the implementation and acceptance
-plan.
+The core requested live checks now pass, but the full visual matrix retains
+narrower pending corners: separate pane-position checks, width/height drags,
+isolated height/cell-size resizing, deliberate partial-edge cropping,
+reconnect/resume, other image formats and other terminals. These are not
+prerequisites for using the package on the observed setup. Other verification
+remains automated stream/component/pipeline evidence. Phases 1–3 are not claimed
+fully visually accepted across that matrix, and Phase 4 measurements do not
+establish terminal memory bounds. Universal automatic reconnect detection is not
+promised. See `docs/verification.md` for the evidence split; preserve the detailed
+handoff below as the implementation and acceptance plan.
 
 Read `AGENTS.md` before working. Keep human documentation in `README.md` and
 implementation instructions here. Inspect Git state and current host APIs before
@@ -193,9 +199,10 @@ Current code:
 
 Human-observed legacy prototype success: Ghostty behind tmux 3.6a, Pi 1.0.3,
 image/PDF display surviving additional responses and transcript scrolling. Native
-PNG/two-page PDF display, scrolling and zoom/unzoom are now separately
-human-observed as recorded above; the legacy observation does not establish the
-remaining native visual checks. The native OMP code was inspected, not installed
+PNG/two-page PDF display, scrolling, zoom/unzoom, window switching, explicit
+refresh and reload recovery appearance are now separately human-observed as
+recorded above; the legacy observation does not establish the remaining native
+visual corners. The native OMP code was inspected, not installed
 or visually tested; no OMP implementation was copied. Do not treat its tests as
 proof of our extension's behavior.
 
