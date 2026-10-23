@@ -4,6 +4,8 @@ This file is for coding agents. Human-facing installation, usage and limitations
 
 The approved next-phase handoff is in `docs/implementation-plan.md`. Read it before implementing native encoding, replay/resizing, capability detection or graphics budgeting. It records the implementation order, acceptance criteria, scope boundaries and reviewed OMP sources.
 
+The agreed next viewer UX and feasibility-first handoff are in `docs/image-viewer-plan.md` (documentation-only checkpoint; controls are not implemented). Read it before overlay, zoom/pan or click work. Known-working baseline is `9dc2944` / 0.2.0; the coordinator will tag the plan checkpoint locally as `checkpoint/image-viewer-plan`. Budgeting/eviction remains disabled.
+
 ## Scope and architecture
 
 - `extensions/index.ts`: Pi commands, tools, standard image attachments and custom local renderer.

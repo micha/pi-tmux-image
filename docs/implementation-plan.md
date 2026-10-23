@@ -2,6 +2,14 @@
 
 ## Status and authorization
 
+**Next UX handoff:** [image-viewer-plan.md](image-viewer-plan.md) records the agreed
+in-pane Pi overlay viewer and mandatory public-API/protocol feasibility gate.
+This is a documentation-only Git checkpoint, not implemented controls or a
+machine/EBS checkpoint. Known-working baseline is `9dc2944` / version 0.2.0;
+the coordinator will create local annotated tag `checkpoint/image-viewer-plan`
+for the plan commit, which becomes the parent for future viewer phases. Existing
+native contracts below remain in force; budgeting/eviction is still disabled.
+
 The owner approved the implementation order below and requested this written
 handoff. The working package was committed first as `d92adcf`:
 `Package tmux image and PDF viewer for Pi`.
