@@ -10,6 +10,10 @@ Viewer Step 1 was owner-authorized and automated-gate-passed at `e92b1cd` (131/1
 
 The viewer UI/controller is now implemented in `src/viewer.mjs` and wired by `extensions/index.ts`: ready-cell-only fullscreen clicks and `/tmux-image-view` use active-branch immutable snapshots, newest-first same-overlay picker, public raw overlay admission/focus-loss policy, one pending/latest prepare runner and shared native surface APIs. Controls use 1.25× fit-relative zoom (25% minimum, dynamic 297-canvas maximum), four-cell pan, fit/reset on open, and resize-center preservation; panes below 20×7 remain keyboard-owned text fallback. `+` uses literal/public `parseKey` recognition (Pi 1.0.3 `matchesKey('+','+')` is false). Zoom/limit chrome is width-reserved and PDF page identity has a separate hint. Core viewer general human acceptance is recorded; narrower unreported pixel/manual cases remain automated-only or pending. Do not activate/reload the owner's package without coordination.
 
+## Worker delegation
+
+Use Pi model `us.openai.gpt-6.1-sol`: planning and review workers use `--thinking xhigh`; implementation workers use `--thinking medium`. This owner-updated role policy supersedes the earlier all-workers-medium baseline, not historical tested-worker records. Coordinate through workmux using stable named tabs in the current workspace, never window indexes; say **thank you** when a worker is safe to close.
+
 ## Scope and architecture
 
 - `extensions/index.ts`: Pi commands, tools, standard image attachments and custom local renderer.

@@ -337,8 +337,11 @@ For the next session, the coordinator uses worker agents through **workmux**, in
 named stable tabs in the **current workspace**. This checkpoint's context names
 are workspace **`pi-extension-spikes`** and coordinator tab
 **`pi-image-coordinator`**, not globally required names for future sessions.
-Requested worker Pi model: **`us.openai.gpt-6.1-sol`**,
-thinking **medium**. Assign disjoint ownership, review reports, run verification,
+Requested worker Pi model: **`us.openai.gpt-6.1-sol`**. Current owner policy:
+planning and review workers use **`--thinking xhigh`**; implementation workers use
+**`--thinking medium`**. This supersedes the earlier all-workers-medium baseline,
+not historical tested-worker effort records. Use stable named tabs, never window
+indexes. Assign disjoint ownership, review reports, run verification,
 then make local phase commits. Say **thank you** when a worker is safe to close.
 This planning task spawns no workers; its owned docs freeze after the report at
 `/tmp/pi-image-viewer-plan-report.md` until coordinator review/thank-you.
