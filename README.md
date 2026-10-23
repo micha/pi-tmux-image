@@ -7,10 +7,10 @@ Uses native Kitty **Unicode placeholders**: image pixels are uploaded through tm
 ## Requirements
 
 - Pi with the `@earendil-works` extension APIs (tested with Pi 1.0.3).
-- A recognized Unicode-placeholder terminal: current Ghostty (>=1.0) or Kitty (>=0.28). The original renderer was human-tested with Ghostty behind tmux 3.6a; native pixel checks remain pending.
+- A recognized Unicode-placeholder terminal: current Ghostty (>=1.0) or Kitty (>=0.28). Native initial PNG display was human-observed on Ghostty 1.3.1 behind tmux 3.6a with Pi 1.0.3 and model image blocking enabled; other native visual checks remain pending.
 - tmux with effective pane `allow-passthrough` set to `on` or `all` (read-only detection tested with tmux 3.6a).
 - Pi local images and truecolor enabled. The package reads public Pi settings/capabilities; explicit `terminal.showImages: false`, `terminal.images: false`, iTerm2 selection or disabled truecolor is respected as a local-display rejection.
-- Pi's native image protocol must remain at automatic tmux detection (normally no native protocol). Forced Pi Kitty graphics are rejected because host redraws can delete extension uploads. **The current Ghostty/tmux setup needs no forced image-protocol setting.**
+- Pi's native image protocol must remain at automatic tmux detection (`terminal.images: auto`, normally no native protocol). Forced Pi Kitty graphics are rejected because host redraws can delete extension uploads. **The current Ghostty/tmux setup needs no forced image-protocol setting.**
 - For PDFs, `pdftoppm` on PATH, from the Poppler command-line tools.
 
 Enable passthrough for your tmux server:
@@ -117,7 +117,7 @@ The extension does not override this setting or install a context filter. Termin
 - The extension deliberately retains terminal pixels/placements across shutdown/reload to avoid orphaning retained scrollback; it never globally deletes images. Within a runtime, PNG retransmission of the same image ID restores **all previously committed occurrence/geometry prototypes** before painting cells: Kitty replaces that image and deletes its placements on retransmit. This preserves known older grids even when refresh is invoked without an actual terminal reset. A fresh runtime rebuilds current-session snapshots with new IDs but cannot discover/rewrite arbitrary previous-process terminal scrollback after a reset. Previous-runtime resources can remain until the terminal resets. Graphics budgeting/eviction is not implemented.
 - Non-PNG normalization uses Pi's in-process converter. Cancellation is cooperative between steps, not preemptive during decoding. PDF conversion retains a bounded 30-second Poppler timeout.
 - Capability subprocesses use argument arrays, PATH, a 300 ms timeout per query and an 8 KiB output bound. Up to three sequential read-only queries establish a path. Results cache for 5 seconds (failures 250 ms); `on` paths resample visibility before source access/upload preparation. This is not a delivery acknowledgement: unannounced client changes can require explicit refresh, and cached/physical old scrollback is not rewritten by policy changes. There is no force override for unsupported paths.
-- The old Chafa renderer was human-tested in Ghostty/tmux. Native encoding, ordering, normalization, reload/resume, legacy snapshots, geometry resizing, clipping, refresh, capability rejection and public-policy behavior have automated checks; native image/PDF pixel correctness and interactive scroll/resize/window-switch checks are still pending.
+- The old Chafa renderer was human-tested in Ghostty/tmux. Native encoding, ordering, normalization, reload/resume, legacy snapshots, geometry resizing, clipping, refresh, capability rejection and public-policy behavior have automated checks. The owner confirmed initial native PNG display with `terminal.images: auto` and `images.blockImages: true`; PDF, scrolling, pane positioning, resize/zoom, viewport edges, window switching and reconnect/refresh/reload/resume replay remain pending human visual verification.
 
 ## Graphics measurements
 

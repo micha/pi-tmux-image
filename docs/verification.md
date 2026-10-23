@@ -172,9 +172,18 @@ with zero skips; without both host variables that is not the same coverage.
 Portable `npm test` passed **90**, with **9** explicitly optional host cases
 skipped and zero failures.
 
+Human-observed native initial PNG: on Ghostty 1.3.1 behind tmux 3.6a with
+Pi 1.0.3, the first attempt correctly refused forced `terminal.images: kitty`.
+After the owner authorized changing only that setting to `terminal.images: auto`
+and reloaded, `tmux_show_image` succeeded and the owner confirmed “i see it!”.
+`images.blockImages` remained `true`: the initial native PNG appeared locally
+with model image blocking enabled. This is initial-display evidence only, not
+visual acceptance of PDF, scrolling, pane positioning, resize/zoom, viewport
+edges, window switching, reconnect/refresh or reload/resume replay.
+
 A captured public UI transport does not emulate Ghostty's image decoding or tmux
-passthrough. Before declaring a phase complete, independently observe actual
-image and two-page PDF display in a real tmux pane: position, more text below,
+passthrough. Beyond the observed initial PNG, independently observe actual
+image and two-page PDF behavior in a real tmux pane: position, more text below,
 scrolling in both directions, and window switching. For replay/resize claims add
 shrink/expand, height-only resize, zoom/unzoom, reload, resume after source removal,
 and the documented reconnect/refresh path. Record which checks were automated
