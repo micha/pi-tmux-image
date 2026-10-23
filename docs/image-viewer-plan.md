@@ -1,6 +1,27 @@
-# Image viewer handoff — plan checkpoint, not implementation
+# Image viewer handoff — plan and implementation status
 
 ## Status, baseline and authority
+
+**0.3.0 implementation candidate:** pure viewport/protocol phase is committed at
+`dd13569`, shared native/presentation/metrics at `5898185`, following automated
+feasibility gate `e92b1cd` and plan `d324d87`. The UI/controller is now implemented
+in `src/viewer.mjs` and `extensions/index.ts`: ready-cell fullscreen clicks,
+`/tmux-image-view`, newest-first same-overlay picker, one pending/latest prepare,
+shared PNG reuse and scoped ephemeral retirement. Accepted defaults are 1.25×
+fit-relative zoom, 25% minimum, dynamic **297×297** canvas maximum, four-cell pan,
+fit/recenter each open, and resize retaining/clamping zoom factor/source center.
+Minimum graphical pane is **20×7**; smaller panes retain keyboard-owned fallback.
+Close revokes replay immediately, removes the owned overlay, flushes a public
+removal frame outside render/focus callbacks, then retires the private prototype;
+failed frame/retirement leaves one bounded obligation for guarded retry. Existing
+modal/search admission refusal and close-on-public-focus-loss are implemented.
+Title width reserves Fit/limit chrome and preserves PDF page identity separately.
+Final production public SDK matrix **15/15**, host suite **181/181**, existing
+SDK suite **12/12** and portable **150 passed / 31 optional skips** pass on the
+verified current source. New viewer pixels are **not** human-observed and the
+active owner's package is not reloaded.
+Known-working implementation/observed-inline rollback remains `9dc2944` / 0.2.0.
+
 
 **Proceed authorization / Step 1 gate checkpoint:** the owner now authorizes
 proceeding from `d324d87` / `checkpoint/image-viewer-plan`; coordinated automated
@@ -10,12 +31,15 @@ lifetime is widget-injected **`TUI.showOverlay` + owned handle**, not
 marking the lease closing/aborting synchronously before deferred scoped cleanup.
 Use a bounded **297x297 full-image prototype + independently addressed subset**,
 not virtual source crop ignored by the supported renderer. These decisions
-supersede the earlier proposed custom/crop paths below; production controls are
-not yet implemented and the new viewer has **not** been human-observed. Read
+supersede the earlier proposed custom/crop paths below. Read
 [viewer-seam.md](viewer-seam.md), [viewer-crop.md](viewer-crop.md) and
-[viewer-lifetime.md](viewer-lifetime.md) before implementation. Fit-relative zoom
-and recommended defaults remain choices to record in the next phase; do not
-silently turn recommendations into agreed settings. Budgeting remains disabled.
+[viewer-lifetime.md](viewer-lifetime.md) before implementation. The formerly
+recommended fit-relative defaults are now explicitly selected above; other new
+UX scope requires owner approval. Budgeting remains disabled.
+
+The following records the historical documentation-only checkpoint. Viewer code
+is now implemented as summarized above, but no owner package activation or new
+viewer visual acceptance is implied.
 
 The owner asked to **first make a checkpoint with the plan** for the agreed
 viewer UX below. This is a documentation-only **local Git checkpoint**, not a
@@ -72,10 +96,13 @@ Zoom enlarges existing pixels; it cannot recover missing detail. PDF snapshots
 remain the first two Poppler-rendered pages at a **1200-pixel longest side**. No
 source re-rasterization, new PDF pagination or higher-resolution attachment work.
 
-**Not yet decided:** zoom step/limits, pan increment, small-pane minimums, exact
-zoom percentage convention, picker ordering, optional aliases, and resize/lifecycle
-viewport policy. A 1.25× zoom step is an implementation recommendation only, not
-agreed UX. Resolve and record these before shipping; do not expand scope silently.
+**Selected v1 defaults:** 1.25× zoom step, 25% fit-relative minimum, dynamic
+297×297 full-canvas maximum, four-cell pan, graphical pane minimum 20×7,
+100% = initial fit, newest-first picker, resize preserving fit-relative factor
+and normalized source center subject to clamping. No aliases or remembered state.
+A new host modal/search closes rather than suspends the viewer. Refresh/reload,
+widget disposal and session/branch changes close it; later reopen starts fit.
+Further UX changes need explicit review rather than silently expanding scope.
 
 ## Invariants and proposed architecture
 
@@ -103,9 +130,11 @@ Proposed split (names are not mandatory):
    not label/path; do not duplicate snapshot bytes into persisted metadata.
 2. Pure viewport math converts fit/zoom/center/pan plus live usable dimensions and
    public cell pixels into bounded crop/placement/placeholder geometry.
-3. A fresh `ctx.ui.custom(..., { overlay: true })` component owns each interaction,
-   keyboard focus, chrome and viewport cells. Use the supplied completion callback
-   to close and dispose; do **not** call `OverlayHandle.hide()` for a custom overlay.
+3. A fresh public `TUI.showOverlay` component, obtained from the existing widget
+   TUI connection, owns each interaction, chrome and viewport. Admit only without
+   another modal/search. Public `Focusable.focused` loss synchronously cancels the
+   lease; deferred **owned raw handle** hide/dispose/settle preserves new host UI.
+   Do not use `ctx.ui.custom` completion or hide a custom-owned handle.
 4. A shared native payload/residency owner reuses exact normalized PNG identity and
    image IDs across inline and overlay consumers. Overlay placements have a
    **separate private ephemeral surface identity**; they must not alias or redefine

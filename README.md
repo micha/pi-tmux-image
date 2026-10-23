@@ -70,6 +70,7 @@ In Pi:
 /tmux-pdf /path/to/document.pdf
 /tmux-image-refresh
 /tmux-image-stats
+/tmux-image-view
 ```
 
 PDFs show the **first two pages**. Paths resolve relative to Pi's working directory. For a slash command, the entire argument is the path; spaces are supported without shell quotes.
@@ -86,6 +87,57 @@ The tools require interactive Pi inside tmux. Before reading an image or rasteri
 After terminal reconnect/reset, a visibility change that caused preparation to fail, or correcting display policy/passthrough, run `/tmux-image-refresh`. It rechecks capability, invalidates upload residency and **failed presentation records**, then repaints existing snapshots. It does not reread source files, append attachments, or start a model turn. Pi reload/resume rebuilds native presentation automatically; reconnects are not universally detectable. Detector TTL expiry alone does not retry an already-failed presentation.
 
 Detection is conservative: only a single non-control client in a single-session window and one tmux layer are supported. Multiple attached clients, cross-session-linked windows, nested tmux/screen and unrecognized identities are rejected. Terminal type is authoritative; only an absent type falls back to exact `xterm-ghostty`/`xterm-kitty`. Name-only identities assume a current supported version and produce a warning—they are not feature negotiation. Pi's concrete image preference overrides `PI_IMAGE_PROTOCOL`; `auto`/unset leaves the environment/auto-detection fallback active.
+
+## Snapshot overlay viewer
+
+Click the **ready image cells** (including a particular PDF page) in Pi's
+fullscreen mode, or run `/tmux-image-view` in either mode. The command opens the
+single stored image automatically; with multiple images it shows a **newest-first
+active-branch picker**. Use arrows or `j`/`k`, then Enter. It selects existing
+snapshots only—it is not a file-path command, and does not reread images or PDFs.
+Labels, padding and loading/error rows are not click targets. With the viewer
+closed, transcript drag selection, wheel scrolling and link precedence remain
+Pi-owned. Regular mode supports the keyboard path, not image mouse opening.
+
+| Viewer key | Action |
+| --- | --- |
+| `+` / `-` | Zoom by 1.25×, preserving the source center until edge clamping |
+| `0` | Fit and recenter |
+| `h` / `j` / `k` / `l` | Pan left/down/up/right by four displayed cells |
+| Escape | Close; preserve inline image size and editor draft |
+
+**100% Fit** means the initial fitted size, not one terminal pixel per source
+pixel. Minimum zoom is 25% of fit; maximum varies with image/aspect/cell size so
+the full-image placeholder canvas never exceeds **297×297 cells**. At the limit,
+`+` is a no-op and the label shows a limit indication. Zoom enlarges the existing
+snapshot; PDFs remain the original first-two-page, 1200-pixel-longest-side
+rasters. Every new open starts fit/recentered. Resize retains the fit-relative
+zoom factor and source center, clamped to the new bounds. Very small panes (less than **20 columns × 7 rows**) show a
+keyboard-owned text fallback until enlarged.
+
+The overlay fills the current pane and ignores pointer/wheel input. Unknown
+keys do not reach the hidden editor. Close any existing Pi dialog/search before
+opening; if a new host dialog or fullscreen search takes focus, the viewer closes
+and exposes that host UI. Reserved host global keys are not trapped. Refresh,
+reload, widget replacement and session/branch changes also close the viewer.
+
+Viewing, controls and closing add **no session messages, attachments or model
+turns** and do not change image-blocking settings. The viewer shares resident PNG
+pixels with inline images but owns one separate, reusable private placement.
+Pan updates addressed text cells without graphics commands; zoom/resize replaces
+that private prototype. Close removes its cells and synchronously flushes Pi's
+public removal frame before scoped placement retirement,
+never deleting shared PNG pixels or inline history. If capability denial prevents
+retirement, one bounded pending obligation blocks unsafe reuse; a later supported
+open or `/tmux-image-refresh` retries it.
+
+Viewer controls and lifecycle pass the production public SDK matrix (**15/15**),
+host-enabled suite (**181/181**) and existing offline SDK suite (**12/12**).
+These are automated stream/component checks, not terminal pixel observations.
+**New viewer pixel appearance has not yet been human-observed**. Fullscreen
+scroll restoration is automated-tested; regular terminal scrollback position and
+all new zoom/pan/border/cell-size pixels still require manual acceptance. See
+`docs/viewer-seam.md` and `docs/viewer-verification.md` for the evidence boundary.
 
 ## Images and model access
 
@@ -109,9 +161,9 @@ The extension does not override this setting or install a context filter. Termin
 - Only these commands/tools use the placeholder renderer. Built-in `read` and images from other tools are unchanged.
 - PDFs are rasterized to PNG at up to 1200 pixels on the longest side; the original PDF document is not sent to the model.
 - PNG, JPEG, GIF, WebP and BMP snapshots are supported. Animated GIF/WebP use a still frame. Pi's built-in read detection currently rejects APNG files before this viewer receives an attachment.
-- Display grids aspect-fit within 60 columns by 24 rows using actual component width and Pi's supported cell-pixel dimensions. The vertical policy reserves 8 terminal rows for Pi chrome/editor (minimum one image row); it is a bound, not an exact measurement of every transcript viewport. Width/height/cell-size changes prepare new geometry-versioned placements without retransmitting resident PNGs. Superseded pending resize work is coalesced; completed geometries can be reused when resizing back.
+- Inline display grids aspect-fit within 60 columns by 24 rows using actual component width and Pi's supported cell-pixel dimensions. The vertical policy reserves 8 terminal rows for Pi chrome/editor (minimum one image row); it is a bound, not an exact measurement of every transcript viewport. Width/height/cell-size changes prepare new geometry-versioned placements without retransmitting resident PNGs. Superseded pending resize work is coalesced; completed geometries can be reused when resizing back.
 - Local normalization is bounded to 16 MiB input, 64 MiB PNG output, 8192 pixels per dimension and 16 million pixels. These are local image limits, not PDF file-size limits.
-- Pi reports normalized PNG bytes and anticipated upload chunks; `/tmux-image-stats` measures successful runtime transport and estimated residency. Shared PNGs transmit once per runtime connection; additional occurrences or geometries need only virtual placement commands. There is no graphics-memory eviction policy.
+- Pi reports normalized PNG bytes and anticipated upload chunks; `/tmux-image-stats` measures successful runtime transport and estimated residency, including retained inline versus live/private viewer surfaces and successful replacement/retirement commands. Shared PNGs transmit once per runtime connection; additional occurrences or geometries need only virtual placement commands. There is no graphics-memory eviction policy.
 - PDF scratch PNGs are removed after viewing. Versioned messages keep the standard image snapshot plus label/geometry metadata, not temporary paths as their pixel source or duplicated pixels in details.
 - Native and known unversioned Chafa messages prepare from stored snapshots when rendered, including after reload/resume, without rereading the source file. Legacy migration is runtime-only: old upload IDs/cells are ignored and stored content/details are unchanged. Missing/malformed snapshots and unsupported future schemas show readable fallbacks. Use `/tmux-image-refresh` for explicit terminal-reconnect recovery or retrying failed presentation.
 - The extension deliberately retains terminal pixels/placements across shutdown/reload to avoid orphaning retained scrollback; it never globally deletes images. Within a runtime, PNG retransmission of the same image ID restores **all previously committed occurrence/geometry prototypes** before painting cells: Kitty replaces that image and deletes its placements on retransmit. This preserves known older grids even when refresh is invoked without an actual terminal reset. A fresh runtime rebuilds current-session snapshots with new IDs but cannot discover/rewrite arbitrary previous-process terminal scrollback after a reset. Previous-runtime resources can remain until the terminal resets. Graphics budgeting/eviction is not implemented.
@@ -122,8 +174,9 @@ The extension does not override this setting or install a context filter. Termin
 ## Graphics measurements
 
 Run `/tmux-image-stats` for local runtime diagnostics: normalized PNG inventory,
-known resident image/payload counts, occurrence/geometry prototypes, estimated
-RGBA bytes, and exact successful encoded wire bytes/PNG chunks/placement commands
+known resident image/payload counts, inline/viewer surface counts, occurrence/geometry
+prototypes, estimated RGBA bytes, and exact successful encoded wire bytes/PNG
+chunks/placement/replacement/retirement commands
 for the current epoch and cumulatively across this runtime. It does not upload,
 probe tmux, change settings, append messages or start model work.
 
@@ -171,6 +224,6 @@ PI_OFFLINE=1 PI_TEST_HOST_ROOT=/path/to/installed/coding-agent/package \
   node --test test/host-integration.mjs
 ```
 
-See `docs/renderer-seam.md`, `docs/kitty-protocol.md`, `docs/pixel-normalization.md`, `docs/capabilities.md` and `docs/graphics-memory.md` for integration boundaries, public-policy sourcing and specification attribution. The protocol helpers follow the public Kitty specification; no OMP implementation was copied and no project license has been selected.
+See `docs/renderer-seam.md`, `docs/viewer-seam.md`, `docs/viewer-crop.md`, `docs/viewer-lifetime.md`, `docs/kitty-protocol.md`, `docs/pixel-normalization.md`, `docs/capabilities.md` and `docs/graphics-memory.md` for integration boundaries, public-policy sourcing and specification attribution. The protocol helpers follow the public Kitty specification; no OMP implementation was copied and no project license has been selected.
 
 After changing the extension, coordinate `/reload` and visually verify images/PDFs, scrolling and pane/window behavior in a real tmux pane. Automated stream/component tests cannot establish that a terminal actually displays the image.

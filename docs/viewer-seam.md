@@ -1,4 +1,46 @@
-# Viewer public UI seam — Pi 1.0.3 feasibility
+# Viewer public UI seam — Pi 1.0.3 feasibility and production candidate
+
+## 0.3.0 implementation status
+
+`src/viewer.mjs` now implements the public policy proved below and
+`extensions/index.ts` wires it to immutable active-branch snapshot indexing,
+ready-cell-only fullscreen `MouseRegion` clicks and `/tmux-image-view`. A
+newest-first keyboard picker shares the same owned overlay; one snapshot opens
+automatically. No viewer history/session fields, source rereads, new attachments,
+model turns or image-policy filters are introduced.
+
+Implemented choices: 1.25× fit-relative zoom, 25% minimum, dynamic 297-canvas
+maximum, four-cell pan, fit/recenter each open, preserved/clamped normalized center
+and fit factor on resize, and **20×7** graphical minimum with keyboard-owned
+fallback below it. Zoom/limit title width is reserved before label truncation;
+long paths abbreviate to basename and PDF page identity is a separate hint.
+`+` uses literal/public `parseKey` and `Shift+=` matching: Pi 1.0.3
+`matchesKey('+', '+')` is false. Public-host regressions require actual prototype
+growth for ASCII/Kitty/shift-equals reports, shrinkage for raw/Kitty minus, stable
+source-center window origins and both foreground/colon-underline IDs through CJK
+chrome and width fitting.
+
+Native `resolvePayload`/`reserveViewerPlacement`/`prepareViewer`/`releaseViewer` /
+`prepareViewerRetirement` share one private slot, PNG residency and the inline
+queue. `presentation.connection`/`bind`/`commit` extend the existing public widget
+seam. UI keeps one pending prepare plus one latest intent, drains canceled work
+before retirement/rebind, and retries a retained obligation before new reserve.
+Retirement retries capture current connection/context **after** awaiting close.
+A nonempty prepared retirement forces public `tui.renderNow()` outside the host
+frame/focus callback before final guarded commit; flush failure invokes the
+prepared failure callback and preserves the bounded obligation. Recovery must
+successfully flush before deletion too. Actual Alt/Main tests with fully cached
+guards and **no caller renderNow** prove HOST-FRAME precedes scoped PRIVATE-DELETE,
+including an unrelated upper dialog; throwing-frame and concurrent-refresh races
+have controller regressions.
+
+Verified prior commits: plan `d324d87`, gate `e92b1cd`, pure `dd13569`, shared
+runtime `5898185`; current UI is a 0.3.0 candidate, not yet an owner activation.
+Focused controller tests **12/12** and actual-host seam **22/22** pass. Final
+production public SDK matrix **15/15**, host-enabled suite **181/181**, existing
+SDK **12/12**, and portable **150 passed / 31 optional skips** pass on the exact
+verified current source. No new viewer pixels have been human-observed; baseline
+inline observations remain distinct.
 
 ## Gate decision
 
@@ -8,7 +50,7 @@ close the viewer on public focus loss. Click, keyboard controls, lifecycle and
 ordered transport have actual-host proof. This policy resolves the host's search
 routing limitation without intercepting global keys or reading private state.
 `ctx.ui.custom` in the earlier plan was a proposal, not an absolute API requirement.
-This checkpoint adds tests/documentation only, not production viewer controls.
+The following records the Step 1 evidence; production candidate status is above.
 
 `test/host-viewer-seam.test.mjs` runs actual exported `CustomMessageComponent`,
 `TuiAltScreen`, `TuiMainScreen`, `InteractiveMode`, SDK sessions and the host's real
@@ -332,5 +374,5 @@ unsafe installed-host behavior; they do not endorse it.
 Scope deliberately excludes protocol cropping/retirement feasibility (other
 workers), production controls, live package installation/reload and manual pixel
 checks. Public UI feasibility is ready under the authorized admission/focus policy;
-consolidated protocol/lifetime review and future owner pixel acceptance remain
-separate. No production implementation is included in this checkpoint.
+production integration is now above. The final SDK report and future owner pixel
+acceptance remain separate; no active owner package activation is claimed.

@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
-import { encodePlaceholderRows, encodePlaceholderCell, encodePngUpload, encodeVirtualPlacement, PLACEHOLDER } from "../src/kitty.mjs";
+import { createViewerController, viewerTitle } from "../src/viewer.mjs";
+import { createPresentation } from "../src/presentation.mjs";
+import { createNativeRenderer, sanitizeDisplayText } from "../src/native.mjs";
+import { encodePlaceholderRows, encodePlaceholderCell, encodePngUpload, encodeVirtualPlacement, PLACEHOLDER, DIACRITICS } from "../src/kitty.mjs";
 
 // Optional Pi 1.0.3 feasibility evidence, public entry points only. No real tty.
 const root = process.env.PI_TEST_HOST_ROOT;
@@ -573,5 +576,163 @@ for (const mode of ["fullscreen", "regular"]) {
       h.terminal.input("Y"); assert.equal(h.ctx.ui.getEditorText(), "dialog draftXY");
       assert.equal(h.requests, 0);
     } finally { viewer?.close("cleanup"); await viewer?.promise; closeUpper?.(); await h.cleanup(); restore(); }
+  });
+}
+
+hostTest("production title: public CJK width fitting keeps Fit/limit and page identity at narrow widths", () => {
+  for (const width of [20, 24, 40, 80]) for (const label of ["/absolute/path/".repeat(30) + "chart.pdf — page 2", "図像資料".repeat(100) + ".pdf — page 2"]) {
+    const result = viewerTitle(label, { fitPercent: 29700, atZoomLimit: true }, width, ui);
+    assert.ok(result.title.endsWith("29700% Fit (limit)")); assert.equal(result.pageHint, "page 2");
+    assert.ok(ui.visibleWidth(result.title) <= width);
+  }
+});
+
+for (const mode of ["fullscreen", "regular"]) {
+  hostTest(`production viewer ${mode}: actual public TUI controls, ID chrome, shared native transport and cleanup recovery`, async () => {
+    const restore = capabilities();
+    const terminal = new CaptureTerminal();
+    const tui = mode === "fullscreen" ? new ui.TuiAltScreen(terminal) : new ui.TuiMainScreen(terminal);
+    const presentation = createPresentation(), native = createNativeRenderer({ convertToPng: host.convertToPng });
+    const attachment = { type: "image", mimeType: "image/png", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=" };
+    const snapshot = { occurrence: "production-page-1", label: "/very/long/absolute/".repeat(15) + "図像文書".repeat(30) + ".pdf — page 1", attachment };
+    let widget, denied = false, draft = "editor draft";
+    const ctx = { mode: "tui", ui: { setWidget(_key, factory) { widget = factory(tui); } } };
+    presentation.attach(ctx, true);
+    const editor = { focused: false, render: () => [draft], invalidate() {}, handleInput(data) { draft += data; } };
+    tui.addChild(new ui.Text("transcript\n".repeat(24), 0, 0)); tui.addChild(editor); tui.setFocus(editor);
+    const failures = [];
+    const viewer = createViewerController({ native, presentation, getContext: () => ctx,
+      getSnapshots: () => [snapshot], getCells: ui.getCellDimensions, matchesKey: ui.matchesKey, parseKey: ui.parseKey,
+      truncateToWidth: ui.truncateToWidth, visibleWidth: ui.visibleWidth, sanitizeText: sanitizeDisplayText,
+      requireCapability: async (_ctx, signal) => { signal?.throwIfAborted(); if (denied) throw new Error("test path denied"); },
+      readyPolicy: () => denied ? "test path denied" : undefined,
+      style: (_kind, text) => `\x1b[35m${text}\x1b[0m`, notify: (message) => failures.push(message) });
+    const before = JSON.stringify(snapshot);
+    let done;
+    try {
+      tui.start(); tui.renderNow();
+      if (mode === "fullscreen") { tui.scrollToTop(); tui.renderNow(); }
+      const top = mode === "fullscreen" ? tui.viewportTop : undefined;
+      terminal.writes.length = 0;
+      done = viewer.open();
+      await until(() => terminal.output.includes(PLACEHOLDER)); tui.renderNow();
+      assert.ok(ui.stripTerminalSequences(terminal.output).includes("100% Fit"), "long CJK/path label must not truncate zoom chrome");
+      if (mode === "fullscreen") {
+        assert.ok(ui.stripTerminalSequences(tui.getScreenLines()[0]).includes("100% Fit"));
+        assert.equal(ui.stripTerminalSequences(tui.getScreenLines()[1]).trim(), "page 1");
+      }
+      assert.ok(terminal.output.indexOf("a=t") < terminal.output.indexOf(PLACEHOLDER), "production native upload precedes raw-overlay cells");
+      const pair = /a=p,U=1,i=(\d+),p=(\d+)/.exec(terminal.output); assert.ok(pair);
+      const rgb = (id) => [id >>> 16, (id >>> 8) & 255, id & 255];
+      const foreground = `38;2;${rgb(Number(pair[1])).join(";")}`;
+      const underline = `58:2::${rgb(Number(pair[2])).join(":")}`;
+      assert.ok(terminal.output.includes(foreground) && terminal.output.includes(underline));
+      const prototypes = () => [...terminal.output.matchAll(/a=p,U=1,i=(\d+),p=(\d+),c=(\d+),r=(\d+)/g)].map((m) => ({ columns: +m[3], rows: +m[4] }));
+      const initialCanvas = prototypes().at(-1);
+      assert.equal(ui.matchesKey("+", "+"), false, "installed public matcher regression must be positively reproduced");
+      for (const report of ["+", "\x1b[43u", "\x1b[61;2u"]) {
+        const before = prototypes().length, canvas = prototypes().at(-1);
+        terminal.input(report);
+        await until(() => prototypes().length > before); tui.renderNow();
+        const grown = prototypes().at(-1);
+        assert.ok(grown.columns > canvas.columns || grown.rows > canvas.rows, "raw/Kitty/shift-equals plus report must enlarge private prototype");
+        if (mode === "fullscreen") {
+          const firstLine = tui.getScreenLines().find((line) => line.includes(PLACEHOLDER)); assert.ok(firstLine);
+          const marks = Array.from(firstLine.slice(firstLine.indexOf(PLACEHOLDER)));
+          assert.equal(DIACRITICS.indexOf(marks[1]), Math.round((grown.rows - Math.min(10, grown.rows)) / 2));
+          assert.equal(DIACRITICS.indexOf(marks[2]), Math.round((grown.columns - Math.min(36, grown.columns)) / 2), "plus preserves source center through explicit window origins");
+        }
+      }
+      terminal.input("0"); await until(() => JSON.stringify(prototypes().at(-1)) === JSON.stringify(initialCanvas));
+      for (const report of ["-", "\x1b[45u"]) {
+        const before = prototypes().length, canvas = prototypes().at(-1); terminal.input(report);
+        await until(() => prototypes().length > before);
+        const shrunk = prototypes().at(-1);
+        assert.ok(shrunk.columns < canvas.columns || shrunk.rows < canvas.rows, "raw/Kitty minus report must shrink private prototype");
+      }
+      terminal.input("0"); await until(() => JSON.stringify(prototypes().at(-1)) === JSON.stringify(initialCanvas));
+      for (const control of ["+", "-", "0", "h", "j", "k", "l", "Z"]) {
+        terminal.input(control); await delay(); tui.renderNow();
+        assert.equal(draft, "editor draft");
+        if (mode === "fullscreen") {
+          assert.equal(tui.viewportTop, top);
+          for (const line of tui.getScreenLines().filter((line) => line.includes(PLACEHOLDER))) {
+            assert.ok(line.includes(foreground) && line.includes(underline), "body retains foreground/colon underline IDs across all controls and themed chrome");
+          }
+        }
+      }
+      terminal.mouse(65, 0, 0); tui.renderNow(); if (mode === "fullscreen") assert.equal(tui.viewportTop, top);
+      assert.equal(native.stats(presentation.epoch).transfer.uploadChunks, 1, "zoom/pan do not retransmit shared PNG");
+      terminal.columns = 20; terminal.rows = 10; terminal.resize(); await delay(); tui.renderNow();
+      assert.equal(draft, "editor draft");
+      if (mode === "fullscreen") {
+        assert.ok(ui.stripTerminalSequences(tui.getScreenLines()[0]).includes("% Fit"));
+        assert.equal(ui.stripTerminalSequences(tui.getScreenLines()[1]).trim(), "page 1");
+        assert.ok(tui.getScreenLines().every((line) => ui.visibleWidth(line) <= 20));
+      }
+      terminal.columns = 14; terminal.resize(); await delay(); tui.renderNow();
+      if (mode === "fullscreen") {
+        assert.equal(tui.getScreenLines().some((line) => line.includes(PLACEHOLDER)), false);
+        assert.ok(tui.getScreenLines().every((line) => ui.visibleWidth(line) <= 14));
+        assert.ok(tui.getScreenLines().map(ui.stripTerminalSequences).some((line) => line.includes("Pane too small")));
+      }
+      terminal.columns = 40; terminal.rows = 16; terminal.resize(); await delay(); tui.renderNow();
+      if (mode === "fullscreen") {
+        terminal.input("\x1b[102;6u"); await done; tui.renderNow();
+        assert.equal(viewer.isOpen, false);
+        assert.ok(tui.getScreenLines().map(ui.stripTerminalSequences).some((line) => line.includes("Find in transcript")));
+        terminal.input("\x1b"); tui.renderNow();
+      } else {
+        const upper = tui.showOverlay({ focused: false, render: () => ["unrelated dialog"], invalidate() {} });
+        await done; tui.renderNow(); assert.equal(upper.isFocused(), true); upper.hide();
+      }
+      assert.equal(draft, "editor draft"); assert.equal(native.stats(presentation.epoch).viewer.retirementPending, false);
+      terminal.writes.length = 0; done = viewer.open(); await until(() => terminal.output.includes(PLACEHOLDER));
+      denied = true; tui.renderNow(); await done;
+      assert.equal(native.stats(presentation.epoch).viewer.retirementPending, true, "denied cleanup retains exactly one retirement obligation");
+      assert.ok(failures.some((message) => message.includes("cleanup")));
+      denied = false; terminal.writes.length = 0; done = viewer.open();
+      await until(() => terminal.output.includes(PLACEHOLDER));
+      assert.ok(terminal.output.indexOf("a=d,d=i") < terminal.output.indexOf(PLACEHOLDER), "supported reopen retires tombstone before rebind/cells");
+      assert.equal(terminal.output.includes("a=t"), false, "reopen uses resident shared PNG");
+      terminal.input("\x1b"); await done; tui.renderNow();
+      assert.equal(viewer.isOpen, false); assert.equal(tui.hasOverlay(), false); assert.equal(native.stats(presentation.epoch).viewer.retirementPending, false);
+      assert.equal(JSON.stringify(snapshot), before); assert.equal(draft, "editor draft");
+      terminal.input("X"); assert.equal(draft, "editor draftX");
+    } finally { denied = false; await viewer.dispose(); await done; presentation.disconnect(); widget?.dispose(); tui.stop(); restore(); }
+  });
+}
+
+for (const mode of ["fullscreen", "regular"]) {
+  hostTest(`production close ${mode}: cached guards flush HOST-FRAME before private delete, preserving upper dialog`, async () => {
+    const restore = capabilities(); const terminal = new CaptureTerminal();
+    const tui = mode === "fullscreen" ? new ui.TuiAltScreen(terminal) : new ui.TuiMainScreen(terminal);
+    const presentation = createPresentation(), native = createNativeRenderer({ convertToPng: host.convertToPng });
+    let widget, done, upper;
+    const ctx = { mode: "tui", ui: { setWidget(_key, factory) { widget = factory(tui); } } };
+    presentation.attach(ctx, true); tui.addChild(new ui.Text("HOST-FRAME\n".repeat(24), 0, 0));
+    const viewer = createViewerController({ native, presentation, getContext: () => ctx,
+      getSnapshots: () => [{ occurrence: "ordering", label: "Ordering", attachment: { type: "image", mimeType: "image/png", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=" } }],
+      getCells: ui.getCellDimensions, matchesKey: ui.matchesKey, parseKey: ui.parseKey,
+      truncateToWidth: ui.truncateToWidth, visibleWidth: ui.visibleWidth, readyPolicy: () => undefined,
+      requireCapability: async (_ctx, signal) => signal?.throwIfAborted(), sanitizeText: sanitizeDisplayText });
+    try {
+      tui.start(); tui.renderNow();
+      for (const withUpper of [false, true]) {
+        terminal.writes.length = 0; done = viewer.open();
+        await until(() => { tui.renderNow(); return terminal.output.includes(PLACEHOLDER); });
+        terminal.writes.length = 0;
+        if (withUpper) upper = tui.showOverlay({ focused: false, render: () => ["UPPER-HOST-FRAME"], invalidate() {} });
+        await viewer.close("programmatic"); await done;
+        // Deliberately NO caller renderNow here: close must enforce the barrier.
+        const frame = terminal.writes.findIndex((bytes) => bytes.includes("HOST-FRAME") && !bytes.includes("\x1bPtmux;"));
+        const deletion = terminal.writes.findIndex((bytes) => bytes.includes("a=d,d=i"));
+        assert.ok(frame >= 0 && deletion > frame, "physical host removal frame must precede scoped private deletion even with fully cached guards");
+        if (withUpper) {
+          assert.equal(upper.isFocused(), true); assert.ok(upper.getBounds());
+          assert.ok(terminal.output.includes("UPPER-HOST-FRAME")); upper.hide(); upper = undefined;
+        } else assert.equal(tui.hasOverlay(), false);
+      }
+    } finally { upper?.hide(); await viewer.dispose(); await done; presentation.disconnect(); widget?.dispose(); tui.stop(); restore(); }
   });
 }

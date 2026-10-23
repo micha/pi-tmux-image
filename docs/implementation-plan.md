@@ -2,6 +2,21 @@
 
 ## Status and authorization
 
+**Viewer 0.3.0 candidate:** UI/controller is implemented after plan `d324d87`,
+feasibility gate `e92b1cd`, pure phase `dd13569` and shared runtime `5898185`.
+The current UI changes are not yet a committed/activated owner package. Final
+production public SDK matrix **15/15**, host suite **181/181**, existing SDK
+**12/12** and portable **150 passed / 31 optional skips** pass; all new viewer
+pixel checks remain human-pending, distinct from observed baseline inline behavior.
+`/tmux-image-view` and ready-cell-only fullscreen clicks select active-branch stored
+snapshots without rereads, session/history fields, attachments or model turns.
+Defaults: 1.25× fit-relative zoom, 25% minimum, dynamic 297-canvas maximum,
+four-cell pan, fit each open, normalized-center/zoom preservation on resize and
+20×7 graphical minimum. Admission/focus-loss cancellation, a single prepare/latest
+runner, public removal-frame flush before retirement and guarded tombstone recovery
+are integrated. See [viewer-seam.md](viewer-seam.md) for current evidence and
+[viewer-verification.md](viewer-verification.md) for the separate acceptance matrix.
+
 **Viewer Step 1 update:** owner-authorized proceeding from plan checkpoint
 `d324d87`; coordinated automated gates now pass (**131/131** host suite).
 Use widget-injected public `TUI.showOverlay` with owned scoped cleanup, existing
@@ -10,8 +25,8 @@ modal/search admission refusal and close-on-public-focus-loss; do not use
 bounded at **297x297** and explicit viewport-subset marks, not ignored virtual
 source cropping. Exact evidence/limitations: [viewer-seam.md](viewer-seam.md),
 [viewer-crop.md](viewer-crop.md), [viewer-lifetime.md](viewer-lifetime.md).
-Fit-relative defaults/limits must be chosen and recorded next. Production viewer
-controls and manual viewer pixel acceptance are still pending; existing native
+Fit-relative defaults/limits are explicitly selected above. Manual viewer pixel
+acceptance is still pending; existing native
 contracts and disabled budgeting below remain unchanged.
 
 **Next UX handoff:** [image-viewer-plan.md](image-viewer-plan.md) records the agreed

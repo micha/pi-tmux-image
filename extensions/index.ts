@@ -1,11 +1,12 @@
 import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { Type } from "@earendil-works/pi-ai";
-import { getCapabilities, getCellDimensions, truncateToWidth } from "@earendil-works/pi-tui";
+import { getCapabilities, getCellDimensions, MouseRegion, matchesKey, parseKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { convertToPng, createReadTool, defineTool, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { captureLayout, createNativeRenderer, NATIVE_SCHEMA, readLegacyDetails, readNativeDetails, sanitizeDisplayText } from "../src/native.mjs";
 import { withPdfPages } from "../src/pdf.mjs";
 import { createPresentation } from "../src/presentation.mjs";
+import { createViewerController, indexSnapshots } from "../src/viewer.mjs";
 import { checkDisplayPolicy, resolvePiDisplayPolicy, TmuxCapabilityDetector } from "../src/capabilities.mjs";
 
 const MESSAGE_TYPE = "pi-tmux-image";
@@ -14,11 +15,53 @@ export default function (pi: ExtensionAPI) {
   const presentation = createPresentation();
   const native = createNativeRenderer({ convertToPng });
   const legacyOccurrences = new WeakMap<object, string>();
+  const legacyEntryOccurrences = new Map<string, string>();
   const detector = new TmuxCapabilityDetector();
   let liveContext: ExtensionContext | undefined;
   let generation = 0;
   let capabilityFailure: string | undefined;
   const capabilityWarnings = new Set<string>();
+  const viewer = createViewerController({ native, presentation,
+    getContext: () => liveContext, getSnapshots: storedSnapshots, requireCapability,
+    readyPolicy: (ctx: ExtensionContext) => checkDisplayPolicy(capabilityContext(ctx))?.message || capabilityFailure,
+    getCells: getCellDimensions, matchesKey, parseKey, truncateToWidth, visibleWidth, sanitizeText: sanitizeDisplayText,
+    style: (kind: string, text: string) => liveContext?.ui.theme.fg(kind as any, text) || text,
+    notify: (message: string, level: "info" | "warning" | "error") => liveContext?.ui.notify(message, level),
+  });
+
+  function legacyEntryOccurrence(id: string) {
+    let occurrence = legacyEntryOccurrences.get(id);
+    if (!occurrence) legacyEntryOccurrences.set(id, occurrence = randomUUID());
+    return occurrence;
+  }
+
+  function storedSnapshots() {
+    return indexSnapshots(liveContext?.sessionManager.getBranch() || [], (entry: any) => {
+      if (entry.type !== "custom_message" || entry.customType !== MESSAGE_TYPE || !Array.isArray(entry.content)) return;
+      const attachment = entry.content.find((block: any) => block.type === "image");
+      if (!attachment || typeof attachment.data !== "string" || typeof attachment.mimeType !== "string") return;
+      const details = readNativeDetails(entry.details) || readLegacyDetails(entry.details, legacyEntryOccurrence(entry.id));
+      if (!details) return;
+      return { occurrence: details.occurrence, label: details.label, attachment };
+    });
+  }
+
+  function legacyMessageOccurrence(message: any) {
+    const known = legacyOccurrences.get(message);
+    if (known) return known;
+    const attachment = Array.isArray(message.content) ? message.content.find((block: any) => block.type === "image") : undefined;
+    const entries = liveContext?.sessionManager.getBranch() || [];
+    const candidates = entries.filter((entry: any) => {
+      if (entry.type !== "custom_message" || entry.customType !== MESSAGE_TYPE) return false;
+      if (entry.content === message.content) return true;
+      if (!attachment || Date.parse(entry.timestamp) !== message.timestamp || !Array.isArray(entry.content)) return false;
+      const stored = entry.content.find((block: any) => block.type === "image");
+      return stored?.mimeType === attachment.mimeType && stored?.data === attachment.data;
+    });
+    const occurrence = candidates.length === 1 ? legacyEntryOccurrence(candidates[0].id) : randomUUID();
+    legacyOccurrences.set(message, occurrence);
+    return occurrence;
+  }
 
   function capabilityContext(ctx: ExtensionContext) {
     return { mode: ctx.mode, env: process.env, hostCapabilities: getCapabilities(),
@@ -60,7 +103,10 @@ export default function (pi: ExtensionAPI) {
     liveContext = ctx;
     presentation.attach(ctx, Boolean(process.env.TMUX));
   });
-  pi.on("session_shutdown", () => {
+  pi.on("session_shutdown", async () => {
+    // Revoke/hide/retire the private viewer while its captured TUI and policy
+    // context still exist; inline scrollback resources remain retained.
+    await viewer.close("session-shutdown");
     generation++;
     detector.invalidate();
     capabilityFailure = undefined;
@@ -68,6 +114,7 @@ export default function (pi: ExtensionAPI) {
     liveContext = undefined;
     presentation.disconnect();
   });
+  pi.on("session_tree", async () => { await viewer.close("branch-change"); });
 
   // Normal Pi image content, with no context filter. Pi's images.blockImages
   // controls model access independently of this local terminal renderer.
@@ -75,9 +122,7 @@ export default function (pi: ExtensionAPI) {
     let details = readNativeDetails(message.details);
     const attachment = Array.isArray(message.content) ? message.content.find((block) => block.type === "image") : undefined;
     if (!details && message.details && typeof message.details === "object" && !("schema" in message.details)) {
-      let occurrence = legacyOccurrences.get(message);
-      if (!occurrence) legacyOccurrences.set(message, occurrence = randomUUID());
-      details = readLegacyDetails(message.details, occurrence);
+      details = readLegacyDetails(message.details, legacyMessageOccurrence(message));
     }
     if (!details || !attachment) {
       const reason = message.details && typeof message.details === "object" && "schema" in message.details &&
@@ -101,8 +146,10 @@ export default function (pi: ExtensionAPI) {
       },
       fallback: (width: number, error?: Error) => [truncateToWidth(error ? `[Image: ${sanitizeDisplayText(error.message || error)}]` : "[Image: preparing native PNG]", width)],
     });
-    return {
+    let hit: { columns: number; rows: number } | undefined;
+    const component = {
       render(width: number) {
+        hit = undefined;
         if (!liveContext) return [truncateToWidth("[Image: local display is not connected]", width)];
         // Apply current public policy even to already-ready cached rows. There
         // are no subprocesses/decoders in this synchronous frame path.
@@ -110,10 +157,21 @@ export default function (pi: ExtensionAPI) {
         const reason = rejected?.message || capabilityFailure;
         if (reason) return [truncateToWidth(`[Image: ${sanitizeDisplayText(reason)}]`, width)];
         // Foreground/underline colors encode IDs. Do not restyle placeholder rows.
-        return [truncateToWidth(theme.fg("muted", details.label), width), ...image.render(width)];
+        const rows = image.render(width);
+        if (rows.length && rows.every((row: string) => row.includes("\u{10eeee}"))) {
+          hit = { columns: Math.min(width, Math.max(...rows.map(visibleWidth))), rows: rows.length };
+        }
+        return [truncateToWidth(theme.fg("muted", details.label), width), ...rows];
       },
-      invalidate() {},
+      invalidate() { hit = undefined; },
     };
+    return new MouseRegion(component, (event) => {
+      if (event.type !== "click" || event.button !== "left" || !hit || event.x < 0 || event.x >= hit.columns ||
+          event.y < 1 || event.y >= 1 + hit.rows) return;
+      // Handle only host-arbitrated click, never press/drag/wheel or label/padding.
+      void viewer.open(details.occurrence).catch((error: unknown) => { if (liveContext) notifyFailure(liveContext, error); });
+      return { handled: true, render: false };
+    });
   });
 
   function inputPath(args: string, ctx: ExtensionContext) {
@@ -173,6 +231,8 @@ export default function (pi: ExtensionAPI) {
         "Graphics: this runtime only; eviction disabled; terminal ACK: no\n" +
         `Resident: ${stats.resident.imageIds} image IDs / ${stats.resident.payloads} payloads; PNG ${stats.resident.pngBytes} bytes; RGBA estimate ${stats.resident.estimatedRgbaBytes} bytes\n` +
         `Placements: ${stats.placements.occurrences} occurrences / ${stats.placements.geometryVersions} prototypes; normalized ${stats.normalization.payloads} payloads / ${stats.normalization.pngBytes} PNG bytes\n` +
+        `Surfaces: ${stats.surfaces.inline} retained inline / ${stats.surfaces.viewer} tracked viewer (${stats.surfaces.liveViewer} live); viewer retirement pending: ${stats.viewer.retirementPending ? "yes" : "no"}\n` +
+        `Viewer operations: epoch ${stats.surfaceTransfer.replacementCommands} replacements / ${stats.surfaceTransfer.retirementCommands} retirements; runtime ${stats.runtimeSurfaceTransfer.replacementCommands} replacements / ${stats.runtimeSurfaceTransfer.retirementCommands} retirements\n` +
         `Epoch transfer: ${stats.transfer.wireBytes} wire bytes / ${stats.transfer.uploadChunks} PNG chunks / ${stats.transfer.placementCommands} placement commands\n` +
         `Runtime transfer: ${stats.runtimeTransfer.wireBytes} wire bytes / ${stats.runtimeTransfer.uploadChunks} PNG chunks / ${stats.runtimeTransfer.placementCommands} placement commands\n` +
         `Uncounted: prior-runtime/external resources and terminal/GPU overhead; accounting errors: ${stats.accounting.errors}` +
@@ -187,6 +247,7 @@ export default function (pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       try {
         requireInteractive(ctx);
+        await viewer.close("refresh");
         generation++;
         detector.invalidate();
         capabilityFailure = undefined;
@@ -195,8 +256,17 @@ export default function (pi: ExtensionAPI) {
         // Every resulting replay prepare independently checks capability first.
         presentation.refresh();
         await requireCapability(ctx);
+        await viewer.retryRetirement();
         ctx.ui.notify("Capabilities refreshed; image residency reset and stored snapshots will repaint without rereading files", "info");
       } catch (error) { notifyFailure(ctx, error); }
+    },
+  });
+
+  pi.registerCommand("tmux-image-view", {
+    description: "Open an existing stored image/PDF-page snapshot; newest-first keyboard picker",
+    handler: async (_args, ctx) => {
+      try { requireInteractive(ctx); await viewer.open(); }
+      catch (error) { notifyFailure(ctx, error); }
     },
   });
 
