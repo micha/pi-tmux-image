@@ -12,7 +12,7 @@ function harness() {
     requestRender() { events.push(["repaint"]); },
   };
   const ctx = { mode: "tui", ui: { setWidget(_key, factory) { widget?.dispose(); widget = factory(tui); } } };
-  return { presentation, events, ctx, get widget() { return widget; } };
+  return { presentation, events, ctx, tui, get widget() { return widget; } };
 }
 
 test("only interactive tmux attaches a zero-row transport owner", () => {
@@ -88,6 +88,30 @@ test("disconnect cancels stale completion and a new epoch cannot trust residency
   await settle();
   assert.deepEqual(component.render(10), ["new cells"]);
   assert.deepEqual(h.events, [["write", "new upload"], ["repaint"]]);
+});
+
+test("upload callbacks commit after write; failures and stale completion release reservations", async () => {
+  const h = harness();
+  h.presentation.attach(h.ctx, true);
+  const events = [];
+  const component = h.presentation.component({
+    key: "commit",
+    prepare: () => ({ uploads: "bytes", lines: ["cells"],
+      onUploaded() { events.push([...h.events]); }, onUploadFailed() { assert.fail("unexpected failed write"); } }),
+    fallback: () => ["loading"],
+  });
+  component.render(10); await settle();
+  assert.deepEqual(events, [[["write", "bytes"]]], "commit precedes ready repaint but follows transport write");
+  const failed = h.presentation.component({
+    key: "failure",
+    prepare: () => ({ uploads: "bytes", lines: ["cells"],
+      onUploaded() { assert.fail("failed write cannot commit"); }, onUploadFailed() { events.push("released"); } }),
+    fallback: (_width, error) => [error?.message || "loading"],
+  });
+  h.tui.terminal.write = () => { throw new Error("broken transport"); };
+  failed.render(10); await settle();
+  assert.equal(events.at(-1), "released");
+  assert.deepEqual(failed.render(10), ["broken transport"]);
 });
 
 test("failed upload never exposes placeholder rows or retries every frame", async () => {

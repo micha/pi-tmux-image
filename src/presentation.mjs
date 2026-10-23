@@ -37,6 +37,9 @@ export function createPresentation() {
     },
     disconnect,
     get epoch() { return connection?.epoch; },
+    get dimensions() {
+      return connection ? { columns: connection.tui.terminal.columns, rows: connection.tui.terminal.rows } : undefined;
+    },
     /** Existing command-time uploads use the same public terminal transport. */
     write(uploads) {
       if (!connection) throw new Error("pi-tmux-image terminal transport is not connected");
@@ -63,21 +66,28 @@ export function createPresentation() {
             record = { lines: undefined, error: undefined };
             sizes.set(width, record);
             // Even synchronous preparation runs outside the synchronous host frame.
+            let prepared;
             Promise.resolve().then(() => {
               active.controller.signal.throwIfAborted();
               return prepare(width, { epoch: active.epoch, signal: active.controller.signal });
-            }).then((prepared) => {
-              if (connection !== active) return;
+            }).then((result) => {
+              prepared = result;
+              if (connection !== active) {
+                prepared.onUploadFailed?.(new Error("Image connection replaced before upload"));
+                return;
+              }
               if (!Array.isArray(prepared.lines) || !prepared.lines.every((line) => typeof line === "string") ||
                   typeof prepared.uploads !== "string") {
                 throw new Error("Invalid prepared image presentation");
               }
               // write() queues all bytes in the host's stream before ready rows can
               // enter a later frame. This is stream order, not a terminal ACK.
-              active.tui.terminal.write(prepared.uploads);
+              if (prepared.uploads) active.tui.terminal.write(prepared.uploads);
+              prepared.onUploaded?.();
               record.lines = prepared.lines.slice();
               active.tui.requestRender();
             }).catch((error) => {
+              prepared?.onUploadFailed?.(error);
               if (connection !== active) return;
               record.error = error;
               active.tui.requestRender();

@@ -6,20 +6,28 @@ The owner approved the implementation order below and requested this written
 handoff. The working package was committed first as `d92adcf`:
 `Package tmux image and PDF viewer for Pi`.
 
-Prerequisite renderer seam now implemented and verified against installed Pi
-1.0.3 with automated public-API host tests: a zero-row widget supplies the TUI
-transport, connection epochs guard stale work, and asynchronous preparation can
-upload before exposing placeholder cells and requesting repaint. Existing Chafa
-command uploads use this supported transport. See `docs/renderer-seam.md` for
-exact API evidence, test invocation, lifecycle behavior and the unsafe wrapped
-line-prefix/forced-native Kitty reset boundaries.
+Prerequisite renderer seam was committed as `a920572`, verified against installed
+Pi 1.0.3 with automated public-API host tests. A zero-row widget supplies the TUI
+transport, connection epochs guard stale work, and asynchronous preparation
+uploads before exposing placeholder cells and requesting repaint. See
+`docs/renderer-seam.md` for exact API evidence and the unsafe wrapped line-prefix/
+forced-native Kitty reset boundaries.
 
-This verification is automated stream/component evidence only; no new
-human-observed image/PDF checks establish native rendering or recovery. Native
-encoding/normalization helpers are prerequisite work, not integrated phases.
-Phases 1–4 below remain pending integration and their full acceptance checks;
-existing fixed-grid, replay and capability limitations remain in force. Preserve
-the detailed handoff below as the implementation and acceptance plan.
+Phase 1 native integration is now implemented: fixed initial aspect-fit geometry,
+public Pi PNG normalization, versioned snapshot metadata, randomized stable local
+IDs and successful-write residency commits. PNG/JPEG/GIF/WebP/BMP normalization
+parity and animated still handling have actual-host automated coverage. Chafa's
+implementation/tests were removed after parity verification. Native messages
+regenerate from stored snapshots in a fresh connection;
+legacy unversioned messages currently show a readable redisplay fallback.
+
+Verification is automated stream/component/pipeline evidence only; native
+image/PDF pixel correctness, scrolling and window-switch observations remain
+pending. Phase 1 is not claimed visually accepted. Phases 2–4 remain pending
+integration and their full acceptance checks: actual geometry resizing, legacy
+snapshot migration, explicit reconnect recovery, capability detection and optional
+graphics budgeting are not integrated. Preserve the detailed handoff below as
+the implementation and acceptance plan.
 
 Read `AGENTS.md` before working. Keep human documentation in `README.md` and
 implementation instructions here. Inspect Git state and current host APIs before
@@ -42,30 +50,44 @@ Current code:
 
 - `extensions/index.ts` registers `/tmux-image`, `/tmux-pdf`,
   `tmux_show_image`, `tmux_show_pdf`, and the `pi-tmux-image` message renderer.
-- `src/graphics.mjs` runs Chafa, separates tmux-wrapped graphics uploads from
-  ordinary placeholder rows, normalizes row separators, and rejects remaining
-  non-SGR controls in those rows.
+- `src/native.mjs` prepares native PNG uploads/virtual placements from immutable
+  image snapshots, caches normalization, aspect-fits the fixed initial grid and
+  serializes per-epoch transport commits. `src/kitty.mjs` and `src/identity.mjs`
+  are pure protocol/identity helpers; `src/normalize.mjs` uses injected public
+  Pi `convertToPng` for non-PNG snapshots.
+- `src/presentation.mjs` separates public TUI transport from synchronous layout,
+  publishes cells only after a successful write callback, and rejects stale work.
+- The obsolete `src/graphics.mjs` Chafa parser/subprocess implementation and its
+  tests were removed after actual-host advertised-format parity verification.
 - `src/pdf.mjs` uses `pdftoppm` from PATH to rasterize the first two PDF pages
   (1200-pixel longest side), visits the PNGs, and removes temporary files.
 - Viewer commands/tools attach standard Pi image content from `createReadTool`.
-  Pixel uploads are written separately to stdout; placeholder cells are stored
-  in message details for local rendering. No extension context filter exists.
+  Local normalization validates before `sendMessage` so failures remain failed
+  tools. Versioned details contain only occurrence/label/geometry; upload bytes,
+  placeholder cells and residency are runtime-only. No extension context filter
+  exists, and render preparation never rereads the original path.
 - `pi.sendMessage(..., { triggerTurn: false })` preserves tool-call/result ordering.
-- The grid is capped at 60 columns by 24 rows. Chafa capture is capped at 64 MiB
-  per image, with a size notification. Existing grids are not resized or replayed.
-- `npm test` runs 19 dependency-free Node tests. Local installation, Pi package
-  discovery, non-TUI rejection, and real image/PDF generation were also tested in
-  isolated configurations; not all of those smoke tests are checked into Git.
+- The initial grid is capped at 60 columns by 24 rows, using supported cell-pixel
+  dimensions for aspect fitting. Existing grids do not resize yet. Native byte/
+  chunk metrics replace Chafa capture messaging. Forced Pi native Kitty graphics
+  are explicitly rejected without changing host capabilities.
+- `npm test` runs portable protocol, normalization, presentation and lifecycle
+  tests; optional host imports exercise actual Pi conversion and renderer APIs.
+  `test/host-integration.mjs` checks isolated package installation, sequential
+  viewer tools, both image-blocking states and non-TUI zero-graphics behavior
+  against an offline test model runtime, never the active incompatible model.
 
-Human-observed success: Ghostty behind tmux 3.6a, Pi 1.0.3, image/PDF display
-surviving additional responses and transcript scrolling. The native OMP code was
-inspected, not installed or visually tested. Do not treat its tests as proof of
-our extension's behavior.
+Human-observed legacy prototype success: Ghostty behind tmux 3.6a, Pi 1.0.3,
+image/PDF display surviving additional responses and transcript scrolling. This
+observation does not establish native integration pixel correctness. The native
+OMP code was inspected, not installed or visually tested; no OMP implementation
+was copied. Do not treat its tests as proof of our extension's behavior.
 
 Machine prerequisites are currently installed: Chafa 1.18.2 and Poppler CLI tools
-26.06.0. `pdftoppm` is on `/run/current-system/sw/bin` after the independently
-verified NixOS configuration commit `5b724a2`. No OS changes are needed for this
-handoff. Package code must continue resolving executables through PATH.
+26.06.0. Chafa is no longer required by the active extension. `pdftoppm` is on
+`/run/current-system/sw/bin` after the independently verified NixOS configuration
+commit `5b724a2`. No OS changes are needed for this handoff. Package code must
+continue resolving executables through PATH.
 
 Temporary manual fixtures may still exist:
 

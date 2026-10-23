@@ -7,8 +7,9 @@ The approved next-phase handoff is in `docs/implementation-plan.md`. Read it bef
 ## Scope and architecture
 
 - `extensions/index.ts`: Pi commands, tools, standard image attachments and custom local renderer.
-- `src/presentation.mjs`: public zero-row widget/TUI transport seam, connection epochs and asynchronous upload-before-placement/repaint ordering. See `docs/renderer-seam.md` for verified boundaries; native encoding and replay are not integrated yet.
-- `src/graphics.mjs`: Chafa invocation and separation of tmux uploads from Unicode-placeholder rows.
+- `src/presentation.mjs`: public zero-row widget/TUI transport seam, connection epochs and asynchronous upload-before-placement/repaint ordering; successful-write callbacks commit runtime residency. See `docs/renderer-seam.md` for verified host boundaries.
+- `src/native.mjs`: snapshot normalization cache, fixed-grid aspect fitting, versioned display metadata and serialized per-epoch upload commits; uses pure `src/kitty.mjs`/`src/identity.mjs` helpers and injected public Pi conversion via `src/normalize.mjs`.
+- `src/kitty.mjs`, `src/kitty-diacritics.mjs`, `src/identity.mjs` and `src/normalize.mjs`: pure/bounded native protocol, stable IDs and immutable snapshot normalization; no terminal side effects. The obsolete Chafa implementation was removed after advertised format parity checks passed.
 - `src/pdf.mjs`: bounded two-page Poppler rasterization with temporary-file cleanup.
 - `test/*.test.mjs`: dependency-free Node tests for parsing, subprocess contracts, cleanup, packaging and presentation; optional `test/host-seam.test.mjs` exercises installed Pi public APIs without model requests.
 - `package.json`: explicit Pi package manifest. Extension imports are supplied by Pi as peer dependencies, never bundled runtime dependencies.
@@ -29,11 +30,11 @@ The approved next-phase handoff is in `docs/implementation-plan.md`. Read it bef
 ## Verification
 
 - Run `npm test` before committing.
-- Run optional actual-host tests with `PI_OFFLINE=1 PI_TEST_HOST_ROOT=/path/to/installed/coding-agent/package npm test`. The root must contain `dist/index.js` and its host-supplied `node_modules/@earendil-works/pi-tui`; do not install physical host dependencies into this repository. Stream/component assertions are automated evidence, not human-observed pixels.
+- Run optional actual-host tests with `PI_OFFLINE=1 PI_TEST_HOST_ROOT=/path/to/installed/coding-agent/package PI_IMAGE_HOST_MODULE=/path/to/installed/coding-agent/package/dist/index.js npm test` and `PI_OFFLINE=1 PI_TEST_HOST_ROOT=/path/to/installed/coding-agent/package node --test test/host-integration.mjs`. The root must contain `dist/index.js` and its host-supplied `node_modules/@earendil-works/pi-tui`; do not install physical host dependencies into this repository. Stream/component assertions are automated evidence, not human-observed pixels.
 - Verify `pi install .` using a temporary `PI_CODING_AGENT_DIR`, not the active user's settings. Inspect package discovery/loading without contacting an LLM provider.
 - For changes to Pi APIs, consult the installed Pi docs and extension examples. The tested starting API version is Pi 1.0.3; do not guess newer signatures.
 - For renderer changes, visually test images and PDFs: new text, scroll up/down, pane position, resizing, and switching windows. State explicitly which checks were automated versus human-observed.
-- Existing grid resizing, upload replay, converter synchronization and two-page limitations are intentional current boundaries. Do not claim they are solved without implementing and testing them.
+- Fixed-grid resizing, legacy snapshot migration, explicit terminal-reconnect recovery and the two-page PDF default remain current boundaries. Versioned native snapshots can prepare again in a fresh connection; do not equate this with complete Phase 2 replay/resize acceptance.
 - Keep README installation examples and limitations consistent with the code.
 
 ## Repository hygiene

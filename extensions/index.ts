@@ -1,8 +1,9 @@
 import { resolve } from "node:path";
+import { randomUUID } from "node:crypto";
 import { Type } from "@earendil-works/pi-ai";
-import { truncateToWidth } from "@earendil-works/pi-tui";
-import { createReadTool, defineTool, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { MAX_CHAFA_BYTES, renderPlaceholders } from "../src/graphics.mjs";
+import { getCapabilities, getCellDimensions, truncateToWidth } from "@earendil-works/pi-tui";
+import { convertToPng, createReadTool, defineTool, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { createNativeRenderer, NATIVE_SCHEMA, readNativeDetails, sanitizeDisplayText } from "../src/native.mjs";
 import { withPdfPages } from "../src/pdf.mjs";
 import { createPresentation } from "../src/presentation.mjs";
 
@@ -10,6 +11,7 @@ const MESSAGE_TYPE = "pi-tmux-image";
 
 export default function (pi: ExtensionAPI) {
   const presentation = createPresentation();
+  const native = createNativeRenderer({ convertToPng });
   pi.on("session_start", (_event, ctx) => {
     presentation.attach(ctx, Boolean(process.env.TMUX));
   });
@@ -18,12 +20,25 @@ export default function (pi: ExtensionAPI) {
   // Normal Pi image content, with no context filter. Pi's images.blockImages
   // controls model access independently of this local terminal renderer.
   pi.registerMessageRenderer(MESSAGE_TYPE, (message, _options, theme) => {
-    const details = message.details as { lines: string[]; columns: number; label: string };
+    const details = readNativeDetails(message.details);
+    const attachment = Array.isArray(message.content) ? message.content.find((block) => block.type === "image") : undefined;
+    if (!details || !attachment) {
+      const reason = message.details && typeof message.details === "object" && "schema" in message.details &&
+        message.details.schema !== NATIVE_SCHEMA ? "unsupported display schema" : "legacy or invalid display; redisplay to regenerate";
+      return { render: (width: number) => [truncateToWidth(`[Image: ${reason}]`, width)], invalidate() {} };
+    }
+    const image = presentation.component({
+      key: details.occurrence,
+      prepare: (_width: number, context: { epoch: symbol; signal: AbortSignal }) =>
+        native.prepare({ attachment, occurrence: details.occurrence, geometry: details.geometry }, context),
+      fallback: (width: number, error?: Error) => [truncateToWidth(error ? `[Image: ${sanitizeDisplayText(error.message || error)}]` : "[Image: preparing native PNG]", width)],
+    });
     return {
       render(width: number) {
-        if (width < details.columns) return [truncateToWidth("[Image: pane too narrow]", width)];
-        // Foreground colors encode image IDs. Do not restyle placeholder rows.
-        return [truncateToWidth(theme.fg("muted", details.label), width), ...details.lines];
+        if (getCapabilities().images === "kitty") return [truncateToWidth("[Image: forced Pi Kitty graphics unsupported; use auto detection in tmux]", width)];
+        if (width < details.geometry.columns) return [truncateToWidth("[Image: pane too narrow]", width)];
+        // Foreground/underline colors encode IDs. Do not restyle placeholder rows.
+        return [truncateToWidth(theme.fg("muted", details.label), width), ...image.render(width)];
       },
       invalidate() {},
     };
@@ -32,6 +47,9 @@ export default function (pi: ExtensionAPI) {
   function requireTerminal(ctx: ExtensionContext) {
     if (ctx.mode !== "tui" || !process.env.TMUX) {
       throw new Error("pi-tmux-image requires interactive Pi inside tmux");
+    }
+    if (getCapabilities().images === "kitty") {
+      throw new Error("pi-tmux-image does not support forced Pi Kitty graphics: host redraws may delete extension uploads; use Pi's automatic tmux detection");
     }
   }
 
@@ -44,33 +62,30 @@ export default function (pi: ExtensionAPI) {
     requireTerminal(ctx);
     signal?.throwIfAborted();
     const path = inputPath(args, ctx);
-    const columns = Math.min(60, Math.max(1, (process.stdout.columns || 80) - 4));
-    const rows = Math.min(24, Math.max(1, (process.stdout.rows || 40) - 8));
+    const dimensions = presentation.dimensions;
+    const columns = Math.min(60, Math.max(1, (dimensions?.columns || 80) - 4));
+    const rows = Math.min(24, Math.max(1, (dimensions?.rows || 40) - 8));
     const imageResult = await createReadTool(ctx.cwd).execute("tmux-image", { path }, signal);
-    if (!imageResult.content.some((block) => block.type === "image")) {
+    const attachment = imageResult.content.find((block) => block.type === "image");
+    if (!attachment) {
       throw new Error("Pi could not read this file as an image attachment");
     }
+    // Validate conversion before adding the viewer message: tool failures remain
+    // failed results, never successful attachments with only a rendering error.
+    const { geometry, pngBytes, uploadChunks } = await native.describe(attachment, { columns, rows }, getCellDimensions(), signal);
     signal?.throwIfAborted();
-    const { uploads, lines, outputBytes } = renderPlaceholders(path, columns, rows);
-    signal?.throwIfAborted();
-    ctx.ui.notify(
-      `Chafa: ${(outputBytes / 1024 / 1024).toFixed(2)} MiB / 64 MiB ` +
-      `(${(100 * outputBytes / MAX_CHAFA_BYTES).toFixed(1)}% of capture limit)`,
-      "info",
-    );
-    // Virtual placement (U=1) does not depend on the outer terminal's cursor.
-    presentation.write(uploads);
+    ctx.ui.notify(`Native PNG: ${(pngBytes / 1024).toFixed(1)} KiB, ${uploadChunks} upload chunk(s) when first resident`, "info");
     pi.sendMessage({
       customType: MESSAGE_TYPE,
       content: imageResult.content,
       display: true,
-      details: { lines, columns, outputBytes, label: label || path },
+      details: { schema: NATIVE_SCHEMA, occurrence: randomUUID(), geometry, label: sanitizeDisplayText(label || path) },
     }, {
       // Preserve provider tool-call/result ordering. During an agent turn Pi
       // appends these attachments after the tool results without steering.
       triggerTurn: false,
     });
-    return { outputBytes };
+    return { pngBytes, uploadChunks, columns: geometry.columns, rows: geometry.rows };
   }
 
   async function showPdf(args: string, ctx: ExtensionContext, signal?: AbortSignal) {
@@ -102,7 +117,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool(defineTool({
     name: "tmux_show_image",
     label: "Display image",
-    description: "Display an image to the user in Pi's tmux transcript using Unicode placeholders. Image attachments follow Pi's blockImages setting; local display does not require model vision. Requires interactive Pi inside tmux and chafa on PATH.",
+    description: "Display an image to the user in Pi's tmux transcript using Unicode placeholders. Image attachments follow Pi's blockImages setting; local display does not require model vision. Requires interactive Pi inside tmux with passthrough and Unicode-placeholder support.",
     parameters,
     executionMode: "sequential",
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
@@ -115,7 +130,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool(defineTool({
     name: "tmux_show_pdf",
     label: "Display PDF",
-    description: "Render and display the first two pages of a PDF in Pi's tmux transcript using Unicode placeholders. Page-image attachments follow Pi's blockImages setting; local display does not require model vision. Requires interactive Pi inside tmux, chafa and pdftoppm on PATH.",
+    description: "Render and display the first two pages of a PDF in Pi's tmux transcript using Unicode placeholders. Page-image attachments follow Pi's blockImages setting; local display does not require model vision. Requires interactive Pi inside tmux with passthrough and Unicode-placeholder support, and pdftoppm on PATH.",
     parameters,
     executionMode: "sequential",
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },

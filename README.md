@@ -2,14 +2,14 @@
 
 Display images and PDF pages in [Pi](https://pi.dev) inside tmux, with images that move with the transcript and survive scrolling.
 
-Uses Chafa's Kitty **Unicode placeholders**: image pixels are uploaded through tmux passthrough, while ordinary text cells anchor the image. Simply forwarding Kitty image commands is not enough to keep graphics positioned correctly inside a pane.
+Uses native Kitty **Unicode placeholders**: image pixels are uploaded through tmux passthrough, while ordinary text cells anchor the image. Simply forwarding Kitty image commands is not enough to keep graphics positioned correctly inside a pane. PNG encoding is built in; other advertised image formats are normalized with Pi's public converter. Chafa is no longer required.
 
 ## Requirements
 
 - Pi with the `@earendil-works` extension APIs (tested with Pi 1.0.3).
 - A terminal supporting Kitty graphics **and Unicode placeholders**. Tested with Ghostty behind tmux 3.6a.
 - tmux passthrough enabled.
-- `chafa` on PATH (tested with Chafa 1.18.2).
+- Pi's native image protocol must remain at automatic tmux detection (normally no native protocol). Forced Pi Kitty graphics are rejected because host redraws can delete extension uploads.
 - For PDFs, `pdftoppm` on PATH, from the Poppler command-line tools.
 
 Enable passthrough for your tmux server:
@@ -26,10 +26,10 @@ set -g allow-passthrough on
 
 `all` also works, but permits passthrough from invisible panes; `on` is sufficient for viewing images in the visible pane.
 
-Install Chafa and Poppler using your platform's package manager. For a temporary Nix environment without changing system configuration:
+Install Poppler using your platform's package manager if you need PDFs. For a temporary Nix environment without changing system configuration:
 
 ```sh
-nix shell nixpkgs#chafa nixpkgs#poppler-utils
+nix shell nixpkgs#poppler-utils
 pi
 ```
 
@@ -94,18 +94,21 @@ Local display and sending images to the model are separate operations. These com
 
 With blocking enabled, you can see the images while the model receives a text placeholder. With blocking disabled, the attachments remain available to Pi's model-request pipeline; actual vision support depends on the selected model and provider.
 
-The extension does not override this setting or install a context filter. Terminal upload sequences and placeholder rows stay in rendering details, not model-facing content. Attachments are stored in Pi's session even when they are blocked from model requests; blocking is not a session-storage privacy setting.
+The extension does not override this setting or install a context filter. Terminal upload sequences and placeholder rows stay in runtime presentation state, not session details or model-facing content. Attachments are stored in Pi's session even when they are blocked from model requests; blocking is not a session-storage privacy setting.
 
 ## Limits
 
 - This is an early package based on a working prototype, not a general replacement for Pi's native image renderer.
 - Only these commands/tools use the placeholder renderer. Built-in `read` and images from other tools are unchanged.
 - PDFs are rasterized to PNG at up to 1200 pixels on the longest side; the original PDF document is not sent to the model.
-- Display grids are capped at 60 columns by 24 rows. Resizing does not regenerate existing grids; narrow panes show a warning.
-- Chafa output is captured with a **64 MiB per-image limit**, with its size reported in Pi. This is not a limit on the PDF file size.
-- PDF scratch PNGs are removed after viewing. Standard image attachments and placeholder rows remain in the session.
-- Image upload replay after `/reload`, a restart, or terminal reconnection is not implemented. Redisplay the file if old images go blank.
-- External converters run synchronously, with a 10-second Chafa timeout and a 30-second PDF timeout. Very large or complex files can fail. Cancellation is checked between processing steps, not during a running converter.
+- PNG, JPEG, GIF, WebP and BMP snapshots are supported. Animated GIF/WebP use a still frame. Pi's built-in read detection currently rejects APNG files before this viewer receives an attachment.
+- Display grids initially aspect-fit within 60 columns by 24 rows using Pi's supported cell-pixel dimensions. Resizing does not regenerate existing grids yet; narrow panes show a warning.
+- Local normalization is bounded to 16 MiB input, 64 MiB PNG output, 8192 pixels per dimension and 16 million pixels. These are local image limits, not PDF file-size limits.
+- Pi reports normalized PNG bytes and anticipated upload chunks. Shared PNGs transmit once per runtime connection; additional occurrences or geometries need only virtual placement commands. There is no graphics-memory eviction policy.
+- PDF scratch PNGs are removed after viewing. Versioned messages keep the standard image snapshot plus label/geometry metadata, not temporary paths as their pixel source or duplicated pixels in details.
+- Versioned native messages prepare from their stored snapshots when rendered, including after a reload, without rereading the source file. Explicit terminal-reconnect recovery and resize-aware replay are still pending. Older unversioned Chafa messages show a readable redisplay fallback; legacy snapshot migration is not implemented yet.
+- Non-PNG normalization uses Pi's in-process converter. Cancellation is cooperative between steps, not preemptive during decoding. PDF conversion retains a bounded 30-second Poppler timeout.
+- The old Chafa renderer was human-tested in Ghostty/tmux. Native encoding, ordering, normalization and reload have automated checks; native image/PDF pixel correctness and interactive scroll/resize/window-switch checks are still pending.
 
 ## Remove
 
@@ -127,4 +130,15 @@ The automated tests require only Node.js, without installing the host-provided P
 npm test
 ```
 
-After changing the extension, use `/reload` and visually verify scrolling in a real tmux pane. Automated tests cannot establish that a terminal actually displays the image.
+Optional installed-host checks use public Pi APIs without real model requests:
+
+```sh
+PI_OFFLINE=1 PI_TEST_HOST_ROOT=/path/to/installed/coding-agent/package \
+  PI_IMAGE_HOST_MODULE=/path/to/installed/coding-agent/package/dist/index.js npm test
+PI_OFFLINE=1 PI_TEST_HOST_ROOT=/path/to/installed/coding-agent/package \
+  node --test test/host-integration.mjs
+```
+
+See `docs/renderer-seam.md`, `docs/kitty-protocol.md` and `docs/pixel-normalization.md` for integration boundaries and specification attribution. The protocol helpers follow the public Kitty specification; no OMP implementation was copied and no project license has been selected.
+
+After changing the extension, coordinate `/reload` and visually verify images/PDFs, scrolling and pane/window behavior in a real tmux pane. Automated stream/component tests cannot establish that a terminal actually displays the image.

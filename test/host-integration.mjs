@@ -1,0 +1,337 @@
+// Optional actual-host integration: node --test test/host-integration.mjs
+// Uses only public package exports. No physical Pi imports in the portable suite.
+import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises";
+import { createRequire } from "node:module";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { tmpdir } from "node:os";
+import { promisify } from "node:util";
+import { deflateSync } from "node:zlib";
+import test from "node:test";
+
+const run = promisify(execFile);
+const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const require = createRequire(import.meta.url);
+let entry;
+if (process.env.PI_TEST_HOST_ROOT) {
+  const root = resolve(process.env.PI_TEST_HOST_ROOT);
+  const manifest = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
+  entry = join(root, manifest.main || "dist/index.js");
+} else {
+  try { entry = require.resolve("@earendil-works/pi-coding-agent"); }
+  catch (error) { if (error.code !== "MODULE_NOT_FOUND") throw error; }
+}
+const host = entry ? await import(pathToFileURL(entry).href) : undefined;
+const hostRoot = entry ? dirname(dirname(entry)) : undefined;
+const tuiModule = entry ? await import(pathToFileURL(createRequire(entry).resolve("@earendil-works/pi-tui")).href) : undefined;
+function pngFixture() {
+  function chunk(type, payload) {
+    const header = Buffer.alloc(8); header.writeUInt32BE(payload.length); header.write(type, 4);
+    let crc = 0xffffffff;
+    for (const byte of Buffer.concat([Buffer.from(type), payload])) {
+      crc ^= byte;
+      for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0);
+    }
+    const checksum = Buffer.alloc(4); checksum.writeUInt32BE((crc ^ 0xffffffff) >>> 0);
+    return Buffer.concat([header, payload, checksum]);
+  }
+  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(1); ihdr.writeUInt32BE(1, 4); ihdr[8] = 8; ihdr[9] = 6;
+  return Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]), chunk("IHDR", ihdr), chunk("IDAT", deflateSync(Buffer.from([0,255,0,0,255]))), chunk("IEND", Buffer.alloc(0))]);
+}
+const png = pngFixture().toString("base64");
+const placeholder = "\u{10eeee}";
+
+// Self-contained two-page PDF; Poppler is exercised rather than stubbed.
+function pdfFixture() {
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 72 72] /Contents 5 0 R >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 72 72] /Contents 6 0 R >>",
+    "<< /Length 25 >>\nstream\n1 0 0 rg 0 0 72 72 re f\n\nendstream",
+    "<< /Length 25 >>\nstream\n0 0 1 rg 0 0 72 72 re f\n\nendstream",
+  ];
+  let data = "%PDF-1.4\n";
+  const offsets = [0];
+  objects.forEach((body, index) => { offsets.push(Buffer.byteLength(data)); data += `${index + 1} 0 obj\n${body}\nendobj\n`; });
+  const xref = Buffer.byteLength(data);
+  data += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  data += offsets.slice(1).map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`).join("");
+  return data + `trailer\n<< /Size 7 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+}
+
+const model = {
+  id: "offline", name: "Offline test model", api: "offline-test", provider: "offline-test",
+  baseUrl: "http://invalid.invalid", reasoning: false, input: ["text", "image"],
+  contextWindow: 100000, maxTokens: 1000,
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+};
+function offlineRuntime(calls, requests) {
+  // Public SDK modelRuntime boundary. There is deliberately no network client,
+  // credential store, provider lookup, or real stream implementation in this mock.
+  return {
+    getModel: () => model,
+    getPhysicalModel: () => model,
+    getModels: () => [model],
+    getAvailableSnapshot: () => [model],
+    getError: () => undefined,
+    hasConfiguredAuth: () => true,
+    isUsingOAuth: () => false,
+    isUsingSubscription: () => false,
+    getAuth: async () => ({ apiKey: "offline-not-a-secret" }),
+    streamSimple(_model, context) {
+      requests.push(structuredClone(context));
+      assert.ok(requests.length <= 2, "viewer messages triggered an extra model request");
+      const first = requests.length === 1;
+      const message = {
+        role: "assistant", api: model.api, provider: model.provider, model: model.id,
+        timestamp: Date.now(), stopReason: first ? "toolUse" : "stop",
+        content: first ? calls : [{ type: "text", text: "Offline verification complete." }],
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      };
+      return {
+        async *[Symbol.asyncIterator]() {
+          yield { type: "start", partial: { ...message, stopReason: "pending", content: [] } };
+          yield { type: "done", reason: message.stopReason, message };
+        },
+        result: async () => message,
+      };
+    },
+  };
+}
+const imageBlocks = (messages) => messages.flatMap((m) => Array.isArray(m.content) ? m.content.filter((c) => c.type === "image") : []);
+function assertCleanModelContent(requests) {
+  for (const request of requests) {
+    for (const message of request.messages) {
+      assert.equal(message.role === "custom", false);
+      // Pi may retain harmless tool-result details at this boundary, but viewer
+      // custom details are converted away and graphics must never be exposed.
+      assert.equal(JSON.stringify(message.details || {}).includes(placeholder), false);
+      assert.equal(JSON.stringify(message.details || {}).includes("Ptmux;"), false);
+      const text = typeof message.content === "string" ? message.content : (message.content || []).filter((b) => b.type === "text").map((b) => b.text).join("");
+      assert.equal(text.includes(placeholder), false, "placeholder leaked to model text");
+      assert.equal(text.includes("\x1b"), false, "terminal transport leaked to model text");
+      assert.equal(text.includes("Ptmux;"), false);
+    }
+  }
+}
+
+async function makeSession(scratch, blockImages, mode) {
+  const cwd = join(scratch, "workspace");
+  const agentDir = join(scratch, "agent");
+  const settingsManager = host.SettingsManager.create(cwd, agentDir);
+  const loader = new host.DefaultResourceLoader({ cwd, agentDir, settingsManager, noContextFiles: true, noSkills: true, noPromptTemplates: true, noThemes: true });
+  await loader.reload();
+  // Resource reload reloads disk settings too; apply test-only model policy AFTER
+  // discovery so it cannot be silently reset by the isolated installer settings.
+  settingsManager.applyOverrides({ images: { blockImages }, compaction: { enabled: false }, retry: { enabled: false }, cacheWarming: "off" });
+  assert.equal(settingsManager.getBlockImages(), blockImages);
+  const loaded = loader.getExtensions();
+  assert.deepEqual(loaded.errors, [], "package resource loading failed");
+  assert.equal(loaded.extensions.length, 1, "isolated installed package must discover exactly one extension");
+  const extension = loaded.extensions[0];
+  for (const name of ["tmux-image", "tmux-pdf"]) assert.ok(extension.commands.has(name));
+  for (const name of ["tmux_show_image", "tmux_show_pdf"]) {
+    const tool = extension.tools.get(name)?.definition;
+    assert.ok(tool, `missing preserved tool ${name}`);
+    assert.equal(tool.executionMode, "sequential");
+    assert.equal(tool.parameters.properties.path.type, "string");
+    assert.ok(tool.parameters.required.includes("path"));
+  }
+  const calls = [
+    { type: "toolCall", id: "image-call", name: "tmux_show_image", arguments: { path: "image.png" } },
+    { type: "toolCall", id: "pdf-call", name: "tmux_show_pdf", arguments: { path: "two-pages.pdf" } },
+  ];
+  const requests = [], events = [], writes = [], errors = [], widgets = [];
+  const tui = { terminal: { columns: 80, rows: 40, write(bytes) { writes.push(bytes); } }, requestRender() {} };
+  const uiContext = {
+    notify() {},
+    setWidget(_key, factory) {
+      assert.equal(mode, "tui", "non-TUI execution installed a terminal widget");
+      if (typeof factory === "function") widgets.push(factory(tui));
+    },
+  };
+  const manager = host.SessionManager.inMemory(cwd);
+  const { session } = await host.createAgentSession({
+    cwd, agentDir, model, modelRuntime: offlineRuntime(calls, requests), thinkingLevel: "off",
+    settingsManager, sessionManager: manager, resourceLoader: loader,
+    tools: ["tmux_show_image", "tmux_show_pdf"],
+  });
+  session.subscribe((event) => events.push(event));
+  await session.bindExtensions({ mode, uiContext, onError: (error) => errors.push(error) });
+  return { session, manager, extension, requests, events, writes, errors, widgets, loader, settingsManager };
+}
+
+async function verifySession(scratch, blockImages, mode = "tui", forcedNative = false) {
+  // Each subtest owns fresh source files so replay can delete them deliberately.
+  await writeFile(join(scratch, "workspace", "image.png"), Buffer.from(png, "base64"));
+  await writeFile(join(scratch, "workspace", "two-pages.pdf"), pdfFixture());
+  const h = await makeSession(scratch, blockImages, mode);
+  try {
+    await h.session.prompt("Run the two viewer tools in order, then finish.");
+    await h.session.waitForIdle();
+    assert.deepEqual(h.errors, []);
+    assert.equal(h.requests.length, 2, "only tool-call request and ordinary follow-up are expected");
+    const starts = h.events.filter((e) => e.type === "tool_execution_start");
+    const ends = h.events.filter((e) => e.type === "tool_execution_end");
+    assert.deepEqual(starts.map((e) => e.toolName), ["tmux_show_image", "tmux_show_pdf"]);
+    assert.deepEqual(ends.map((e) => e.toolName), ["tmux_show_image", "tmux_show_pdf"]);
+    assert.ok(h.events.indexOf(ends[0]) < h.events.indexOf(starts[1]), "sequential tools overlapped");
+    const results = h.session.messages.filter((m) => m.role === "toolResult");
+    assert.equal(results.length, 2);
+    const viewers = h.session.messages.filter((m) => m.role === "custom" && m.customType === "pi-tmux-image");
+    if (mode !== "tui" || !process.env.TMUX || forcedNative) {
+      assert.ok(results.every((m) => m.isError));
+      const rejection = forcedNative ? /forced Pi Kitty|host.*Kitty|native.*conflict/i : /interactive Pi inside tmux/;
+      assert.ok(results.every((m) => m.content.some((b) => b.type === "text" && rejection.test(b.text))));
+      assert.equal(viewers.length, 0);
+      assert.equal(h.writes.join(""), "", "non-TUI invocation emitted terminal graphics");
+      if (!forcedNative) assert.equal(h.widgets.length, 0);
+    } else {
+      assert.ok(results.every((m) => !m.isError), JSON.stringify(results));
+      assert.equal(results[0].details.path, join(scratch, "workspace", "image.png"));
+      assert.equal(results[1].details.path, join(scratch, "workspace", "two-pages.pdf"));
+      assert.equal(viewers.length, 3, "one image and first two PDF pages are retained");
+      assert.equal(imageBlocks(viewers).length, 3);
+      assert.equal(imageBlocks(h.manager.buildSessionContext().messages).length, 3, "blocking is NOT a storage policy");
+      const lastResult = Math.max(...results.map((m) => h.session.messages.indexOf(m)));
+      assert.ok(viewers.every((m) => h.session.messages.indexOf(m) > lastResult), "viewer interrupted tool-call/result ordering");
+      assert.equal(h.session.messages.filter((m) => m.role === "assistant").length, 2);
+      assert.equal(h.session.messages.filter((m) => m.role === "user").length, 1, "viewer steered another user turn");
+      assert.equal(imageBlocks(h.requests[1].messages).length, blockImages ? 0 : 3);
+      assert.deepEqual(imageBlocks(h.requests[1].messages), blockImages ? [] : imageBlocks(viewers));
+      const converted = await h.session.agent.convertToLlm(h.session.messages);
+      assert.deepEqual(imageBlocks(converted), blockImages ? [] : imageBlocks(viewers), "public agent conversion must match the actual request");
+      if (blockImages) assert.ok(h.requests[1].messages.some((m) => Array.isArray(m.content) && m.content.some((b) => b.type === "text" && b.text === "Image reading is disabled.")));
+      // Exercise the loaded renderer with its standard stored snapshot. Native
+      // asynchronous preparation must remain outside model/session content.
+      const before = JSON.stringify(h.session.messages);
+      const theme = { fg: (_color, text) => text };
+      const renderer = h.extension.messageRenderers.get("pi-tmux-image");
+      const unknown = renderer({ ...viewers[0], details: { ...viewers[0].details, schema: "pi-tmux-image/native-future" } }, { expanded: false }, theme);
+      const missing = renderer({ ...viewers[0], content: [] }, { expanded: false }, theme);
+      for (const fallback of [unknown, missing]) {
+        const output = fallback.render(80).join("");
+        assert.ok(/Image/.test(output));
+        assert.equal(output.includes(placeholder), false, "invalid/future snapshots must not expose cells");
+      }
+      const labelAttack = { ...viewers[0], details: { ...viewers[0].details, label: "unsafe\n\x1b_Ga=t;attack\x1b\\\u009f\u2028label" } };
+      const attackBefore = JSON.stringify(labelAttack);
+      const safeLabel = renderer(labelAttack, { expanded: false }, theme).render(80)[0];
+      assert.equal(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(safeLabel), false, "label injected terminal controls");
+      assert.equal(JSON.stringify(labelAttack), attackBefore, "label sanitation mutated stored details/content");
+      const components = viewers.map((m) => renderer(m, { expanded: false }, theme));
+      let lines;
+      for (let i = 0; i < 100; i++) {
+        lines = components.flatMap((c) => c.render(80));
+        if (components.every((c) => c.render(80).some((line) => line.includes(placeholder)))) break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      assert.ok(components.every((c) => c.render(80).some((line) => line.includes(placeholder))), "local display failed while model policy was independent");
+      assert.ok(h.writes.some((bytes) => bytes.includes("\x1bPtmux;")), "renderer produced no tmux transport");
+      assert.equal(JSON.stringify(h.session.messages), before, "rendering mutated stored attachments");
+      const firstWrites = h.writes.length;
+      for (const component of components) { component.invalidate(); component.render(80); }
+      const rebuilt = viewers.map((m) => h.extension.messageRenderers.get("pi-tmux-image")(m, { expanded: false }, theme));
+      for (const component of rebuilt) component.render(80);
+      await new Promise((r) => setTimeout(r, 30));
+      assert.equal(h.writes.length, firstWrites, "unchanged frames/rebuild retransmitted pixels");
+      assert.equal(JSON.stringify(h.session.messages), before);
+
+      // Public SDK /reload lifecycle recreates extension state. Old paths are
+      // unavailable, including the PDF page scratch files already removed by the
+      // real tool. Only standard immutable attachments can supply replay pixels.
+      await rm(join(scratch, "workspace", "image.png"));
+      await rm(join(scratch, "workspace", "two-pages.pdf"));
+      h.writes.length = 0;
+      await h.session.reload({ beforeSessionStart() {
+        h.settingsManager.applyOverrides({ images: { blockImages }, compaction: { enabled: false }, retry: { enabled: false }, cacheWarming: "off" });
+      } });
+      const reloaded = h.loader.getExtensions();
+      assert.deepEqual(reloaded.errors, []);
+      const replayRenderer = reloaded.extensions[0].messageRenderers.get("pi-tmux-image");
+      const replay = viewers.map((m) => replayRenderer(m, { expanded: false }, theme));
+      for (let i = 0; i < 100; i++) {
+        lines = replay.flatMap((c) => c.render(80));
+        if (replay.every((c) => c.render(80).some((line) => line.includes(placeholder)))) break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      assert.ok(replay.every((c) => c.render(80).some((line) => line.includes(placeholder))), "reload could not recover snapshots after source removal");
+      assert.ok(h.writes.some((bytes) => bytes.includes("a=t")), "new renderer runtime reused stale residency");
+      assert.equal(JSON.stringify(h.session.messages), before, "replay appended or changed session content");
+      assert.equal(h.requests.length, 2, "reload/replay triggered model work");
+      assert.deepEqual(imageBlocks(await h.session.agent.convertToLlm(h.session.messages)), blockImages ? [] : imageBlocks(viewers));
+    }
+    assertCleanModelContent(h.requests);
+    return { blockImages, mode, requests: h.requests.length, attachments: viewers.length };
+  } finally {
+    h.session.dispose();
+    for (const widget of h.widgets) widget.dispose?.();
+  }
+}
+
+test("public Pi SDK: isolated install, sequential viewers, model conversion and non-TUI safety", {
+  skip: !host && "Install Pi or set PI_TEST_HOST_ROOT to its package root", timeout: 60000,
+}, async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "pi-tmux-host-"));
+  const oldTmux = process.env.TMUX;
+  const oldPane = process.env.TMUX_PANE;
+  const oldPath = process.env.PATH;
+  const oldOffline = process.env.PI_OFFLINE;
+  const oldCapabilities = { ...tuiModule.getCapabilities() };
+  tuiModule.setCapabilities({ images: null, trueColor: true, hyperlinks: false });
+  process.env.TMUX = "offline-test-only";
+  process.env.TMUX_PANE = "%1";
+  process.env.PI_OFFLINE = "1";
+  try {
+    await mkdir(join(scratch, "workspace"));
+    await mkdir(join(scratch, "agent"));
+    await mkdir(join(scratch, "bin"));
+    // Capability fixtures only: never query or configure the active tmux server.
+    // Image reads, normalization, encoding and Poppler remain real host paths.
+    await writeFile(join(scratch, "bin", "tmux"), `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "display-message") process.stdout.write("%1\\t$1\\t1\\t0\\t1\\t0\\n");
+else if (args[0] === "show-options") process.stdout.write("on\\n");
+else if (args[0] === "list-clients") process.stdout.write("offline-client\\tghostty 1.2.3\\txterm-ghostty\\t0\\n");
+else { process.stderr.write("unexpected offline tmux query"); process.exitCode = 1; }
+`, { mode: 0o755 });
+    process.env.PATH = join(scratch, "bin") + (process.platform === "win32" ? ";" : ":") + oldPath;
+    await writeFile(join(scratch, "workspace", "image.png"), Buffer.from(png, "base64"));
+    await writeFile(join(scratch, "workspace", "two-pages.pdf"), pdfFixture());
+    await writeFile(join(scratch, "agent", "settings.json"), JSON.stringify({ enableInstallTelemetry: false, enableAnalytics: false }));
+    const manifest = JSON.parse(await readFile(join(hostRoot, "package.json"), "utf8"));
+    const cli = join(hostRoot, typeof manifest.bin === "string" ? manifest.bin : manifest.bin.pi);
+    // Minimal allowlist: never pass inherited provider keys, credentials or active
+    // agent settings to the installer. Local-path install requires no download.
+    const env = { PATH: process.env.PATH, HOME: scratch, PI_CODING_AGENT_DIR: join(scratch, "agent"), PI_OFFLINE: "1", PI_TELEMETRY: "0", PI_SKIP_VERSION_CHECK: "1", TERM: "dumb" };
+    await run(process.execPath, [cli, "install", repo], { cwd: join(scratch, "workspace"), env, timeout: 20000, maxBuffer: 1024 * 1024 });
+    const settings = JSON.parse(await readFile(join(scratch, "agent", "settings.json"), "utf8"));
+    assert.ok(settings.packages.some((source) => resolve(join(scratch, "agent"), typeof source === "string" ? source : source.source) === repo), "isolated pi install did not register local package");
+    for (const blocked of [true, false]) {
+      await t.test(`images.blockImages=${blocked}`, async () => { t.diagnostic(JSON.stringify(await verifySession(scratch, blocked))); });
+    }
+    for (const mode of ["print", "json", "rpc"]) {
+      await t.test(`${mode} rejects viewers with zero graphics`, async () => { await verifySession(scratch, true, mode); });
+    }
+    await t.test("TUI outside tmux rejects viewers with zero graphics", async () => {
+      delete process.env.TMUX;
+      try { await verifySession(scratch, true, "tui"); }
+      finally { process.env.TMUX = "offline-test-only"; }
+    });
+    await t.test("forced host-native Kitty rejects viewers with zero graphics", async () => {
+      tuiModule.setCapabilities({ images: "kitty", trueColor: true, hyperlinks: false });
+      try { await verifySession(scratch, true, "tui", true); }
+      finally { tuiModule.setCapabilities({ images: null, trueColor: true, hyperlinks: false }); }
+    });
+  } finally {
+    tuiModule.setCapabilities(oldCapabilities);
+    if (oldTmux === undefined) delete process.env.TMUX; else process.env.TMUX = oldTmux;
+    if (oldPane === undefined) delete process.env.TMUX_PANE; else process.env.TMUX_PANE = oldPane;
+    if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath;
+    if (oldOffline === undefined) delete process.env.PI_OFFLINE; else process.env.PI_OFFLINE = oldOffline;
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
