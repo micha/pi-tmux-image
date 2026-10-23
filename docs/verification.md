@@ -38,10 +38,11 @@ The harness:
   the actual extension through Pi's extension module mapping. Both slash-command
   names, both tool names, required `path` arguments and sequential declarations
   are checked.
-- Supplies a disposable PATH-resolved `tmux` capability-query fixture for a
-  recognized single-client Ghostty path with passthrough enabled. It never
-  queries/configures the active server. This tests capability plumbing, not
-  real terminal identity or passthrough; image converters remain real.
+- Supplies a disposable PATH-resolved `tmux` capability-query fixture and query
+  log for a recognized single-client Ghostty path with passthrough enabled. The
+  fixture also models passthrough off, an unknown client and a killed/timeout
+  query. It never queries/configures the active server. This tests capability
+  plumbing, not real terminal identity or passthrough; converters remain real.
 - Uses public `createAgentSession`, an in-memory `SessionManager`, isolated
   settings, and an offline mock of the public `modelRuntime` boundary. The mock
   returns one assistant response calling both viewers and one final response.
@@ -89,6 +90,17 @@ The harness:
   widget is installed and no graphics bytes are emitted. A separate forced-host
   Kitty case rejects both viewers without uploads or attachments; that case can
   install a zero-row transport owner but must never write to it.
+- Checks disabled local display, concrete setting/environment precedence,
+  forced host Kitty and false truecolor gates with zero probes or graphics.
+  Missing source paths prove both image and PDF tools reject before reading or
+  rasterizing. Unsupported passthrough/client/timeout cases also fail before
+  source reads, without attachment messages or graphics.
+- Replays stored snapshots while passthrough is off or a query times out, with
+  blocking both on and off. Denied replay emits no graphics. After correcting
+  the fixture, `/tmux-image-refresh` makes fresh readonly probes and recovers
+  the same component without changing stored messages or starting model work.
+  A changed public `showImages` policy immediately hides already-ready cells;
+  re-enabling unchanged cells does not repeat uploads.
 - Disposes sessions/widgets and removes every generated fixture and isolated
   configuration in `finally` cleanup. It does not alter the active user's Pi
   settings, installed package, tmux options or terminal.
@@ -125,15 +137,17 @@ focused tests.
 
 ## Observations and remaining manual verification
 
-Automated observation on Pi 1.0.3: the offline integration harness passed eight
-checks (parent integration plus seven subtests) against native Phases 1 and 2,
+Automated observation on Pi 1.0.3: the offline integration harness passed twelve
+checks (parent integration plus eleven subtests) against native Phases 1–3,
 including isolated installation/discovery, both blocking states, source-free
 reload/replay, live width/height/cell sizing, failed-write refresh recovery,
 legacy-session resume, unchanged-frame upload reuse, all non-TUI/outside-tmux
-rejection cases and the forced-native Kitty guard. The complete host-enabled `npm test` also passed
-86/86 with neither host option omitted. These counts describe the reviewed
-working tree, not a pinned release; rerun after each integration phase and
-record the revision under test. They are not human visual verification.
+rejection cases, public local policy precedence, unsupported path/timeouts,
+forced-native/truecolor guards and denied-to-supported refresh recovery. These
+results describe the reviewed working tree, not a pinned release; rerun after
+each integration phase and record the revision under test. They are not human
+visual verification. The latest fully host-enabled suite also passed **88/88**,
+with zero skips; without both host variables that is not the same coverage.
 
 A captured public UI transport does not emulate Ghostty's image decoding or tmux
 passthrough. Before declaring a phase complete, independently observe actual

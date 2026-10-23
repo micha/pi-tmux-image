@@ -10,6 +10,7 @@ The approved next-phase handoff is in `docs/implementation-plan.md`. Read it bef
 - `src/presentation.mjs`: public zero-row widget/TUI transport seam, connection epochs and asynchronous upload-before-placement/repaint ordering; successful-write callbacks commit runtime residency. See `docs/renderer-seam.md` for verified host boundaries.
 - `src/native.mjs`: snapshot normalization cache, live aspect fitting keyed by actual component width/usable height/cell pixels, versioned metadata/legacy runtime migration and serialized per-epoch upload commits; uses pure `src/kitty.mjs`/`src/identity.mjs` helpers and injected public Pi conversion via `src/normalize.mjs`. Vertical policy reserves 8 terminal rows, caps image grids at 60x24 and is not an exact viewport measurement.
 - `src/kitty.mjs`, `src/kitty-diacritics.mjs`, `src/identity.mjs` and `src/normalize.mjs`: pure/bounded native protocol, stable IDs and immutable snapshot normalization; no terminal side effects. The obsolete Chafa implementation was removed after advertised format parity checks passed.
+- `src/capabilities.mjs`: bounded/cached read-only actual-pane tmux client/effective inherited passthrough detection, conservative one-layer Ghostty/Kitty allowlist and public Pi settings/capability policy gates. `extensions/index.ts` uses public `pi.getSettings()` plus `getCapabilities()`, guards tools before source access and every prepare before handing uploads to the seam; never gate local display on `images.blockImages`. `on` paths recheck visibility before transport preparation.
 - `src/pdf.mjs`: bounded two-page Poppler rasterization with temporary-file cleanup.
 - `test/*.test.mjs`: dependency-free Node tests for parsing, subprocess contracts, cleanup, packaging and presentation; optional `test/host-seam.test.mjs` exercises installed Pi public APIs without model requests.
 - `package.json`: explicit Pi package manifest. Extension imports are supplied by Pi as peer dependencies, never bundled runtime dependencies.
@@ -26,6 +27,7 @@ The approved next-phase handoff is in `docs/implementation-plan.md`. Read it bef
 8. Resolve executables through PATH. Do not introduce machine-specific `/nix/store` paths, automatic package installation, persistent environment overrides, or stdout monkey patches.
 9. Use subprocess argument arrays, never a shell. Keep timeouts and output limits. Remove PDF scratch files on success, error and cancellation.
 10. Do not mutate the user's Pi settings or tmux configuration in the extension. Installation testing must use an isolated agent directory.
+11. Preserve capability gates for initial display, snapshot/legacy replay, resizing and refresh; release native upload reservations if a post-preparation capability check fails. Refresh must invalidate detector decisions, presentation failures and residency together, not rely on cache TTL. Sync ready-row policy gates must remain subprocess-free. Unknown/nested/multi/control/linked paths fail closed; no force/native ownership workaround.
 
 ## Verification
 
@@ -35,6 +37,7 @@ The approved next-phase handoff is in `docs/implementation-plan.md`. Read it bef
 - For changes to Pi APIs, consult the installed Pi docs and extension examples. The tested starting API version is Pi 1.0.3; do not guess newer signatures.
 - For renderer changes, visually test images and PDFs: new text, scroll up/down, pane position, resizing, and switching windows. State explicitly which checks were automated versus human-observed.
 - Snapshot replay, runtime-only legacy migration and `/tmux-image-refresh` are automated-tested. Refresh clears failed prepared records and residency, without file rereads, new messages or model turns. Shutdown/reload deliberately retains prior-runtime terminal resources to avoid orphaning scrollback; never globally delete images. Prior-runtime graphics memory can remain until terminal reset; budgeting and universal reconnect detection are not implemented.
+- `test/host-integration.mjs` uses a temporary PATH-resolved fake tmux executable plus isolated public SDK settings to test supported/unsupported paths without querying the active tmux server. Preserve zero-graphics/pre-source rejection, public preference precedence, both model-blocking states, ready-row disablement and explicit denied-to-supported refresh recovery with unchanged messages/turns. Do not add package runtime test flags.
 - Native visual acceptance remains pending: image/PDF pixels, transcript scrolling, pane position, shrink/expand/zoom, partial viewport visibility and window switching still require coordinated human observation. Automated geometry/stream tests do not establish those pixels. Preserve the two-page PDF default.
 - Keep README installation examples and limitations consistent with the code.
 

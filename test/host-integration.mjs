@@ -118,10 +118,20 @@ function assertCleanModelContent(requests) {
   }
 }
 
+async function writeTmuxFixture(scratch, overrides = {}) {
+  await writeFile(join(scratch, "tmux-fixture.json"), JSON.stringify({
+    passthrough: "on", termtype: "ghostty 1.2.3", termname: "xterm-ghostty", ...overrides,
+  }));
+  await writeFile(join(scratch, "tmux-queries.log"), "");
+}
+
 async function waitCells(components, width) {
   for (let i = 0; i < 100; i++) {
     const output = components.map((component) => component.render(width));
-    if (output.every((lines) => lines.some((line) => line.includes(placeholder)))) return output.flat();
+    if (output.every((lines) => lines.some((line) => line.includes(placeholder)))) {
+      for (const line of output.flat()) assert.ok(tuiModule.visibleWidth(line) <= width, "renderer exceeded actual host component width");
+      return output.flat();
+    }
     await new Promise((r) => setTimeout(r, 10));
   }
   assert.fail(`images did not prepare at width ${width}: ${components.flatMap((c) => c.render(width)).join(" ")}`);
@@ -134,6 +144,7 @@ async function verifyLiveLayoutAndRefresh(h, component, before) {
   const cells = { ...tuiModule.getCellDimensions() };
   try {
     const initial = placements(h.writes)[0];
+    const initialLines = component.render(80);
     assert.deepEqual({ columns: initial.columns, rows: initial.rows }, { columns: 48, rows: 24 });
     async function change(width, rows, cellWidth, cellHeight, columns, expectedRows) {
       h.writes.length = 0;
@@ -158,6 +169,7 @@ async function verifyLiveLayoutAndRefresh(h, component, before) {
     h.tui.terminal.columns = 80; h.tui.terminal.rows = 40;
     tuiModule.setCellDimensions({ widthPx: 8, heightPx: 16 });
     await waitCells([component], 80);
+    assert.deepEqual(component.render(80), initialLines, "resize reversal changed retained placement rows");
     assert.equal(h.writes.length, 0, "resize reversal did not reuse ready geometry");
 
     h.transport.writeFaults = 1;
@@ -209,7 +221,51 @@ async function verifyLegacyResume(scratch, blockImages, viewer) {
   }
 }
 
-async function makeSession(scratch, blockImages, mode, restoredManager) {
+async function verifyDeniedReplayRecovery(scratch, blockImages, scenario = { fixture: { passthrough: "off" }, rejected: /passthrough.*off/i }) {
+  const manager = host.SessionManager.inMemory(join(scratch, "workspace"));
+  manager.appendCustomMessageEntry("pi-tmux-image", [{ type: "image", mimeType: "image/png", data: png }], true, {
+    schema: "pi-tmux-image/native-v1", occurrence: "offline-restored", label: "Stored snapshot",
+    geometry: { columns: 48, rows: 24, cellWidthPx: 8, cellHeightPx: 16 },
+  });
+  await writeTmuxFixture(scratch, scenario.fixture);
+  const h = await makeSession(scratch, blockImages, "tui", manager);
+  try {
+    const before = JSON.stringify(h.session.messages);
+    const message = h.session.messages.find((m) => m.role === "custom");
+    const renderer = h.extension.messageRenderers.get("pi-tmux-image");
+    const component = renderer(message, { expanded: false }, { fg: (_color, text) => text });
+    for (let i = 0; i < 100; i++) {
+      if (component.render(80).some((line) => scenario.rejected.test(line))) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    assert.ok(component.render(80).some((line) => scenario.rejected.test(line)));
+    assert.equal(component.render(80).some((line) => line.includes(placeholder)), false);
+    assert.equal(h.writes.length, 0, "denied replay emitted graphics");
+    await writeTmuxFixture(scratch);
+    await h.session.prompt("/tmux-image-refresh");
+    await waitCells([component], 80);
+    assert.ok(h.writes.join("").includes("a=t"));
+    const probes = await readFile(join(scratch, "tmux-queries.log"), "utf8");
+    assert.ok(probes.includes("display-message") && probes.includes("show-options") && probes.includes("list-clients"), "refresh did not re-probe the supported path");
+    h.writes.length = 0;
+    h.settingsManager.applyOverrides({ terminal: { showImages: false } });
+    const disabled = component.render(80);
+    assert.equal(disabled.some((line) => line.includes(placeholder)), false, "ready cells ignored changed public local-display policy");
+    assert.equal(h.writes.length, 0);
+    h.settingsManager.applyOverrides({ terminal: { showImages: true } });
+    await waitCells([component], 80);
+    assert.equal(h.writes.length, 0, "re-enabling unchanged ready cells repeated the upload");
+    assert.equal(JSON.stringify(h.session.messages), before);
+    assert.equal(h.requests.length, 0, "replay/refresh/disable started model work");
+    assert.equal(imageBlocks(await h.session.agent.convertToLlm(h.session.messages)).length, blockImages ? 0 : 1);
+  } finally {
+    h.session.dispose();
+    for (const widget of h.widgets) widget.dispose?.();
+    await writeTmuxFixture(scratch);
+  }
+}
+
+async function makeSession(scratch, blockImages, mode, restoredManager, policyOverrides = {}) {
   const cwd = join(scratch, "workspace");
   const agentDir = join(scratch, "agent");
   const settingsManager = host.SettingsManager.create(cwd, agentDir);
@@ -217,7 +273,7 @@ async function makeSession(scratch, blockImages, mode, restoredManager) {
   await loader.reload();
   // Resource reload reloads disk settings too; apply test-only model policy AFTER
   // discovery so it cannot be silently reset by the isolated installer settings.
-  settingsManager.applyOverrides({ images: { blockImages }, compaction: { enabled: false }, retry: { enabled: false }, cacheWarming: "off" });
+  settingsManager.applyOverrides({ images: { blockImages }, compaction: { enabled: false }, retry: { enabled: false }, cacheWarming: "off", ...policyOverrides });
   assert.equal(settingsManager.getBlockImages(), blockImages);
   const loaded = loader.getExtensions();
   assert.deepEqual(loaded.errors, [], "package resource loading failed");
@@ -259,11 +315,15 @@ async function makeSession(scratch, blockImages, mode, restoredManager) {
   return { session, manager, extension, requests, events, writes, errors, widgets, loader, settingsManager, tui, transport };
 }
 
-async function verifySession(scratch, blockImages, mode = "tui", forcedNative = false) {
+async function verifySession(scratch, blockImages, mode = "tui", options = {}) {
   // Each subtest owns fresh source files so replay can delete them deliberately.
   await writeFile(join(scratch, "workspace", "image.png"), Buffer.from(png, "base64"));
   await writeFile(join(scratch, "workspace", "two-pages.pdf"), pdfFixture());
-  const h = await makeSession(scratch, blockImages, mode);
+  const h = await makeSession(scratch, blockImages, mode, undefined, options.settings);
+  if (options.missingSources) {
+    await rm(join(scratch, "workspace", "image.png"));
+    await rm(join(scratch, "workspace", "two-pages.pdf"));
+  }
   try {
     await h.session.prompt("Run the two viewer tools in order, then finish.");
     await h.session.waitForIdle();
@@ -277,13 +337,13 @@ async function verifySession(scratch, blockImages, mode = "tui", forcedNative = 
     const results = h.session.messages.filter((m) => m.role === "toolResult");
     assert.equal(results.length, 2);
     const viewers = h.session.messages.filter((m) => m.role === "custom" && m.customType === "pi-tmux-image");
-    if (mode !== "tui" || !process.env.TMUX || forcedNative) {
+    if (mode !== "tui" || !process.env.TMUX || options.rejected) {
       assert.ok(results.every((m) => m.isError));
-      const rejection = forcedNative ? /forced Pi Kitty|host.*Kitty|native.*conflict/i : /interactive Pi inside tmux/;
-      assert.ok(results.every((m) => m.content.some((b) => b.type === "text" && rejection.test(b.text))));
+      const rejection = options.rejected || /interactive Pi inside tmux/;
+      assert.ok(results.every((m) => m.content.some((b) => b.type === "text" && rejection.test(b.text))), `unexpected rejection: ${JSON.stringify(results)}`);
       assert.equal(viewers.length, 0);
       assert.equal(h.writes.join(""), "", "non-TUI invocation emitted terminal graphics");
-      if (!forcedNative) assert.equal(h.widgets.length, 0);
+      if (!options.rejected) assert.equal(h.widgets.length, 0);
     } else {
       assert.ok(results.every((m) => !m.isError), JSON.stringify(results));
       assert.equal(results[0].details.path, join(scratch, "workspace", "image.png"));
@@ -378,6 +438,8 @@ test("public Pi SDK: isolated install, sequential viewers, model conversion and 
   const oldPath = process.env.PATH;
   const oldOffline = process.env.PI_OFFLINE;
   const oldAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const oldImageProtocol = process.env.PI_IMAGE_PROTOCOL;
+  process.env.PI_IMAGE_PROTOCOL = "auto";
   process.env.PI_CODING_AGENT_DIR = join(scratch, "agent");
   const oldCapabilities = { ...tuiModule.getCapabilities() };
   const oldCells = { ...tuiModule.getCellDimensions() };
@@ -392,11 +454,16 @@ test("public Pi SDK: isolated install, sequential viewers, model conversion and 
     await mkdir(join(scratch, "bin"));
     // Capability fixtures only: never query or configure the active tmux server.
     // Image reads, normalization, encoding and Poppler remain real host paths.
+    await writeTmuxFixture(scratch);
     await writeFile(join(scratch, "bin", "tmux"), `#!/usr/bin/env node
+const fs = require("node:fs");
 const args = process.argv.slice(2);
-if (args[0] === "display-message") process.stdout.write("%1\\t$1\\t1\\t0\\t1\\t0\\n");
-else if (args[0] === "show-options") process.stdout.write("on\\n");
-else if (args[0] === "list-clients") process.stdout.write("offline-client\\tghostty 1.2.3\\txterm-ghostty\\t0\\n");
+const fixture = JSON.parse(fs.readFileSync(${JSON.stringify(join(scratch, "tmux-fixture.json"))}, "utf8"));
+fs.appendFileSync(${JSON.stringify(join(scratch, "tmux-queries.log"))}, args[0] + "\\n");
+if (fixture.timeout) setTimeout(() => {}, 2000);
+else if (args[0] === "display-message") process.stdout.write("%1\\t$1\\t1\\t0\\t1\\t0\\n");
+else if (args[0] === "show-options") process.stdout.write(fixture.passthrough + "\\n");
+else if (args[0] === "list-clients") process.stdout.write("offline-client\\t" + fixture.termtype + "\\t" + fixture.termname + "\\t0\\n");
 else { process.stderr.write("unexpected offline tmux query"); process.exitCode = 1; }
 `, { mode: 0o755 });
     process.env.PATH = join(scratch, "bin") + (process.platform === "win32" ? ";" : ":") + oldPath;
@@ -423,9 +490,54 @@ else { process.stderr.write("unexpected offline tmux query"); process.exitCode =
       finally { process.env.TMUX = "offline-test-only"; }
     });
     await t.test("forced host-native Kitty rejects viewers with zero graphics", async () => {
+      await writeTmuxFixture(scratch);
       tuiModule.setCapabilities({ images: "kitty", trueColor: true, hyperlinks: false });
-      try { await verifySession(scratch, true, "tui", true); }
+      try {
+        await verifySession(scratch, true, "tui", { rejected: /forced Pi Kitty|native Kitty|host.*Kitty|host.*conflict/i, missingSources: true });
+        assert.equal(await readFile(join(scratch, "tmux-queries.log"), "utf8"), "", "forced native policy ran a capability query");
+      }
       finally { tuiModule.setCapabilities({ images: null, trueColor: true, hyperlinks: false }); }
+    });
+    await t.test("local disabled policy/precedence rejects before source reads or probes", async () => {
+      const cases = [
+        { settings: { terminal: { showImages: false } }, env: "auto" },
+        { settings: { terminal: { images: false } }, env: "kitty" },
+        { settings: { terminal: { images: "auto" } }, env: "none" },
+      ];
+      for (const scenario of cases) {
+        await writeTmuxFixture(scratch);
+        process.env.PI_IMAGE_PROTOCOL = scenario.env;
+        try {
+          await verifySession(scratch, true, "tui", { settings: scenario.settings, rejected: /disabled/i, missingSources: true });
+          assert.equal(await readFile(join(scratch, "tmux-queries.log"), "utf8"), "", "disabled local policy ran a capability query");
+        } finally { process.env.PI_IMAGE_PROTOCOL = "auto"; }
+      }
+    });
+    await t.test("false truecolor gate rejects before reads/probes", async () => {
+      await writeTmuxFixture(scratch);
+      tuiModule.setCapabilities({ images: null, trueColor: false, hyperlinks: false });
+      try {
+        await verifySession(scratch, true, "tui", { rejected: /truecolor/i, missingSources: true });
+        assert.equal(await readFile(join(scratch, "tmux-queries.log"), "utf8"), "");
+      } finally { tuiModule.setCapabilities({ images: null, trueColor: true, hyperlinks: false }); }
+    });
+    await t.test("unsupported tmux paths reject before source reads with zero graphics", async () => {
+      for (const scenario of [
+        { fixture: { passthrough: "off" }, rejected: /passthrough.*off/i },
+        { fixture: { termtype: "unknown-terminal", termname: "xterm-unknown" }, rejected: /recognized|unknown.*terminal/i },
+        { fixture: { timeout: true }, rejected: /timed out|timeout/i },
+      ]) {
+        await writeTmuxFixture(scratch, scenario.fixture);
+        await verifySession(scratch, true, "tui", { rejected: scenario.rejected, missingSources: true });
+        assert.ok((await readFile(join(scratch, "tmux-queries.log"), "utf8")).length > 0);
+      }
+      await writeTmuxFixture(scratch);
+    });
+    await t.test("denied replay recovers through refresh without model turns or attachments", async () => {
+      for (const blocked of [true, false]) {
+        await verifyDeniedReplayRecovery(scratch, blocked);
+        await verifyDeniedReplayRecovery(scratch, blocked, { fixture: { timeout: true }, rejected: /timed out|timeout/i });
+      }
     });
   } finally {
     tuiModule.setCapabilities(oldCapabilities);
@@ -435,6 +547,7 @@ else { process.stderr.write("unexpected offline tmux query"); process.exitCode =
     if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath;
     if (oldOffline === undefined) delete process.env.PI_OFFLINE; else process.env.PI_OFFLINE = oldOffline;
     if (oldAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = oldAgentDir;
+    if (oldImageProtocol === undefined) delete process.env.PI_IMAGE_PROTOCOL; else process.env.PI_IMAGE_PROTOCOL = oldImageProtocol;
     await rm(scratch, { recursive: true, force: true });
   }
 });

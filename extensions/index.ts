@@ -6,6 +6,7 @@ import { convertToPng, createReadTool, defineTool, type ExtensionAPI, type Exten
 import { captureLayout, createNativeRenderer, NATIVE_SCHEMA, readLegacyDetails, readNativeDetails, sanitizeDisplayText } from "../src/native.mjs";
 import { withPdfPages } from "../src/pdf.mjs";
 import { createPresentation } from "../src/presentation.mjs";
+import { checkDisplayPolicy, resolvePiDisplayPolicy, TmuxCapabilityDetector } from "../src/capabilities.mjs";
 
 const MESSAGE_TYPE = "pi-tmux-image";
 
@@ -13,10 +14,60 @@ export default function (pi: ExtensionAPI) {
   const presentation = createPresentation();
   const native = createNativeRenderer({ convertToPng });
   const legacyOccurrences = new WeakMap<object, string>();
+  const detector = new TmuxCapabilityDetector();
+  let liveContext: ExtensionContext | undefined;
+  let generation = 0;
+  let capabilityFailure: string | undefined;
+  const capabilityWarnings = new Set<string>();
+
+  function capabilityContext(ctx: ExtensionContext) {
+    return { mode: ctx.mode, env: process.env, hostCapabilities: getCapabilities(),
+      ...resolvePiDisplayPolicy(pi.getSettings(), process.env) };
+  }
+
+  function requireInteractive(ctx: ExtensionContext) {
+    if (ctx.mode !== "tui" || !process.env.TMUX || !/^%\d+$/.test(process.env.TMUX_PANE || "")) {
+      throw new Error("pi-tmux-image requires interactive Pi inside tmux with a valid TMUX_PANE");
+    }
+  }
+
+  async function requireCapability(ctx: ExtensionContext, signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    const expected = generation;
+    const result = await detector.probe(capabilityContext(ctx), { checkVisibility: true });
+    signal?.throwIfAborted();
+    if (generation !== expected) throw new Error("Image capability query was superseded; retry after refresh");
+    // Public policy may have changed while a bounded subprocess was running.
+    const rejected = checkDisplayPolicy(capabilityContext(ctx)) || (!result.supported ? result : undefined);
+    capabilityFailure = rejected ? sanitizeDisplayText(`${rejected.message} Run /tmux-image-refresh after correcting the terminal path or display policy.`) : undefined;
+    if (capabilityFailure) throw new Error(capabilityFailure);
+    for (const warning of result.warnings || []) {
+      if (capabilityWarnings.has(warning)) continue;
+      capabilityWarnings.add(warning);
+      ctx.ui.notify(sanitizeDisplayText(warning), "warning");
+    }
+  }
+
+  function notifyFailure(ctx: ExtensionContext, error: unknown) {
+    ctx.ui.notify(sanitizeDisplayText(error instanceof Error ? error.message : String(error)), "error");
+  }
+
   pi.on("session_start", (_event, ctx) => {
+    generation++;
+    detector.invalidate();
+    capabilityFailure = undefined;
+    capabilityWarnings.clear();
+    liveContext = ctx;
     presentation.attach(ctx, Boolean(process.env.TMUX));
   });
-  pi.on("session_shutdown", () => presentation.disconnect());
+  pi.on("session_shutdown", () => {
+    generation++;
+    detector.invalidate();
+    capabilityFailure = undefined;
+    capabilityWarnings.clear();
+    liveContext = undefined;
+    presentation.disconnect();
+  });
 
   // Normal Pi image content, with no context filter. Pi's images.blockImages
   // controls model access independently of this local terminal renderer.
@@ -36,13 +87,28 @@ export default function (pi: ExtensionAPI) {
     const image = presentation.component({
       key: details.occurrence,
       layout: (width: number) => captureLayout(width, presentation.dimensions?.rows || 40, getCellDimensions()),
-      prepare: (_width: number, context: { epoch: symbol; signal: AbortSignal }, layout: { limits: { columns: number; rows: number }; cells: { widthPx: number; heightPx: number } }) =>
-        native.prepare({ attachment, occurrence: details.occurrence, limits: layout.limits, cells: layout.cells }, context),
+      prepare: async (_width: number, context: { epoch: symbol; signal: AbortSignal }, layout: { limits: { columns: number; rows: number }; cells: { widthPx: number; heightPx: number } }) => {
+        const ctx = liveContext;
+        if (!ctx) throw new Error("Image display is not connected to an interactive session");
+        await requireCapability(ctx, context.signal);
+        const prepared = await native.prepare({ attachment, occurrence: details.occurrence, limits: layout.limits, cells: layout.cells }, context);
+        try {
+          // Recheck before handing the transport reservation to the presentation
+          // seam. A policy change/refresh must release it, not strand shared PNGs.
+          await requireCapability(ctx, context.signal);
+          return prepared;
+        } catch (error) { prepared.onUploadFailed?.(error); throw error; }
+      },
       fallback: (width: number, error?: Error) => [truncateToWidth(error ? `[Image: ${sanitizeDisplayText(error.message || error)}]` : "[Image: preparing native PNG]", width)],
     });
     return {
       render(width: number) {
-        if (getCapabilities().images === "kitty") return [truncateToWidth("[Image: forced Pi Kitty graphics unsupported; use auto detection in tmux]", width)];
+        if (!liveContext) return [truncateToWidth("[Image: local display is not connected]", width)];
+        // Apply current public policy even to already-ready cached rows. There
+        // are no subprocesses/decoders in this synchronous frame path.
+        const rejected = checkDisplayPolicy(capabilityContext(liveContext));
+        const reason = rejected?.message || capabilityFailure;
+        if (reason) return [truncateToWidth(`[Image: ${sanitizeDisplayText(reason)}]`, width)];
         // Foreground/underline colors encode IDs. Do not restyle placeholder rows.
         return [truncateToWidth(theme.fg("muted", details.label), width), ...image.render(width)];
       },
@@ -50,22 +116,13 @@ export default function (pi: ExtensionAPI) {
     };
   });
 
-  function requireTerminal(ctx: ExtensionContext) {
-    if (ctx.mode !== "tui" || !process.env.TMUX) {
-      throw new Error("pi-tmux-image requires interactive Pi inside tmux");
-    }
-    if (getCapabilities().images === "kitty") {
-      throw new Error("pi-tmux-image does not support forced Pi Kitty graphics: host redraws may delete extension uploads; use Pi's automatic tmux detection");
-    }
-  }
-
   function inputPath(args: string, ctx: ExtensionContext) {
     if (!args.trim()) throw new Error("A file path is required");
     return resolve(ctx.cwd, args.trim());
   }
 
   async function showImage(args: string, ctx: ExtensionContext, signal?: AbortSignal, label?: string) {
-    requireTerminal(ctx);
+    await requireCapability(ctx, signal);
     signal?.throwIfAborted();
     const path = inputPath(args, ctx);
     const dimensions = presentation.dimensions;
@@ -79,7 +136,7 @@ export default function (pi: ExtensionAPI) {
     // Validate conversion before adding the viewer message: tool failures remain
     // failed results, never successful attachments with only a rendering error.
     const { geometry, pngBytes, uploadChunks } = await native.describe(attachment, { columns, rows }, getCellDimensions(), signal);
-    signal?.throwIfAborted();
+    await requireCapability(ctx, signal);
     ctx.ui.notify(`Native PNG: ${(pngBytes / 1024).toFixed(1)} KiB, ${uploadChunks} upload chunk(s) when first resident`, "info");
     pi.sendMessage({
       customType: MESSAGE_TYPE,
@@ -95,7 +152,7 @@ export default function (pi: ExtensionAPI) {
   }
 
   async function showPdf(args: string, ctx: ExtensionContext, signal?: AbortSignal) {
-    requireTerminal(ctx);
+    await requireCapability(ctx, signal);
     const path = inputPath(args, ctx);
     const pages = await withPdfPages(path, async (imagePath, page) => ({
       page,
@@ -108,10 +165,17 @@ export default function (pi: ExtensionAPI) {
     description: "Re-upload stored image snapshots after terminal reconnect/reset without adding messages",
     handler: async (_args, ctx) => {
       try {
-        requireTerminal(ctx);
+        requireInteractive(ctx);
+        generation++;
+        detector.invalidate();
+        capabilityFailure = undefined;
+        capabilityWarnings.clear();
+        // Clear failed/ready records even if the fresh probe is still denied.
+        // Every resulting replay prepare independently checks capability first.
         presentation.refresh();
-        ctx.ui.notify("Image residency reset; stored snapshots will repaint without rereading files", "info");
-      } catch (error) { ctx.ui.notify(String(error), "error"); }
+        await requireCapability(ctx);
+        ctx.ui.notify("Capabilities refreshed; image residency reset and stored snapshots will repaint without rereading files", "info");
+      } catch (error) { notifyFailure(ctx, error); }
     },
   });
 
@@ -119,14 +183,14 @@ export default function (pi: ExtensionAPI) {
     description: "Display an image through tmux; Pi's blockImages controls model access",
     handler: async (args, ctx) => {
       try { await showImage(args, ctx); }
-      catch (error) { ctx.ui.notify(String(error), "error"); }
+      catch (error) { notifyFailure(ctx, error); }
     },
   });
   pi.registerCommand("tmux-pdf", {
     description: "Display the first two PDF pages through tmux",
     handler: async (args, ctx) => {
       try { await showPdf(args, ctx); }
-      catch (error) { ctx.ui.notify(String(error), "error"); }
+      catch (error) { notifyFailure(ctx, error); }
     },
   });
 

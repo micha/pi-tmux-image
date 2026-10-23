@@ -19,7 +19,7 @@ successful-write residency commits. PNG/JPEG/GIF/WebP/BMP normalization parity a
 animated still handling have actual-host automated coverage. Chafa's
 implementation/tests were removed after parity verification.
 
-Phase 2 integration is now implemented and automated-tested: live aspect fitting
+Phase 2 integration was committed as `2824f9e` and automated-tested: live aspect fitting
 uses actual component width, injected terminal height minus 8 reserved chrome/
 editor rows (minimum one image row, maximum 60x24 grid), and supported cell-pixel
 dimensions. Geometry keys capture all these inputs before async work. Resident
@@ -36,13 +36,32 @@ Shutdown/reload deliberately retain terminal resources instead of globally
 deleting pixels and orphaning retained scrollback. Previous-runtime allocations
 may remain until terminal reset; no eviction/budget policy is integrated.
 
+Phase 3 is now integrated and automated-tested: read-only PATH-resolved tmux
+queries check the actual pane's effective inherited `allow-passthrough` and its
+session's single attached client. Conservative Ghostty/Kitty placeholder identity
+checks reject unknown/old/multiplexer clients, multiple/control clients and
+cross-session-linked windows. Public `pi.getSettings()`/`getCapabilities()` retain
+explicit local-image disablement/protocol/truecolor policy without touching
+settings; model `images.blockImages` never gates local display. Tools reject
+before source access, initial/replay/resize preparation is guarded before native
+work and again before returning its transport reservation, and synchronous
+ready-row policy checks contain no subprocesses. Failed post-preparation guards
+release reservations. `on` paths resample visibility before source access/upload
+preparation; no negotiated support or transport acknowledgement is claimed.
+
+Refresh clears detector decisions and failed prepared records/residency together,
+then probes fresh and requests source-free repaint. Lifecycle changes invalidate
+stale queries; name-only terminal identity carries an explicit current-version
+assumption/warning. The known current Ghostty/tmux path requires no forced Pi
+Kitty setting. See `docs/capabilities.md` for exact conservative boundaries.
+
 Verification remains automated stream/component/pipeline evidence only; native
 image/PDF pixels, scrolling, pane positioning, resize/zoom, partial viewport
 visibility and window switching still require coordinated human observation.
-Phases 1–2 are not claimed visually accepted. Phases 3–4 remain pending integration
-and acceptance: capability detection and optional graphics budgeting are not
-integrated, and universal automatic reconnect detection is not promised. Preserve
-the detailed handoff below as the implementation and acceptance plan.
+Phases 1–3 are not claimed visually accepted. Phase 4 remains pending integration:
+optional graphics-memory measurement/budgeting is not integrated, and universal
+automatic reconnect detection is not promised. Preserve the detailed handoff
+below as the implementation and acceptance plan.
 
 Read `AGENTS.md` before working. Keep human documentation in `README.md` and
 implementation instructions here. Inspect Git state and current host APIs before
@@ -77,6 +96,11 @@ Current code:
   only after successful write callbacks, and rejects stale work. Explicit refresh
   resets epochs/caches under the same widget lifetime owner. No resource deletion
   is performed during refresh/shutdown/reload.
+- `src/capabilities.mjs` performs bounded read-only actual-pane/effective inherited
+  tmux probing and public host-policy preflight; the extension integrates both
+  pre-source tool rejection and pre/post-native preparation guards. Public
+  settings are read through `pi.getSettings()`, not private ctx properties/files.
+  Refresh invalidates detector and failed presentation/residency together.
 - The obsolete `src/graphics.mjs` Chafa parser/subprocess implementation and its
   tests were removed after actual-host advertised-format parity verification.
 - `src/pdf.mjs` uses `pdftoppm` from PATH to rasterize the first two PDF pages
@@ -97,8 +121,10 @@ Current code:
   `test/host-integration.mjs` checks isolated package installation, sequential
   viewer tools, both image-blocking states, non-TUI zero-graphics behavior,
   source-deleted reload/legacy resume, width/height/cell changes, geometry reversal
-  and failed-write recovery via the public refresh command, with unchanged
-  messages/attachments/model requests. It uses an offline test model runtime,
+  and failed-write/capability-denied recovery via the public refresh command,
+  with unchanged messages/attachments/model requests. It uses a temporary
+  PATH-resolved tmux fixture to cover unsupported/disabled/timeout paths without
+  active-server changes and an offline test model runtime,
   never the active incompatible model. Public clipping tests retain independent
   row/column marks and both ID colors when top/left cells are clipped.
 

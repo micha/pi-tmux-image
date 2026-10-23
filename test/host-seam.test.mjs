@@ -177,7 +177,7 @@ hostTest("actual SDK package loading: reload/new/resume/quit lifecycle and non-T
     // An extension slash command, not a model prompt. Its guard runs before read
     // or conversion. No compatible model/credential/network call is required.
     await runtime.session.prompt("/tmux-image absent.png");
-    assert.ok(notifications.some((text) => text.includes("requires interactive Pi inside tmux")));
+    assert.ok(notifications.some((text) => /requires? interactive Pi inside tmux/.test(text)));
     assert.equal(runtime.session.messages.length, 1);
     await runtime.session.reload();
     await runtime.newSession();

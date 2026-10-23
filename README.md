@@ -7,9 +7,10 @@ Uses native Kitty **Unicode placeholders**: image pixels are uploaded through tm
 ## Requirements
 
 - Pi with the `@earendil-works` extension APIs (tested with Pi 1.0.3).
-- A terminal supporting Kitty graphics **and Unicode placeholders**. Tested with Ghostty behind tmux 3.6a.
-- tmux passthrough enabled.
-- Pi's native image protocol must remain at automatic tmux detection (normally no native protocol). Forced Pi Kitty graphics are rejected because host redraws can delete extension uploads.
+- A recognized Unicode-placeholder terminal: current Ghostty (>=1.0) or Kitty (>=0.28). The original renderer was human-tested with Ghostty behind tmux 3.6a; native pixel checks remain pending.
+- tmux with effective pane `allow-passthrough` set to `on` or `all` (read-only detection tested with tmux 3.6a).
+- Pi local images and truecolor enabled. The package reads public Pi settings/capabilities; explicit `terminal.showImages: false`, `terminal.images: false`, iTerm2 selection or disabled truecolor is respected as a local-display rejection.
+- Pi's native image protocol must remain at automatic tmux detection (normally no native protocol). Forced Pi Kitty graphics are rejected because host redraws can delete extension uploads. **The current Ghostty/tmux setup needs no forced image-protocol setting.**
 - For PDFs, `pdftoppm` on PATH, from the Poppler command-line tools.
 
 Enable passthrough for your tmux server:
@@ -79,9 +80,11 @@ You can also ask the assistant to display a file. The package exposes:
 | `tmux_show_image` | `{ "path": "/path/to/image.png" }` | Displays one image |
 | `tmux_show_pdf` | `{ "path": "/path/to/document.pdf" }` | Renders and displays the first two pages |
 
-The tools require interactive Pi inside tmux. They report an error rather than emitting terminal graphics in print, JSON, or RPC mode.
+The tools require interactive Pi inside tmux. Before reading an image or rasterizing a PDF, they check the actual pane's inherited passthrough option and its session's attached-client identity. Unknown/old terminals, disabled or unqueryable passthrough and unsupported paths fail with a readable explanation rather than emitting graphics. Print, JSON and RPC calls also produce no terminal graphics. The extension never enables passthrough or changes Pi settings for you.
 
-After terminal reconnect/reset, run `/tmux-image-refresh` to invalidate upload residency and repaint existing image snapshots. It does not reread source files, append attachments, or start a model turn. Pi reload/resume rebuilds native presentation automatically; reconnects are not universally detectable, so the explicit refresh is the recovery path.
+After terminal reconnect/reset, a visibility change that caused preparation to fail, or correcting display policy/passthrough, run `/tmux-image-refresh`. It rechecks capability, invalidates upload residency and **failed presentation records**, then repaints existing snapshots. It does not reread source files, append attachments, or start a model turn. Pi reload/resume rebuilds native presentation automatically; reconnects are not universally detectable. Detector TTL expiry alone does not retry an already-failed presentation.
+
+Detection is conservative: only a single non-control client in a single-session window and one tmux layer are supported. Multiple attached clients, cross-session-linked windows, nested tmux/screen and unrecognized identities are rejected. Terminal type is authoritative; only an absent type falls back to exact `xterm-ghostty`/`xterm-kitty`. Name-only identities assume a current supported version and produce a warning—they are not feature negotiation. Pi's concrete image preference overrides `PI_IMAGE_PROTOCOL`; `auto`/unset leaves the environment/auto-detection fallback active.
 
 ## Images and model access
 
@@ -112,7 +115,8 @@ The extension does not override this setting or install a context filter. Termin
 - Native and known unversioned Chafa messages prepare from stored snapshots when rendered, including after reload/resume, without rereading the source file. Legacy migration is runtime-only: old upload IDs/cells are ignored and stored content/details are unchanged. Missing/malformed snapshots and unsupported future schemas show readable fallbacks. Use `/tmux-image-refresh` for explicit terminal-reconnect recovery or retrying failed presentation.
 - The extension deliberately retains terminal pixels/placements across shutdown/reload to avoid orphaning retained scrollback; it never globally deletes images. A fresh runtime can allocate new IDs while previous-runtime resources remain until the terminal resets. Graphics budgeting/eviction is not implemented.
 - Non-PNG normalization uses Pi's in-process converter. Cancellation is cooperative between steps, not preemptive during decoding. PDF conversion retains a bounded 30-second Poppler timeout.
-- The old Chafa renderer was human-tested in Ghostty/tmux. Native encoding, ordering, normalization, reload/resume, legacy snapshots, geometry resizing, clipping and refresh have automated checks; native image/PDF pixel correctness and interactive scroll/resize/window-switch checks are still pending.
+- Capability subprocesses use argument arrays, PATH, a 300 ms timeout per query and an 8 KiB output bound. Up to three sequential read-only queries establish a path. Results cache for 5 seconds (failures 250 ms); `on` paths resample visibility before source access/upload preparation. This is not a delivery acknowledgement: unannounced client changes can require explicit refresh, and cached/physical old scrollback is not rewritten by policy changes. There is no force override for unsupported paths.
+- The old Chafa renderer was human-tested in Ghostty/tmux. Native encoding, ordering, normalization, reload/resume, legacy snapshots, geometry resizing, clipping, refresh, capability rejection and public-policy behavior have automated checks; native image/PDF pixel correctness and interactive scroll/resize/window-switch checks are still pending.
 
 ## Remove
 
@@ -143,6 +147,6 @@ PI_OFFLINE=1 PI_TEST_HOST_ROOT=/path/to/installed/coding-agent/package \
   node --test test/host-integration.mjs
 ```
 
-See `docs/renderer-seam.md`, `docs/kitty-protocol.md` and `docs/pixel-normalization.md` for integration boundaries and specification attribution. The protocol helpers follow the public Kitty specification; no OMP implementation was copied and no project license has been selected.
+See `docs/renderer-seam.md`, `docs/kitty-protocol.md`, `docs/pixel-normalization.md` and `docs/capabilities.md` for integration boundaries, public-policy sourcing and specification attribution. The protocol helpers follow the public Kitty specification; no OMP implementation was copied and no project license has been selected.
 
 After changing the extension, coordinate `/reload` and visually verify images/PDFs, scrolling and pane/window behavior in a real tmux pane. Automated stream/component tests cannot establish that a terminal actually displays the image.
