@@ -2,6 +2,21 @@
 
 ## Status, baseline and authority
 
+**Proceed authorization / Step 1 gate checkpoint:** the owner now authorizes
+proceeding from `d324d87` / `checkpoint/image-viewer-plan`; coordinated automated
+feasibility gates passed (host-enabled suite **131/131**). The accepted public
+lifetime is widget-injected **`TUI.showOverlay` + owned handle**, not
+`ctx.ui.custom`: refuse an existing modal/search and close on public focus loss,
+marking the lease closing/aborting synchronously before deferred scoped cleanup.
+Use a bounded **297x297 full-image prototype + independently addressed subset**,
+not virtual source crop ignored by the supported renderer. These decisions
+supersede the earlier proposed custom/crop paths below; production controls are
+not yet implemented and the new viewer has **not** been human-observed. Read
+[viewer-seam.md](viewer-seam.md), [viewer-crop.md](viewer-crop.md) and
+[viewer-lifetime.md](viewer-lifetime.md) before implementation. Fit-relative zoom
+and recommended defaults remain choices to record in the next phase; do not
+silently turn recommendations into agreed settings. Budgeting remains disabled.
+
 The owner asked to **first make a checkpoint with the plan** for the agreed
 viewer UX below. This is a documentation-only **local Git checkpoint**, not a
 machine/EBS checkpoint, package activation or implementation. The coordinator

@@ -6,6 +6,8 @@ The approved next-phase handoff is in `docs/implementation-plan.md`. Read it bef
 
 The agreed next viewer UX and feasibility-first handoff are in `docs/image-viewer-plan.md` (documentation-only checkpoint; controls are not implemented). Read it before overlay, zoom/pan or click work. Known-working baseline is `9dc2944` / 0.2.0; the coordinator will tag the plan checkpoint locally as `checkpoint/image-viewer-plan`. Budgeting/eviction remains disabled.
 
+Viewer Step 1 is now owner-authorized and automated-gate-passed (131/131 host suite), not production or manual viewer acceptance. Read `docs/viewer-seam.md`, `docs/viewer-crop.md` and `docs/viewer-lifetime.md`: use widget-injected public `TUI.showOverlay` / owned handle (not `ctx.ui.custom`), refuse pre-existing modals/search, close on public focus loss with synchronous lease cancellation and deferred scoped cleanup, and use an independently addressed subset of a full-image canvas bounded at 297x297 instead of ignored virtual source crop. Fit-relative recommended defaults/limits are to be chosen next; do not silently adopt them. This gate status supersedes the earlier proposed API paths, not existing native or no-budgeting contracts.
+
 ## Scope and architecture
 
 - `extensions/index.ts`: Pi commands, tools, standard image attachments and custom local renderer.

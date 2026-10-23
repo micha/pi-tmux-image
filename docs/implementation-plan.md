@@ -2,6 +2,18 @@
 
 ## Status and authorization
 
+**Viewer Step 1 update:** owner-authorized proceeding from plan checkpoint
+`d324d87`; coordinated automated gates now pass (**131/131** host suite).
+Use widget-injected public `TUI.showOverlay` with owned scoped cleanup, existing
+modal/search admission refusal and close-on-public-focus-loss; do not use
+`ctx.ui.custom` lifetime ownership. Viewer geometry uses a full-image canvas
+bounded at **297x297** and explicit viewport-subset marks, not ignored virtual
+source cropping. Exact evidence/limitations: [viewer-seam.md](viewer-seam.md),
+[viewer-crop.md](viewer-crop.md), [viewer-lifetime.md](viewer-lifetime.md).
+Fit-relative defaults/limits must be chosen and recorded next. Production viewer
+controls and manual viewer pixel acceptance are still pending; existing native
+contracts and disabled budgeting below remain unchanged.
+
 **Next UX handoff:** [image-viewer-plan.md](image-viewer-plan.md) records the agreed
 in-pane Pi overlay viewer and mandatory public-API/protocol feasibility gate.
 This is a documentation-only Git checkpoint, not implemented controls or a
