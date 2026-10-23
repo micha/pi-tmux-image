@@ -1,4 +1,4 @@
-# Viewer public UI seam — Pi 1.0.3 feasibility and production candidate
+# Viewer public UI seam — Pi 1.0.3 feasibility and production viewer
 
 ## 0.3.0 implementation status
 
@@ -35,12 +35,19 @@ including an unrelated upper dialog; throwing-frame and concurrent-refresh races
 have controller regressions.
 
 Verified prior commits: plan `d324d87`, gate `e92b1cd`, pure `dd13569`, shared
-runtime `5898185`; current UI is a 0.3.0 candidate, not yet an owner activation.
+runtime `5898185`; final package 0.3.0 is committed at `210d524`.
 Focused controller tests **12/12** and actual-host seam **22/22** pass. Final
 production public SDK matrix **15/15**, host-enabled suite **181/181**, existing
 SDK **12/12**, and portable **150 passed / 31 optional skips** pass on the exact
-verified current source. No new viewer pixels have been human-observed; baseline
-inline observations remain distinct.
+verified source. The owner confirmed “all is working!” after being asked to reload
+and try click-open/zoom/pan/reset/Esc on Ghostty 1.3.1 / tmux 3.6a / Pi 1.0.3 with
+`terminal.images: auto` and `images.blockImages: true`, package 0.3.0 (`210d524`).
+This is general human acceptance of the new in-pane viewer, not a separate report
+for each manual case. Both PDF pages, keyboard picker/regular mode, other terminals,
+modal/search, bounds, reconnect, source-deletion and failure races were not
+individually reported; narrower cases remain automated-only or human-pending.
+No camera inspection or latency measurement was made. Baseline inline observations
+remain distinct; see [viewer-verification.md](viewer-verification.md).
 
 ## Gate decision
 
@@ -50,7 +57,7 @@ close the viewer on public focus loss. Click, keyboard controls, lifecycle and
 ordered transport have actual-host proof. This policy resolves the host's search
 routing limitation without intercepting global keys or reading private state.
 `ctx.ui.custom` in the earlier plan was a proposal, not an absolute API requirement.
-The following records the Step 1 evidence; production candidate status is above.
+The following records the Step 1 evidence; current production status is above.
 
 `test/host-viewer-seam.test.mjs` runs actual exported `CustomMessageComponent`,
 `TuiAltScreen`, `TuiMainScreen`, `InteractiveMode`, SDK sessions and the host's real
@@ -374,5 +381,6 @@ unsafe installed-host behavior; they do not endorse it.
 Scope deliberately excludes protocol cropping/retirement feasibility (other
 workers), production controls, live package installation/reload and manual pixel
 checks. Public UI feasibility is ready under the authorized admission/focus policy;
-production integration is now above. The final SDK report and future owner pixel
-acceptance remain separate; no active owner package activation is claimed.
+production integration and general owner acceptance are now above. The final SDK
+report and scoped owner acceptance remain separate from this historical gate;
+unreported manual cases are not inferred from either.

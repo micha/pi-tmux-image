@@ -12,9 +12,10 @@ replace production behavior with a protocol simulator or a test viewer.
 **Automated production integration passed: 15/15, no skips.** Tested with Pi
 **1.0.3**, native/crop commit `5898185` and the coordinator's production UI
 worktree (extension SHA-256 prefix `55a3e7dee3be`, viewer `afd2a7ec9f4e`). The
-standalone harness contains 14 leaf cases plus its parent test. The coordinator
-owns the final combined UI commit/package activation; this verification worker
-made no production edits or commits.
+standalone harness contains 14 leaf cases plus its parent test. At that automated
+checkpoint the coordinator owned the final combined UI commit/package activation;
+this verification worker made no production edits or commits. The final package
+and subsequent general owner acceptance are recorded below.
 
 Initial actual-host runs caught two production UI defects: installed Pi does not
 recognize `matchesKey('+', '+')`, and long PDF labels truncated the required zoom
@@ -29,7 +30,8 @@ Step 1 evidence remains separately recorded in [viewer-seam.md](viewer-seam.md),
 owned overlays, conservative admission/focus loss, bounded independently addressed
 whole-image canvas subsets. Earlier feasibility tests do not prove the new
 production controller. Existing owner-observed **inline** PNG/PDF checks in
-[verification.md](verification.md) do not establish viewer pixels.
+[verification.md](verification.md) do not establish viewer pixels. Separate general
+owner acceptance of the production viewer is recorded below.
 
 ## Reproduce the optional integration
 
@@ -185,13 +187,30 @@ are additionally exercised through public host components in the earlier seam
 suite; this standalone production case tests actual page-two grid selection,
 label/padding/drag/wheel and does not manufacture links inside native image cells.
 
-## Human acceptance still required
+## General owner acceptance and remaining manual cases
 
-All **new viewer** pixels remain unobserved. On the supported Ghostty/tmux/Pi
-setup, check each PNG/PDF page by click and keyboard, 100% Fit on each fresh open,
-1.25x zoom steps, 25% minimum, honest dynamic 297-cell cap, four-cell pan, all four
-edges, reset, unchanged inline history after close, and source-deleted replay.
-Use an asymmetric labelled image to distinguish genuine row/column offsets.
+After final package **0.3.0**, commit **`210d524`**, the owner confirmed
+**“all is working!”** after being asked to reload and try
+**click-open/zoom/pan/reset/Esc** (click the piggy PNG or a PDF page, then
+`+`/`-`, `0`, `h`/`j`/`k`/`l`, Escape). This records general human acceptance of
+the new in-pane viewer on the existing **Ghostty 1.3.1 / tmux 3.6a / Pi 1.0.3**
+setup with **`terminal.images: auto` / `images.blockImages: true`**.
+
+The owner did **not** provide a separate case-by-case report or specify whether
+both PDF pages, keyboard picker/regular mode, other terminals, modal/search,
+bounds, reconnect, source-deletion or failure races were manually exercised.
+Do not turn the general confirmation into individual matrix passes. No agent/camera
+pixel inspection or latency measurement was made. Prior inline PNG/two-page PDF,
+scrolling, tmux zoom/window, refresh and reload observations remain as recorded in
+[verification.md](verification.md); they do not fill these viewer-specific gaps.
+Automated totals and source hashes above are unchanged.
+
+Narrower unreported cases remain automated-only or human-pending, as applicable.
+For detailed manual coverage, check each PNG/PDF page by click and keyboard,
+100% Fit on each fresh open, 1.25x zoom steps, 25% minimum, honest dynamic 297-cell
+cap, four-cell pan, all four edges, reset, unchanged inline history after close,
+and source-deleted replay. Use an asymmetric labelled image to distinguish genuine
+row/column offsets.
 
 Check narrow/short panes, border clipping, pane position, width/height drag and
 cell-size changes, tmux zoom/unzoom/window switching, new output while open,

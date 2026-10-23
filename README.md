@@ -134,10 +134,12 @@ open or `/tmux-image-refresh` retries it.
 Viewer controls and lifecycle pass the production public SDK matrix (**15/15**),
 host-enabled suite (**181/181**) and existing offline SDK suite (**12/12**).
 These are automated stream/component checks, not terminal pixel observations.
-**New viewer pixel appearance has not yet been human-observed**. Fullscreen
-scroll restoration is automated-tested; regular terminal scrollback position and
-all new zoom/pan/border/cell-size pixels still require manual acceptance. See
-`docs/viewer-seam.md` and `docs/viewer-verification.md` for the evidence boundary.
+**The owner generally accepted package 0.3.0 (`210d524`)** on Ghostty 1.3.1 /
+tmux 3.6a / Pi 1.0.3 with `terminal.images: auto` and `images.blockImages: true`:
+“all is working!” after being asked to reload and try click-open/zoom/pan/reset/Esc.
+This was not a case-by-case report; narrower unreported checks remain
+automated-only or human-pending. See `docs/viewer-verification.md` for detailed
+remaining cases and `docs/viewer-seam.md` for the public UI evidence boundary.
 
 ## Images and model access
 

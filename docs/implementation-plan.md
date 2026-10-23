@@ -2,12 +2,19 @@
 
 ## Status and authorization
 
-**Viewer 0.3.0 candidate:** UI/controller is implemented after plan `d324d87`,
-feasibility gate `e92b1cd`, pure phase `dd13569` and shared runtime `5898185`.
-The current UI changes are not yet a committed/activated owner package. Final
-production public SDK matrix **15/15**, host suite **181/181**, existing SDK
-**12/12** and portable **150 passed / 31 optional skips** pass; all new viewer
-pixel checks remain human-pending, distinct from observed baseline inline behavior.
+**Viewer 0.3.0 implementation / general owner acceptance:** UI/controller is
+committed at `210d524` after plan `d324d87`, feasibility gate `e92b1cd`, pure
+phase `dd13569` and shared runtime `5898185`. Final production public SDK matrix
+**15/15**, host suite **181/181**, existing SDK **12/12** and portable
+**150 passed / 31 optional skips** pass. The owner confirmed “all is working!”
+after being asked to reload and try click-open/zoom/pan/reset/Esc on Ghostty 1.3.1 /
+tmux 3.6a / Pi 1.0.3 with `terminal.images: auto` and `images.blockImages: true`,
+package 0.3.0. This is general human acceptance of the new in-pane viewer, not
+individual manual matrix passes. Both PDF pages, keyboard picker/regular mode,
+other terminals, modal/search, bounds, reconnect, source-deletion and failure races
+were not separately reported; narrower cases remain automated-only or human-pending.
+No camera inspection or latency measurement was made. Baseline inline observations
+remain distinct.
 `/tmux-image-view` and ready-cell-only fullscreen clicks select active-branch stored
 snapshots without rereads, session/history fields, attachments or model turns.
 Defaults: 1.25× fit-relative zoom, 25% minimum, dynamic 297-canvas maximum,
@@ -25,17 +32,18 @@ modal/search admission refusal and close-on-public-focus-loss; do not use
 bounded at **297x297** and explicit viewport-subset marks, not ignored virtual
 source cropping. Exact evidence/limitations: [viewer-seam.md](viewer-seam.md),
 [viewer-crop.md](viewer-crop.md), [viewer-lifetime.md](viewer-lifetime.md).
-Fit-relative defaults/limits are explicitly selected above. Manual viewer pixel
-acceptance is still pending; existing native
-contracts and disabled budgeting below remain unchanged.
+Fit-relative defaults/limits are explicitly selected above. General viewer human
+acceptance is recorded above; unreported manual cases remain pending. Existing
+native contracts and disabled budgeting below remain unchanged.
 
 **Next UX handoff:** [image-viewer-plan.md](image-viewer-plan.md) records the agreed
 in-pane Pi overlay viewer and mandatory public-API/protocol feasibility gate.
-This is a documentation-only Git checkpoint, not implemented controls or a
-machine/EBS checkpoint. Known-working baseline is `9dc2944` / version 0.2.0;
-the coordinator will create local annotated tag `checkpoint/image-viewer-plan`
-for the plan commit, which becomes the parent for future viewer phases. Existing
-native contracts below remain in force; budgeting/eviction is still disabled.
+The plan was a documentation-only Git checkpoint, not implemented controls or a
+machine/EBS checkpoint; current viewer implementation/acceptance is summarized above.
+Known-working observed-inline baseline is `9dc2944` / version 0.2.0; local annotated
+tag `checkpoint/image-viewer-plan` identifies plan commit `d324d87`, the parent
+checkpoint for viewer phases. Existing native contracts below remain in force;
+budgeting/eviction is still disabled.
 
 The owner approved the implementation order below and requested this written
 handoff. The working package was committed first as `d92adcf`:

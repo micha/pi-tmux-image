@@ -2,7 +2,8 @@
 
 ## Status, baseline and authority
 
-**0.3.0 implementation candidate:** pure viewport/protocol phase is committed at
+**0.3.0 implementation / general owner acceptance:** final package is committed at
+`210d524`; pure viewport/protocol phase is committed at
 `dd13569`, shared native/presentation/metrics at `5898185`, following automated
 feasibility gate `e92b1cd` and plan `d324d87`. The UI/controller is now implemented
 in `src/viewer.mjs` and `extensions/index.ts`: ready-cell fullscreen clicks,
@@ -18,8 +19,15 @@ modal/search admission refusal and close-on-public-focus-loss are implemented.
 Title width reserves Fit/limit chrome and preserves PDF page identity separately.
 Final production public SDK matrix **15/15**, host suite **181/181**, existing
 SDK suite **12/12** and portable **150 passed / 31 optional skips** pass on the
-verified current source. New viewer pixels are **not** human-observed and the
-active owner's package is not reloaded.
+verified source. The owner confirmed “all is working!” after being asked to reload
+and try click-open/zoom/pan/reset/Esc on Ghostty 1.3.1 / tmux 3.6a / Pi 1.0.3 with
+`terminal.images: auto` and `images.blockImages: true`, package 0.3.0 (`210d524`).
+This records general human acceptance of the new in-pane viewer, not individual
+manual matrix passes: both PDF pages, keyboard picker/regular mode, other terminals,
+modal/search, bounds, reconnect, source-deletion and failure races were not separately
+reported. Narrower unreported cases remain automated-only or human-pending, as
+applicable; no camera inspection or latency measurement was made. See
+[viewer-verification.md](viewer-verification.md) for the evidence boundary.
 Known-working implementation/observed-inline rollback remains `9dc2944` / 0.2.0.
 
 
@@ -37,9 +45,10 @@ supersede the earlier proposed custom/crop paths below. Read
 recommended fit-relative defaults are now explicitly selected above; other new
 UX scope requires owner approval. Budgeting remains disabled.
 
-The following records the historical documentation-only checkpoint. Viewer code
-is now implemented as summarized above, but no owner package activation or new
-viewer visual acceptance is implied.
+The following records the historical documentation-only checkpoint. Current
+implementation and scoped general owner acceptance are summarized above; historical
+statements of unimplemented controls or pending acceptance below describe that
+checkpoint, not the current package.
 
 The owner asked to **first make a checkpoint with the plan** for the agreed
 viewer UX below. This is a documentation-only **local Git checkpoint**, not a
@@ -291,7 +300,8 @@ and skips separately. Verify `pi install .` and command/resource loading with a
 temporary `PI_CODING_AGENT_DIR`, no provider requests, no physical host dependencies
 installed into this repository and no automatic active-package replacement.
 
-Owner/manual matrix on the supported setup (future observations, **not passed**):
+Owner/manual matrix on the supported setup (detailed cases remain **unreported**;
+general owner acceptance above does not mark each row passed):
 
 | Case | Acceptance |
 |---|---|
