@@ -95,17 +95,30 @@ terminal-memory measurements establish a need for a limit.
 resource deletion or history replacement. A policy requires a separate owner
 choice and measured historical-image trade-off.
 
-Native initial PNG display is now human-observed on Ghostty 1.3.1/tmux 3.6a/
-Pi 1.0.3 with `terminal.images: auto` and `images.blockImages: true`; the owner
-confirmed “i see it!”. Forced `terminal.images: kitty` was correctly refused
-before the owner-authorized change to `auto`. This does not establish full visual
-acceptance: PDF, scrolling, pane positioning, resize/zoom, partial viewport
-visibility, window switching and reconnect/refresh/reload/resume replay remain
-pending human observation. Other verification remains automated stream/component/
-pipeline evidence. Phases 1–3 are not claimed fully visually accepted, and Phase 4
+Native PNG and two-page PDF display are now human-observed on Ghostty 1.3.1/
+tmux 3.6a/Pi 1.0.3 with `terminal.images: auto` and `images.blockImages: true`.
+The owner confirmed initial PNG display (“i see it!”, recorded in `0496d60`),
+correct rendering of both PDF pages, scrolling up to the earlier PNG while the
+PDF was below the fold and back to the PDF (“everything looks like it should”),
+and zoom/unzoom with the same scrolling checks repeated (“all good!”). Multiple
+assistant/user replies followed the PNG and PDF in the live chat; the owner
+scrolled back to the end after those replies and observed correct appearance,
+repeating this after zoom. Images survived continued conversation and scrolling
+in that live sequence, not a separate standalone experiment. PDF speed
+feedback (“it was very fast!”) is subjective, not measured latency. Forced
+`terminal.images: kitty` was correctly refused before the owner-authorized change
+to `auto`; the follow-up observations retained those settings and model blocking.
+
+This does not establish full visual acceptance: separate pane-position checks,
+width/height drags, isolated height/cell-size resizing, deliberate partial-edge
+cropping, tmux window switching and explicit
+reconnect/refresh/reload/resume/source-deleted replay remain pending human
+observation. Other verification remains automated stream/component/pipeline
+evidence. Phases 1–3 are not claimed fully visually accepted, and Phase 4
 measurements do not establish terminal memory bounds. Universal automatic
-reconnect detection is not promised. Preserve the detailed handoff below as the
-implementation and acceptance plan.
+reconnect detection is not promised. See `docs/verification.md` for the evidence
+split; preserve the detailed handoff below as the implementation and acceptance
+plan.
 
 Read `AGENTS.md` before working. Keep human documentation in `README.md` and
 implementation instructions here. Inspect Git state and current host APIs before
@@ -180,11 +193,11 @@ Current code:
 
 Human-observed legacy prototype success: Ghostty behind tmux 3.6a, Pi 1.0.3,
 image/PDF display surviving additional responses and transcript scrolling. Native
-initial PNG display is now separately human-observed as recorded above; the
-legacy observation does not establish the remaining native visual checks. The
-native OMP code was inspected, not installed or visually tested; no OMP
-implementation was copied. Do not treat its tests as proof of our extension's
-behavior.
+PNG/two-page PDF display, scrolling and zoom/unzoom are now separately
+human-observed as recorded above; the legacy observation does not establish the
+remaining native visual checks. The native OMP code was inspected, not installed
+or visually tested; no OMP implementation was copied. Do not treat its tests as
+proof of our extension's behavior.
 
 Machine prerequisites are currently installed: Chafa 1.18.2 and Poppler CLI tools
 26.06.0. Chafa is no longer required by the active extension. `pdftoppm` is on

@@ -172,19 +172,35 @@ with zero skips; without both host variables that is not the same coverage.
 Portable `npm test` passed **90**, with **9** explicitly optional host cases
 skipped and zero failures.
 
-Human-observed native initial PNG: on Ghostty 1.3.1 behind tmux 3.6a with
-Pi 1.0.3, the first attempt correctly refused forced `terminal.images: kitty`.
-After the owner authorized changing only that setting to `terminal.images: auto`
-and reloaded, `tmux_show_image` succeeded and the owner confirmed “i see it!”.
-`images.blockImages` remained `true`: the initial native PNG appeared locally
-with model image blocking enabled. This is initial-display evidence only, not
-visual acceptance of PDF, scrolling, pane positioning, resize/zoom, viewport
-edges, window switching, reconnect/refresh or reload/resume replay.
+Human-observed native display on Ghostty 1.3.1 behind tmux 3.6a with Pi 1.0.3:
+
+- Initial PNG (recorded in `0496d60`): the first attempt correctly refused forced
+  `terminal.images: kitty`. After the owner authorized changing only that setting
+  to `terminal.images: auto` and reloaded, `tmux_show_image` succeeded and the
+  owner confirmed “i see it!”.
+- Two-page PDF: `tmux_show_pdf /tmp/pi-pdf-spike/charts.pdf` displayed the first
+  two pages; the owner confirmed both rendered correctly and said “it was very
+  fast!”. This is subjective speed feedback, not a latency measurement.
+- Transcript scrolling: the owner scrolled up until the PDF images were below
+  the fold and the earlier PNG entered the viewport, then back to the end/PDF,
+  reporting “everything looks like it should”.
+- tmux zoom/unzoom: the owner zoomed/unzoomed and repeated the same scrolling
+  checks, reporting “all good!”.
+- Continued conversation: multiple assistant/user replies followed the PNG and
+  PDF in the live chat. The owner scrolled back to the end after those replies
+  and observed correct appearance, repeating this after zoom. Images survived
+  continued conversation and scrolling in this live sequence; this was not a
+  separate standalone experiment.
+
+The follow-up observations used the same `terminal.images: auto` and
+`images.blockImages: true` settings: standard attachments remained blocked from
+model requests while local display worked.
 
 A captured public UI transport does not emulate Ghostty's image decoding or tmux
-passthrough. Beyond the observed initial PNG, independently observe actual
-image and two-page PDF behavior in a real tmux pane: position, more text below,
-scrolling in both directions, and window switching. For replay/resize claims add
-shrink/expand, height-only resize, zoom/unzoom, reload, resume after source removal,
-and the documented reconnect/refresh path. Record which checks were automated
-versus human-observed; do not infer these outcomes from a green offline harness.
+passthrough. Separate pane-position checks, width/height drags, isolated
+height/cell-size resizing, deliberate partial-edge cropping and tmux window
+switching remain pending human observation. So do
+explicit reconnect/refresh and reload/resume/source-deleted replay. Zoom/unzoom
+and successful scrolling do not separately establish those outcomes. Record
+which checks were automated versus human-observed; do not infer the remaining
+pixels or latency from a green offline harness.
