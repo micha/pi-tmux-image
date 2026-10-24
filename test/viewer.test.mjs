@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createViewerController, indexSnapshots, viewerArea, viewerTitle } from '../src/viewer.mjs';
 import { encodeViewportRows, PLACEHOLDER } from '../src/kitty.mjs';
-import { computeViewport } from '../src/viewport.mjs';
+import { computeViewport, panViewport, zoomViewport, zoomViewportAt } from '../src/viewport.mjs';
 
 const strip = (text) => text.replace(/\x1b\[[0-9:;]*m/g, '').replace(/\p{Mark}/gu, '');
 const width = (text) => [...strip(text)].length;
@@ -11,7 +11,41 @@ const turn = () => new Promise((resolve) => setImmediate(resolve));
 async function until(check) { for (let n = 0; n < 100; n++) { if (check()) return; await turn(); } assert.fail('viewer did not settle'); }
 const snapshots = [1, 2].map((page) => ({ occurrence: `page-${page}`, label: `PDF — page ${page}`, attachment: { type: 'image', mimeType: 'image/png', data: `snapshot-${page}` } }));
 
+function fakeClock({ automatic = false } = {}) {
+  let now = 0, sequence = 0;
+  const timers = new Map(), deferred = [];
+  const clock = {
+    now: () => now,
+    schedule(callback, delay) {
+      const id = ++sequence;
+      timers.set(id, { callback, due: now + delay });
+      if (automatic) setImmediate(() => {
+        const timer = timers.get(id);
+        if (!timer) return;
+        timers.delete(id); now = Math.max(now, timer.due); timer.callback();
+      });
+      return id;
+    },
+    cancelScheduled: (id) => timers.delete(id),
+    defer(callback) {
+      deferred.push(callback);
+      if (automatic) queueMicrotask(() => clock.flush());
+    },
+    flush() { const batch = deferred.splice(0); for (const callback of batch) callback(); },
+    advance(ms = 0) {
+      now += ms;
+      const due = [...timers.entries()].filter(([, timer]) => timer.due <= now);
+      for (const [id, timer] of due) if (timers.delete(id)) timer.callback();
+    },
+    get timerCount() { return timers.size; }, get deferredCount() { return deferred.length; },
+    get callbacks() { return [...timers.values()].map((timer) => timer.callback); },
+  };
+  return clock;
+}
+
 function harness(options = {}) {
+  const clock = options.clock || fakeClock({ automatic: true });
+  let repaints = 0, theme = 'original';
   const terminal = { columns: 40, rows: 16, writes: [], write(bytes) {
     if (writeFailure) throw new Error('mock partial graphics write');
     this.writes.push(bytes);
@@ -22,7 +56,7 @@ function harness(options = {}) {
   let frameFailure = false, writeFailure = false, cells = { widthPx: 8, heightPx: 16 };
   let liveLease, committed, capabilityCalls = 0, reuses = 0, reusedInput, capabilityHold;
   const tui = {
-    terminal, requestRender() {}, renderNow() { if (frameFailure) throw new Error('mock host removal frame failed'); events.push('repaint'); }, hasOverlay: () => overlays.length > 0,
+    terminal, requestRender() { repaints++; }, renderNow() { if (frameFailure) throw new Error('mock host removal frame failed'); events.push('repaint'); }, hasOverlay: () => overlays.length > 0,
     showOverlay(component) {
       const entry = { component, previous: focused }; overlays.push(entry);
       if (focused && 'focused' in focused) focused.focused = false;
@@ -46,7 +80,11 @@ function harness(options = {}) {
     },
   };
   const native = {
-    async resolvePayload(attachment, signal) { normalize++; signal.throwIfAborted(); return { width: 640, height: 480, attachment }; },
+    async resolvePayload(attachment, signal) {
+      normalize++; signal.throwIfAborted();
+      if (options.normalizeFailure) throw new Error('snapshot conversion failed');
+      return { width: 640, height: 480, attachment };
+    },
     reserveViewerPlacement() { reserve++; liveLease = { generation: reserve }; return liveLease; },
     releaseViewer(lease) { events.push('release'); retirement = Boolean(lease.committed || lease.attempted); liveLease = undefined; },
     reuseViewer(input, context) {
@@ -63,7 +101,10 @@ function harness(options = {}) {
         isResident: () => resident(input, context),
         onUploadStarted() { input.lease.attempted = true; committed = undefined; },
         onUploaded() { input.lease.committed = true; committed = { ...input, epoch: context.epoch }; events.push('uploaded'); },
-        onUploadFailed() { events.push('failed'); } };
+        onUploadFailed() {
+          if (options.revokeOnReject) committed = undefined;
+          events.push('failed');
+        } };
     },
     async prepareViewerRetirement(context) {
       if (!retirement) return { uploads: '', lines: [] };
@@ -98,8 +139,12 @@ function harness(options = {}) {
       if (options.forbidRowScanning && text.includes(PLACEHOLDER)) throw new Error('known-width cells were rescanned');
       return width(text);
     },
+    pacing: { ...clock, idleMs: 100, wheelExpiryMs: null },
+    style: (_kind, text) => options.theme ? `${theme}:${text}` : text,
     notify: (message) => events.push(message), sanitizeText: (text) => String(text).replace(/[\x00-\x1f\x7f-\x9f]/g, '') });
-  return { controller, terminal, tui, preparations, events,
+  return { controller, terminal, tui, preparations, events, clock,
+    get repaints() { return repaints; }, setTheme(value) { theme = value; },
+    get pendingWork() { return pending || clock.timerCount || clock.deferredCount; },
     get component() { return overlays[0]?.component; }, get overlays() { return overlays; },
     get normalize() { return normalize; }, get reserve() { return reserve; }, get maxPending() { return maxPending; },
     get capabilityCalls() { return capabilityCalls; }, get reuses() { return reuses; },
@@ -117,6 +162,7 @@ function harness(options = {}) {
     setPolicy(reason) { policy = reason; }, setFrameFailure(value) { frameFailure = value; },
     setCells(value) { cells = value; }, setWriteFailure(value) { writeFailure = value; },
     get retirementPending() { return retirement; },
+    loseProof() { committed = undefined; },
     disconnect() { observer?.onDisconnect(connection); connection = undefined; },
   };
 }
@@ -174,7 +220,7 @@ test('single snapshot auto-opens fit, controls/pointer barrier, new open resets 
 async function mouseReady(h) {
   for (let n = 0; n < 100; n++) {
     const before = h.render(); await turn(); const after = h.render();
-    if (before.some((row) => row.includes(PLACEHOLDER)) &&
+    if (!h.pendingWork && before.some((row) => row.includes(PLACEHOLDER)) &&
         !before.some((row) => row.includes('Updating viewport')) &&
         before.join('\n') === after.join('\n')) return;
   }
@@ -330,19 +376,22 @@ test('10000 captured moves during held prepare stay bounded and cannot publish a
   assert.equal(h.terminal.writes.at(-1), 'RETIRE');
 });
 
-test('resident pan reuses rows synchronously with no capability calls, prepares or transport', async () => {
+test('resident pan samples rows with no capability calls, prepares or transport', async () => {
   const h = harness({ reuse: true }); const { done } = await openReady(h);
   for (let n = 0; n < 5; n++) { h.key('+'); await mouseReady(h); }
   const calls = h.capabilityCalls, writes = h.terminal.writes.length, prepared = h.preparations.length;
   const original = lastPrepare(h).window;
   assert.equal(h.mouse({ type: 'press', button: 'left' }).capture, true);
   h.mouse({ type: 'drag', button: 'left', x: 23, y: 10 });
+  assert.equal(h.reusedInput, undefined, 'raw motion encoded rows before eligibility');
+  await mouseReady(h);
   assert.equal(h.reusedInput.window.columnOffset, original.columnOffset - 3);
   assert.equal(h.reusedInput.window.rowOffset, original.rowOffset - 2);
   for (let n = 0; n < 10000; n++) h.mouse({ type: 'drag', button: 'left', x: 20 + n % 2, y: 8 + n % 2 });
   h.mouse({ type: 'release', button: 'none', x: 20, y: 8 });
+  await mouseReady(h);
   assert.ok(h.render().some((line) => line.includes(PLACEHOLDER)));
-  assert.ok(h.reuses >= 10000);
+  assert.equal(h.reuses, 2, 'report flood encoded obsolete intermediate windows');
   assert.equal(h.capabilityCalls, calls); assert.equal(h.preparations.length, prepared);
   assert.equal(h.terminal.writes.length, writes); assert.equal(h.normalize, 1); assert.equal(h.reserve, 1);
   await h.controller.close(); await done;
@@ -491,4 +540,254 @@ test('failed public removal frame cannot delete; supported recovery paints befor
   assert.equal(h.retirementPending, false); assert.equal(h.reserve, 2);
   const retired = h.events.indexOf('retired'); assert.ok(retired > 0 && h.events[retired - 1] === 'repaint');
   await h.controller.close(); await next.done;
+});
+
+async function manualReady(h) {
+  for (let n = 0; n < 100; n++) {
+    const lines = h.render(); h.clock.flush();
+    if (!h.pendingWork && lines.some((row) => row.includes(PLACEHOLDER)) &&
+        !lines.some((row) => row.includes('Updating viewport'))) return;
+    h.clock.advance(100); await turn();
+  }
+  assert.fail('manual clock did not settle the canonical target');
+}
+async function manualOpen(options = {}) {
+  const h = harness({ ...options, clock: fakeClock() });
+  h.done = h.controller.open(); await until(() => h.component);
+  await manualReady(h); return h;
+}
+async function manualZoom(h, steps = 5) {
+  for (let n = 0; n < steps; n++) { h.key('+'); await manualReady(h); }
+}
+const canonicalInput = (h, state = {}) => ({ image: { width: 640, height: 480 },
+  area: viewerArea(h.terminal.columns, h.terminal.rows).area,
+  cells: { widthPx: 8, heightPx: 16 }, ...state });
+const shownInput = (h) => h.reusedInput || lastPrepare(h);
+
+// Independent sequential clamp oracle, not panViewport's center as its answer.
+function panReference(input, points, start = { x: 20, y: 8 }) {
+  const view = computeViewport(input), center = { ...view.center };
+  const bounds = (pixels, cell, full, visible, pad) => full === visible ? [0.5, 0.5] :
+    [Math.max(0, (visible * cell / 2 - pad) / view.effectiveScale / pixels),
+      Math.min(1, ((full - visible) * cell + visible * cell / 2 - pad) / view.effectiveScale / pixels)];
+  const xb = bounds(640, 8, view.canvas.columns, view.window.columns, view.padding.x);
+  const yb = bounds(480, 16, view.canvas.rows, view.window.rows, view.padding.y);
+  let previous = start;
+  for (const point of points) {
+    center.x = Math.min(xb[1], Math.max(xb[0], center.x + (previous.x - point.x) * 8 / view.effectiveScale / 640));
+    center.y = Math.min(yb[1], Math.max(yb[0], center.y + (previous.y - point.y) * 16 / view.effectiveScale / 480));
+    previous = point;
+  }
+  return { zoomFactor: view.zoomFactor, center };
+}
+
+test('paced 10000-report flood preserves sequential edge/reversal final pose; incidental renders stay passive', async () => {
+  const h = await manualOpen({ reuse: true }); await manualZoom(h);
+  const input = canonicalInput(h, { zoomFactor: 1.25 ** 5 });
+  const old = h.render().filter((row) => row.includes(PLACEHOLDER));
+  const points = [{ x: 200, y: 100 }, { x: 199, y: 99 }];
+  for (let n = 0; n < 10000; n++) points.push({ x: 20 + n % 3, y: 8 + n % 5 });
+  points.push({ x: 198, y: 98 }, { x: 197, y: 97 });
+  const expected = computeViewport({ ...input, ...panReference(input, points) });
+  const counts = [h.preparations.length, h.capabilityCalls, h.terminal.writes.length, h.repaints];
+  h.mouse({ type: 'press', button: 'left' });
+  for (const point of points.slice(0, -1)) h.mouse({ type: 'drag', button: 'left', ...point });
+  h.mouse({ type: 'release', ...points.at(-1) });
+  assert.equal(h.reuses, 0); assert.equal(h.clock.timerCount, 1);
+  for (let n = 0; n < 100; n++) assert.deepEqual(h.render().filter((row) => row.includes(PLACEHOLDER)), old);
+  assert.deepEqual([h.preparations.length, h.capabilityCalls, h.terminal.writes.length, h.repaints], counts);
+  await manualReady(h); assert.equal(h.reuses, 1); assert.deepEqual(shownInput(h).window, expected.window);
+  assert.deepEqual([h.preparations.length, h.capabilityCalls, h.terminal.writes.length], counts.slice(0, 3));
+  h.clock.advance(10000); h.render(); h.clock.flush(); assert.equal(h.reuses, 1);
+  await h.controller.close(); await h.done;
+});
+
+test('pan release precedes wheel; premature press consumes without losing dirty final target', async () => {
+  for (const prematurePress of [false, true]) {
+    const h = await manualOpen({ reuse: true }); await manualZoom(h);
+    const start = { ...shownInput(h).window };
+    h.mouse({ type: 'press', button: 'left' }); h.mouse({ type: 'drag', button: 'left', x: 23, y: 10 });
+    h.mouse({ type: 'release', x: 24, y: 11 }); h.mouse({ type: 'wheel', wheelDelta: -1 });
+    if (prematurePress) assert.notEqual(h.mouse({ type: 'press', button: 'left' }).capture, true);
+    h.clock.advance(100); await turn();
+    assert.equal(h.reuses, 1); assert.equal(shownInput(h).window.columnOffset, start.columnOffset - 4);
+    assert.equal(shownInput(h).window.rowOffset, start.rowOffset - 3);
+    const prepared = h.preparations.length;
+    h.clock.advance(10000); await turn(); assert.equal(h.preparations.length, prepared, 'new ready without receipt admitted wheel');
+    h.render(); assert.equal(h.preparations.length, prepared, 'receipt consumed wheel inline');
+    h.clock.flush(); h.clock.advance(99); await turn(); assert.equal(h.preparations.length, prepared);
+    h.clock.advance(1); await turn(); assert.equal(h.preparations.length, prepared + (prematurePress ? 0 : 1));
+    await manualReady(h); await h.controller.close(); await h.done;
+  }
+});
+
+test('nominal canonical alias wheel/press preserves latest fit factor instead of old ready metadata', async () => {
+  const h = await manualOpen({ reuse: true });
+  h.terminal.columns = 20; h.terminal.rows = 7; h.render(); await manualReady(h);
+  for (let n = 0; n < 8; n++) { h.key('-'); await manualReady(h); }
+  assert.match(strip(h.render()[0]), /25% Fit/);
+  const count = h.preparations.length, rows = h.render().filter((row) => row.includes(PLACEHOLDER));
+  h.key('+'); // 31.25% aliases the same 1x1 mapping; old shown metadata is 25%.
+  assert.deepEqual(h.render().filter((row) => row.includes(PLACEHOLDER)), rows);
+  assert.match(strip(h.render()[0]), /25% Fit/);
+  const frame = viewerArea(20, 7), point = { x: frame.left + 1 + 7, y: frame.top + 1 };
+  assert.equal(h.mouse({ type: 'press', button: 'left', ...point }).capture, true);
+  assert.equal(h.preparations.length, count, 'unadmitted nominal alias prepared geometry');
+  h.mouse({ type: 'release', ...point }); h.mouse({ type: 'wheel', wheelDelta: -1, ...point });
+  await manualReady(h);
+  assert.match(strip(h.render()[0]), /39% Fit/, 'wheel substituted 25% ready factor for canonical 31.25%');
+  const expected = computeViewport(canonicalInput(h, { zoomFactor: 0.25 * 1.25 ** 2 }));
+  assert.deepEqual(lastPrepare(h).canvas, { ...expected.canvas, cellWidthPx: 8, cellHeightPx: 16 });
+  await h.controller.close(); await h.done;
+});
+
+test('subcell canonical alias permits press and preserves center for next drag/wheel math', async () => {
+  const h = await manualOpen({ reuse: true }); await manualZoom(h, 1);
+  const original = canonicalInput(h, { zoomFactor: 1.25 });
+  const alias = panViewport(original, { yCells: 1 });
+  assert.deepEqual(computeViewport(original).window, computeViewport({ ...original, ...alias }).window);
+  assert.notDeepEqual(computeViewport(original).center, alias.center);
+  h.mouse({ type: 'press', button: 'left' }); h.mouse({ type: 'release', y: 7 });
+  const before = h.reuses;
+  assert.equal(h.mouse({ type: 'press', button: 'left', y: 7 }).capture, true);
+  assert.equal(h.reuses, before, 'alias press performed native work inline');
+  h.mouse({ type: 'release', y: 8 }); // reverse from canonical alias, not ready.center
+  const reversed = panViewport({ ...original, ...alias }, { yCells: -1 });
+  await manualReady(h); assert.deepEqual(shownInput(h).window, computeViewport({ ...original, ...reversed }).window);
+  const canonical = { ...original, ...zoomViewport({ ...original, ...reversed }, 'in') };
+  const stale = computeViewport({ ...original, ...zoomViewport({ ...original,
+    ...panViewport(original, { yCells: -1 }) }, 'in') });
+  h.key('+'); await manualReady(h);
+  assert.deepEqual(lastPrepare(h).window, computeViewport(canonical).window);
+  assert.notDeepEqual(lastPrepare(h).window, stale.window, 'test must distinguish ready-center substitution');
+  const frame = viewerArea(40, 16), point = { column: 20 - frame.left - 1 + 0.5, row: 8 - frame.top - 1 + 0.5 };
+  const expected = computeViewport({ ...canonical, ...zoomViewportAt(canonical, 'in', point) });
+  h.mouse({ type: 'wheel', wheelDelta: -1 }); await manualReady(h);
+  assert.deepEqual(lastPrepare(h).window, expected.window);
+  await h.controller.close(); await h.done;
+});
+
+test('long prepare plus long host receipt starts headroom only at deferred first-own boundary', async () => {
+  const h = await manualOpen({ reuse: true });
+  const held = h.hold(); h.key('+'); h.clock.advance(100); await until(() => held.finish);
+  const oldRows = h.render().filter((row) => row.includes(PLACEHOLDER));
+  h.mouse({ type: 'wheel', wheelDelta: -1 }); h.clock.advance(10000);
+  for (let n = 0; n < 20; n++) assert.deepEqual(h.render().filter((row) => row.includes(PLACEHOLDER)), oldRows);
+  assert.equal(h.preparations.length, 2);
+  h.unhold(); await turn(); h.clock.advance(10000); await turn(); assert.equal(h.preparations.length, 2);
+  h.render(); assert.equal(h.clock.deferredCount, 1);
+  h.clock.advance(500); h.render(); h.clock.flush();
+  h.clock.advance(99); await turn(); assert.equal(h.preparations.length, 2);
+  h.render(); h.clock.advance(1); await turn(); assert.equal(h.preparations.length, 3);
+  await manualReady(h); await h.controller.close(); await h.done;
+});
+
+test('held final guard rejection drops revoked proof and rearms final release without another report', async () => {
+  const h = await manualOpen({ revokeOnReject: true }); await manualZoom(h);
+  h.mouse({ type: 'press', button: 'left' });
+  const held = h.holdCapability(2), writes = h.terminal.writes.length;
+  h.mouse({ type: 'drag', button: 'left', x: 21, y: 9 }); h.clock.advance(100); await until(() => held.finish);
+  h.mouse({ type: 'release', x: 24, y: 11 });
+  const input = canonicalInput(h, { zoomFactor: 1.25 ** 5 });
+  const expected = computeViewport({ ...input, ...panReference(input, [{ x: 21, y: 9 }, { x: 24, y: 11 }]) });
+  h.releaseCapability(); await turn(); assert.equal(h.terminal.writes.length, writes);
+  assert.ok(!h.render().some((row) => row.includes(PLACEHOLDER)), 'rejected old proof remained visible');
+  assert.equal(h.clock.timerCount, 1);
+  await manualReady(h); assert.deepEqual(lastPrepare(h).window, expected.window);
+  assert.equal(h.terminal.writes.length, writes + 1); await h.controller.close(); await h.done;
+});
+
+test('return to admitted key across held postcheck commits without revision-equality churn', async () => {
+  const h = await manualOpen(); await manualZoom(h);
+  const held = h.holdCapability(2), count = h.preparations.length;
+  h.key('l'); h.clock.advance(100); await until(() => held.finish);
+  const sample = lastPrepare(h).window; h.key('h'); h.key('l');
+  h.releaseCapability(); await turn(); await manualReady(h);
+  assert.deepEqual(lastPrepare(h).window, sample); assert.equal(h.preparations.length, count + 1);
+  await h.controller.close(); await h.done;
+});
+
+test('final release survives observed pane/cell round trips and stale timer callbacks stay inert', async () => {
+  for (const change of [(h) => { h.terminal.columns = 38; }, (h) => h.setCells({ widthPx: 9, heightPx: 18 })]) {
+    const h = await manualOpen({ reuse: true }); await manualZoom(h);
+    const input = canonicalInput(h, { zoomFactor: 1.25 ** 5 });
+    h.mouse({ type: 'press', button: 'left' }); h.mouse({ type: 'release', x: 24, y: 11 });
+    const expected = computeViewport({ ...input, ...panReference(input, [{ x: 24, y: 11 }]) });
+    const stale = h.clock.callbacks;
+    change(h); h.render(); h.terminal.columns = 40; h.setCells({ widthPx: 8, heightPx: 16 }); h.render();
+    const count = h.preparations.length; for (const callback of stale) callback();
+    assert.equal(h.preparations.length, count);
+    await manualReady(h); assert.deepEqual(lastPrepare(h).window, expected.window);
+    await h.controller.close(); await h.done;
+  }
+});
+
+test('external proof loss before own receipt and after same-key blockage replaces dead receipt generation', async () => {
+  for (const receipt of [false, true]) {
+    const h = await manualOpen({ reuse: true }); h.key('+'); h.clock.advance(100); await turn();
+    if (receipt) {
+      h.render(); h.clock.flush(); h.clock.advance(100);
+      h.mouse({ type: 'press', button: 'left' }); h.mouse({ type: 'release', y: 7 });
+      h.clock.advance(0); await turn(); // alias blocks; no changed-frame receipt
+    }
+    h.mouse({ type: 'wheel', wheelDelta: -1 });
+    const stale = h.clock.callbacks, count = h.preparations.length;
+    h.loseProof(); assert.ok(!h.render().some((row) => row.includes(PLACEHOLDER)));
+    for (const callback of stale) callback();
+    await manualReady(h); assert.equal(h.preparations.length, count + 1);
+    assert.match(strip(h.render()[0]), /125% Fit/, 'trust loss replayed deferred wheel');
+    h.clock.advance(10000); h.render(); h.clock.flush(); assert.equal(h.preparations.length, count + 1);
+    await h.controller.close(); await h.done;
+  }
+});
+
+test('partial failure suppresses same key and wheel on incidental frames; changed key recovers', async () => {
+  const h = await manualOpen({ reuse: true });
+  h.key('+'); h.mouse({ type: 'wheel', wheelDelta: -1 }); h.setWriteFailure(true);
+  h.clock.advance(100); await turn(); const count = h.preparations.length;
+  for (let n = 0; n < 20; n++) { assert.ok(!h.render().some((row) => row.includes(PLACEHOLDER))); h.clock.advance(1000); h.clock.flush(); }
+  assert.equal(h.clock.timerCount, 0); assert.equal(h.preparations.length, count);
+  h.setWriteFailure(false); h.key('-'); await manualReady(h);
+  assert.match(strip(h.render()[0]), /100% Fit/); assert.equal(h.preparations.length, count + 1);
+  await h.controller.close(); await h.done;
+});
+
+test('zero-motion reports and theme invalidation perform no native work or cooldown reset', async () => {
+  const h = await manualOpen({ reuse: true, theme: true });
+  const count = [h.preparations.length, h.capabilityCalls, h.reuses, h.repaints];
+  h.mouse({ type: 'press', button: 'left' });
+  for (let n = 0; n < 10000; n++) h.mouse({ type: 'drag', button: 'left' });
+  h.mouse({ type: 'release' }); h.clock.advance(10000); h.render(); h.clock.flush();
+  assert.deepEqual([h.preparations.length, h.capabilityCalls, h.reuses, h.repaints], count);
+  const idRows = h.render().filter((row) => row.includes(PLACEHOLDER));
+  const cells = (rows) => rows.map((row) => row.slice(row.indexOf('\x1b[38;2;'), row.lastIndexOf('\x1b[0m') + 4));
+  h.setTheme('changed'); h.component.invalidate(); const themed = h.render();
+  assert.ok(themed[0].startsWith('changed:')); assert.deepEqual(cells(themed.filter((row) => row.includes(PLACEHOLDER))), cells(idRows));
+  assert.equal(h.clock.timerCount, 0); assert.equal(h.preparations.length, count[0]);
+  await h.controller.close(); await h.done;
+});
+
+test('public disposal and stale queued receipt cancel synchronously and cannot affect reopened fit', async () => {
+  const h = await manualOpen({ reuse: true }); h.key('+');
+  const stale = h.clock.callbacks, old = h.component, count = h.preparations.length;
+  old.dispose(); assert.equal(h.clock.timerCount, 0); assert.deepEqual(old.render(40), []);
+  for (const callback of stale) callback(); h.clock.advance(10000); h.clock.flush();
+  assert.equal(h.preparations.length, count); await h.done;
+  h.done = h.controller.open(); await until(() => h.component); await manualReady(h);
+  h.key('+'); h.clock.advance(100); await turn(); h.render(); assert.equal(h.clock.deferredCount, 1);
+  await h.controller.close(); await h.done; h.clock.flush(); h.clock.advance(10000);
+  h.done = h.controller.open(); await until(() => h.component); await manualReady(h);
+  const fresh = h.preparations.length; old.dispose(); old.handleInput('+'); h.clock.advance(10000);
+  assert.equal(h.preparations.length, fresh); assert.match(strip(h.render()[0]), /100% Fit/);
+  await h.controller.close(); await h.done;
+});
+
+test('selection conversion error survives first render and resize without any payload', async () => {
+  const h = harness({ normalizeFailure: true }); const done = h.controller.open();
+  await until(() => h.normalize === 1); await turn();
+  assert.match(h.render().join('\n'), /snapshot conversion failed/);
+  h.terminal.columns = 38; h.terminal.rows = 14;
+  assert.match(h.render().join('\n'), /snapshot conversion failed/);
+  assert.equal(h.preparations.length, 0); assert.equal(h.clock.timerCount, 0);
+  await h.controller.close(); await done;
 });

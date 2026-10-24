@@ -38,6 +38,19 @@ improvement, not performance acceptance. The documentation-only next-phase
 handoff is `docs/viewer-frame-pacing-plan.md`; read it before pacing/input sampling
 work. Implementation, tuning defaults and active reload require coordination.
 Original functional confirmation is not latency acceptance.
+
+0.4.2 implements latest-state presentation pacing, authorized by the owner after
+the documentation-only handoff; the owner reviewed the Phase A profile and
+approved an initial **150 ms idle-after-deferred-own-receipt** candidate with
+**wheel expiry disabled**. `src/viewer-pacing.mjs` owns only one timer, ticket and
+demand bit; `src/viewer.mjs` reduces cheap canonical pan/key state per event,
+samples at eligibility, recomputes canonical/live keys at final commit and keeps
+render passive. First own component receipt unlocks deferred cooldown, not a
+screen ACK. Lost native proof cancels the dead receipt generation; canonical
+final targets survive benign rejection and observed layout changes. See
+`docs/viewer-pacing-design.md`, `docs/viewer-pacing-profile.md` and
+`docs/viewer-pacing.md` before hot-path changes. No active reload or human latency
+acceptance is inferred from implementation, stream tests or synthetic FIFO drain.
 No new settings, placement slots, budget/eviction or force path.
 
 ## Worker delegation
@@ -52,7 +65,8 @@ Use Pi model `us.openai.gpt-6.1-sol`: planning and review workers use `--thinkin
 ## Scope and architecture
 
 - `extensions/tmux-image/index.ts`: Pi commands, tools, standard image attachments and custom local renderer.
-- `src/viewer.mjs`: session-local snapshot selector/picker and single raw-overlay lease; synchronous replay revocation/abort on focus loss, deferred own-handle hide/disposal, bounded selection/prepare drain and public `renderNow` removal frame before scoped retirement/reopen; frame failure retains the native obligation, and all retries reflush before deletion. `retryRetirement` captures connection/context after draining close. Never creates messages, reads sources or changes model-image policy.
+- `src/viewer-pacing.mjs`: host-import-free one-shot opportunity/first-own-receipt scheduler with injected monotonic clock, deferred cooldown and cancellation identities; no viewport/input queue, native reservation, terminal side effects or chosen helper policy. Controller supplies the reviewed cadence; local component receipt is not a terminal ACK.
+- `src/viewer.mjs`: session-local snapshot selector/picker and single raw-overlay lease; canonical desired state is distinct from immutable admitted sample and one resident own-view ready frame. Render validates proof/policy/layout without adopting unsampled input. Synchronous replay revocation/abort on focus loss, deferred own-handle hide/disposal, bounded prepare and public `renderNow` removal frame before scoped retirement/reopen; frame failure retains the native obligation, and all retries reflush before deletion. `retryRetirement` captures connection/context after draining close. Never creates messages, reads sources or changes model-image policy.
 - `src/presentation.mjs`: public zero-row widget/TUI transport seam, connection epochs and asynchronous upload-before-placement/repaint ordering; successful-write callbacks commit runtime residency. See `docs/renderer-seam.md` for verified host boundaries.
 - `src/native.mjs`: snapshot normalization cache, live aspect fitting keyed by actual component width/usable height/cell pixels, versioned metadata/legacy runtime migration and serialized per-epoch upload commits; uses pure `src/kitty.mjs`/`src/identity.mjs` helpers and injected public Pi conversion via `src/normalize.mjs`. Vertical policy reserves 8 terminal rows, caps image grids at 60x24 and is not an exact viewport measurement. Retain successfully committed occurrence/geometry prototypes per image and restore all after same-ID PNG retransmission (Kitty deletes all placements on replacement); count PNG chunks and placement batches separately.
 - `src/kitty.mjs`, `src/kitty-diacritics.mjs`, `src/identity.mjs` and `src/normalize.mjs`: pure/bounded native protocol, stable IDs and immutable snapshot normalization; no terminal side effects. The obsolete Chafa implementation was removed after advertised format parity checks passed.

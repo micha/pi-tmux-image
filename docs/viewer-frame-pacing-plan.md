@@ -1,5 +1,19 @@
 # Handoff: latest-state viewer pacing and catch-up investigation
 
+## Implementation follow-up
+
+The owner subsequently authorized implementation and delegation, then explicitly
+reviewed the Phase A evidence and approved an initial **150 ms idle-after-deferred
+first-own-component-receipt** candidate with **wheel expiry disabled**. This
+supersedes the implementation-authorization requirement below, not its safety
+contracts or evidence limits. The helper/design checkpoint is `253ebe9`; current
+implementation and verification are recorded in [viewer-pacing.md](viewer-pacing.md),
+with [viewer-pacing-design.md](viewer-pacing-design.md) and
+[viewer-pacing-profile.md](viewer-pacing-profile.md). Active reload and human
+performance acceptance require separate coordination. The original handoff
+below remains the historical plan, not a claim that its entire manual or
+performance matrix has passed.
+
 ## 1. Status, authority and baseline
 
 **This is a documentation-only handoff requested by the owner.** It authorizes

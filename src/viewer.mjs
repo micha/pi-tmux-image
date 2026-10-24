@@ -1,3 +1,4 @@
+import { createViewerPacer, isWheelExpired } from './viewer-pacing.mjs';
 import { computeViewport, zoomViewport, zoomViewportAt, panViewport, resetViewport, PAN_CELLS } from './viewport.mjs';
 
 /** The raw overlay fills the pane; only its inner image area addresses Kitty cells. */
@@ -29,11 +30,14 @@ export function indexSnapshots(entries, describe) {
 
 /** Host-import-free controller over the existing public widget TUI connection.
  * Native owns PNGs, queue, private placement and success callbacks. There is only
- * one selected snapshot, one pending prepare and one replaceable latest intent.
+ * one selected snapshot, one admitted immutable sample and one canonical target.
  */
 export function createViewerController({ native, presentation, getContext, getSnapshots,
   requireCapability, readyPolicy, getCells, matchesKey, parseKey = () => undefined, truncateToWidth, visibleWidth,
-  sanitizeText = String, style = (_kind, text) => text, notify = () => {} }) {
+  sanitizeText = String, style = (_kind, text) => text, notify = () => {}, pacing = {} }) {
+  // Owner-reviewed candidate; receipt is local component production, not an ACK.
+  const timing = { now: () => performance.now(), schedule: (callback, delay) => setTimeout(callback, delay),
+    cancelScheduled: clearTimeout, defer: queueMicrotask, idleMs: 150, wheelExpiryMs: null, ...pacing };
   let active;
   const unsubscribe = presentation.bind({ onDisconnect() { close('connection'); } });
   const current = (token) => active === token && !token.closing && presentation.connection?.epoch === token.epoch;
@@ -55,7 +59,9 @@ export function createViewerController({ native, presentation, getContext, getSn
   function viewInput(token, width = token.tui.terminal.columns) {
     const frame = viewerArea(width, token.tui.terminal.rows);
     if (!frame.usable || !token.payload) return undefined;
-    return { frame, input: { image: token.payload, area: frame.area, cells: getCells(),
+    const cells = getCells();
+    return { frame, input: { image: token.payload, area: frame.area,
+      cells: { widthPx: cells.widthPx, heightPx: cells.heightPx },
       zoomFactor: token.zoomFactor, center: token.center } };
   }
 
@@ -68,92 +74,189 @@ export function createViewerController({ native, presentation, getContext, getSn
     return token.ready?.base === baseLayout(token, geometry) && token.ready.isResident?.() === true;
   }
 
-  function publish(token, job, prepared) {
-    token.ready = { key: job.key, base: job.base, lines: prepared.lines,
-      view: job.view, isResident: prepared.isResident };
-    token.error = undefined; token.failedKey = undefined;
+  const chrome = (view) => JSON.stringify([view.zoomFactor, view.atZoomLimit]);
+
+  // Description never publishes, allocates rows, aborts or schedules work.
+  function describeDesired(token, width) {
+    const geometry = viewInput(token, width);
+    if (!geometry) return undefined;
+    const view = computeViewport(geometry.input), base = baseLayout(token, geometry);
+    return { ...geometry, view, base, key: JSON.stringify([base, view.canvas, view.window]),
+      generation: token.generation };
   }
 
-  function intent(token, width) {
+  function dropUntrusted(token, geometry) {
+    if (token.ready && (!geometry || !residentReady(token, geometry))) {
+      token.ready = undefined; token.drawn = undefined; token.drag = undefined; token.wheel = undefined;
+      return true;
+    }
+    return false;
+  }
+
+  function observeLayout(token, width) {
     const geometry = viewInput(token, width);
-    if (!geometry) {
-      token.desiredKey = undefined; token.latest = undefined; token.ready = undefined;
-      token.wheel = undefined; token.request?.abort(); return undefined;
+    const base = geometry ? baseLayout(token, geometry) : JSON.stringify([
+      token.tui.terminal.columns, token.tui.terminal.rows, width, getCells(), 'unusable']);
+    if (token.layoutBase !== base) {
+      token.layoutBase = base; token.generation++;
+      token.pacer?.cancel(); token.pacer = undefined;
+      token.request?.abort(); token.ready = undefined; token.drawn = undefined;
+      token.drag = undefined; token.wheel = undefined;
+      token.failedKey = undefined;
+      if (token.payload) token.error = undefined;
+      wake(token);
     }
-    const view = computeViewport(geometry.input), base = baseLayout(token, geometry);
-    token.zoomFactor = view.zoomFactor; token.center = view.center;
-    const id = JSON.stringify([base, view.canvas, view.window]);
-    token.desiredKey = id;
-    if (token.ready && !residentReady(token, geometry)) {
-      token.ready = undefined; token.wheel = undefined; token.drag = undefined;
+    if (dropUntrusted(token, geometry)) {
+      // Lost proof can remove the only frame capable of supplying an own receipt.
+      // Revoke that scheduling generation, retain canonical state, and recover
+      // only after any real native predecessor drains (never receipt polling).
+      token.generation++; token.pacer?.cancel(); token.pacer = undefined;
+      token.request?.abort(); wake(token);
     }
-    if (token.ready?.key === id) {
-      token.ready.view = view; // Zoom factors can change without changing quantized cells.
-      return { ...geometry, view };
+    return geometry;
+  }
+
+  function mappingAgrees(token, desired) {
+    return desired && token.ready?.key === desired.key && token.ready.base === desired.base &&
+      token.drawn?.key === desired.key && token.drawn.base === desired.base &&
+      token.drawn.generation === token.generation && residentReady(token, desired);
+  }
+
+  function dirty(token, desired = describeDesired(token)) {
+    return desired && token.failedKey !== desired.key &&
+      (!token.ready || token.ready.key !== desired.key || chrome(token.ready.view) !== chrome(desired.view));
+  }
+
+  function wake(token) {
+    if (!current(token) || !token.payload || token.runner) return;
+    const desired = describeDesired(token);
+    if (!desired || token.failedKey === desired.key) return;
+    if (!token.pacer) {
+      const generation = token.generation;
+      const pacer = createViewerPacer({ ...timing,
+        onEligible(ticket) {
+          if (!current(token) || token.pacer !== pacer || generation !== token.generation) return;
+          admitSample(token, pacer, ticket);
+        },
+        onError(error) { if (current(token)) fail(token, desired.key, error); },
+      });
+      token.pacer = pacer;
     }
-    const job = { key: id, base, view, cells: geometry.input.cells };
-    // Addressing another subset of an already committed canvas needs only text,
-    // not an upload preparation, queue reservation or tmux subprocess. Layout
-    // changes still take the fully guarded asynchronous path.
-    if (token.ready && !token.request && native.reuseViewer) {
-      const reused = native.reuseViewer({ lease: token.lease,
-        canvas: { ...view.canvas, cellWidthPx: job.cells.widthPx, cellHeightPx: job.cells.heightPx },
-        window: view.window }, { epoch: token.epoch, signal: token.controller.signal });
-      if (reused && reused.uploads === '' && policy(token) && presentation.commit(reused,
-          { epoch: token.epoch, signal: token.controller.signal })) {
-        publish(token, job, reused); token.latest = undefined;
-        return { ...geometry, view };
+    if (dirty(token, desired) || token.wheel) token.pacer.request();
+  }
+
+  function publish(token, sample, prepared, live) {
+    token.ready = { ticket: sample.ticket, key: sample.key, base: sample.base,
+      generation: sample.generation, lines: prepared.lines, view: live.view,
+      isResident: prepared.isResident };
+    token.error = undefined; token.failedKey = undefined;
+    sample.pacer.published(sample.ticket);
+    if (token.wheel || dirty(token)) sample.pacer.request();
+    // Bytes have committed. A repaint exception cannot release that receipt obligation.
+    try { repaint(token); } catch (error) { notify(sanitizeText(`Viewer repaint: ${error.message || error}`), 'warning'); }
+  }
+
+  function fail(token, key, error) {
+    token.pacer?.cancel(); token.pacer = undefined;
+    token.ready = undefined; token.drawn = undefined; token.drag = undefined; token.wheel = undefined;
+    token.error = sanitizeText(error.message || error); token.failedKey = key;
+    repaint(token);
+  }
+
+  function finalView(token, sample, signal) {
+    if (!current(token) || signal.aborted || !policy(token)) return undefined;
+    observeLayout(token);
+    const live = describeDesired(token);
+    return token.pacer === sample.pacer && sample.generation === token.generation &&
+      live?.base === sample.base && live.key === sample.key ? live : undefined;
+  }
+
+  function admitSample(token, pacer, ticket) {
+    if (!policy(token)) return;
+    observeLayout(token);
+    if (token.pacer !== pacer) return;
+    let desired = describeDesired(token);
+    if (!desired || token.failedKey === desired.key) { pacer.blocked(ticket); return; }
+    // Resize clamps are canonical, not reconstructed from displayed cell centers.
+    token.zoomFactor = desired.view.zoomFactor; token.center = desired.view.center;
+    if (token.wheel && mappingAgrees(token, desired)) {
+      const wheel = token.wheel; token.wheel = undefined;
+      if (wheel.generation === token.generation && wheel.base === desired.base &&
+          !isWheelExpired(wheel.receivedAt, timing.now(), timing.wheelExpiryMs)) {
+        const state = zoomViewportAt(desired.input, wheel.direction, wheel.point);
+        token.zoomFactor = state.zoomFactor; token.center = state.center;
+        desired = describeDesired(token);
       }
     }
-    if (token.runningKey === id || (token.latest?.key === id && token.runner) || token.failedKey === id) return { ...geometry, view };
-    token.latest = job;
-    if (token.runningKey !== id) token.request?.abort();
-    if (!token.runner) {
-      // Set the runner before any await; rapid input replaces latest, not promises.
-      token.runner = Promise.resolve().then(() => run(token)).finally(() => {
-        token.runner = undefined;
-        if (current(token) && token.latest) intent(token);
-      });
+    if (!dirty(token, desired)) { pacer.blocked(ticket); return; }
+    const sample = Object.freeze({ ticket, pacer, key: desired.key, base: desired.base,
+      generation: token.generation, view: desired.view, cells: Object.freeze({ ...desired.input.cells }) });
+    const context = { epoch: token.epoch, signal: token.controller.signal };
+    // Same geometry with new nominal metadata needs truthful chrome, not encoding.
+    if (token.ready?.key === sample.key) {
+      const live = finalView(token, sample, context.signal);
+      if (live) publish(token, sample, token.ready, live);
+      else pacer.settled(ticket, { retry: true });
+      return;
     }
-    return { ...geometry, view };
+    try {
+      if (token.ready && native.reuseViewer) {
+        const reused = native.reuseViewer({ lease: token.lease,
+          canvas: { ...sample.view.canvas, cellWidthPx: sample.cells.widthPx, cellHeightPx: sample.cells.heightPx },
+          window: sample.view.window }, context);
+        if (reused) {
+          const live = finalView(token, sample, context.signal);
+          if (!live) {
+            reused.onUploadFailed?.(new Error('Viewer preparation superseded'));
+            dropUntrusted(token, viewInput(token)); pacer.settled(ticket, { retry: true }); return;
+          }
+          if (!presentation.commit(reused, context)) throw new Error('Viewer surface is no longer current');
+          publish(token, sample, reused, live); return;
+        }
+      }
+    } catch (error) { fail(token, sample.key, error); return; }
+    // One admitted immutable sample. Raw input cannot spawn a successor promise.
+    token.runner = Promise.resolve().then(() => runSample(token, sample)).finally(() => {
+      token.runner = undefined;
+      if (current(token)) wake(token);
+    });
   }
 
-  async function run(token) {
-    while (current(token) && token.latest) {
-      const job = token.latest; token.latest = undefined; token.runningKey = job.key;
-      const request = new AbortController(); token.request = request;
-      const abort = () => request.abort(); token.controller.signal.addEventListener('abort', abort, { once: true });
-      const context = { epoch: token.epoch, signal: request.signal };
-      let prepared;
-      try {
-        await requireCapability(token.ctx, request.signal);
-        prepared = await native.prepareViewer({ lease: token.lease,
-          canvas: { ...job.view.canvas, cellWidthPx: job.cells.widthPx, cellHeightPx: job.cells.heightPx }, window: job.view.window }, context);
-        await requireCapability(token.ctx, request.signal);
-        // Terminal dimensions/cells can change before Pi schedules its next
-        // render. Resample live layout here, not only the last desired key.
-        const live = current(token) && viewInput(token);
-        const layoutCurrent = live && baseLayout(token, live) === job.base;
-        if (!layoutCurrent) { token.ready = undefined; token.wheel = undefined; token.drag = undefined; }
-        if (!current(token) || request.signal.aborted || !layoutCurrent || token.desiredKey !== job.key || !policy(token)) {
-          prepared.onUploadFailed?.(new Error('Viewer preparation superseded')); repaint(token); continue;
-        }
-        if (presentation.commit(prepared, context)) {
-          publish(token, job, prepared);
-          repaint(token);
-        } else {
-          token.ready = undefined; token.wheel = undefined;
-          token.error = 'Viewer surface is no longer current'; token.failedKey = job.key; repaint(token);
-        }
-      } catch (error) {
-        prepared?.onUploadFailed?.(error);
-        if (current(token) && !request.signal.aborted && token.desiredKey === job.key) {
-          token.ready = undefined; token.wheel = undefined;
-          token.error = sanitizeText(error.message || error); token.failedKey = job.key; repaint(token);
-        }
-      } finally {
-        token.controller.signal.removeEventListener('abort', abort);
-        token.runningKey = undefined; if (token.request === request) token.request = undefined;
+  async function runSample(token, sample) {
+    const request = new AbortController(); token.request = request;
+    const abort = () => request.abort(); token.controller.signal.addEventListener('abort', abort, { once: true });
+    const context = { epoch: token.epoch, signal: request.signal };
+    let prepared, published = false, rejected = false;
+    try {
+      if (!current(token) || token.pacer !== sample.pacer || sample.generation !== token.generation) return;
+      await requireCapability(token.ctx, request.signal);
+      prepared = await native.prepareViewer({ lease: token.lease,
+        canvas: { ...sample.view.canvas, cellWidthPx: sample.cells.widthPx, cellHeightPx: sample.cells.heightPx },
+        window: sample.view.window }, context);
+      await requireCapability(token.ctx, request.signal);
+      const live = finalView(token, sample, request.signal);
+      if (!live) {
+        rejected = true; prepared.onUploadFailed?.(new Error('Viewer preparation superseded'));
+        dropUntrusted(token, viewInput(token)); repaint(token);
+      } else if (presentation.commit(prepared, context)) {
+        published = true; publish(token, sample, prepared, live);
+      } else {
+        rejected = true; // presentation already releases rejected reservations.
+        fail(token, sample.key, new Error('Viewer surface is no longer current'));
+      }
+    } catch (error) {
+      if (!published && !rejected) prepared?.onUploadFailed?.(error);
+      dropUntrusted(token, viewInput(token));
+      if (current(token) && !request.signal.aborted && token.pacer === sample.pacer) {
+        const live = describeDesired(token);
+        if (live?.key === sample.key) fail(token, sample.key, error);
+        else repaint(token); // benign supersession: latest final target stays dirty.
+      }
+    } finally {
+      token.controller.signal.removeEventListener('abort', abort);
+      if (token.request === request) token.request = undefined;
+      if (current(token) && token.pacer === sample.pacer && !published) {
+        sample.pacer.settled(sample.ticket, { retry: Boolean(dirty(token) || token.wheel) });
       }
     }
   }
@@ -169,7 +272,7 @@ export function createViewerController({ native, presentation, getContext, getSn
         if (!current(token) || !policy(token)) return;
         token.lease = native.reserveViewerPlacement({ payload, occurrence: snapshot.occurrence });
         token.payload = payload;
-        intent(token); repaint(token);
+        observeLayout(token); wake(token); repaint(token);
       } catch (error) {
         if (current(token)) { token.error = sanitizeText(error.message || error); repaint(token); }
       }
@@ -186,32 +289,15 @@ export function createViewerController({ native, presentation, getContext, getSn
 
   function applyState(token, state) {
     token.zoomFactor = state.zoomFactor; token.center = state.center;
-    intent(token); repaint(token);
-  }
-
-  function queueWheel(token) {
-    if (!token.wheel || token.wheelQueued) return;
-    token.wheelQueued = true;
-    queueMicrotask(() => {
-      token.wheelQueued = false;
-      if (!current(token) || !policy(token)) { token.wheel = undefined; return; }
-      const job = token.wheel, geometry = viewInput(token);
-      if (!job) return;
-      if (!geometry || baseLayout(token, geometry) !== job.base) { token.wheel = undefined; return; }
-      // Keep one latest event through preparation. Only a newly rendered,
-      // resident ready mapping can anchor it; desired/unpainted geometry cannot.
-      if (!residentReady(token, geometry) || token.drawn?.key !== token.ready.key ||
-          token.desiredKey !== token.ready.key) return;
-      token.wheel = undefined;
-      applyState(token, zoomViewportAt({ ...geometry.input,
-        zoomFactor: token.ready.view.zoomFactor, center: token.ready.view.center }, job.direction, job.point));
-    });
+    // Every delta is reduced/clamped, but presentation work is opportunity-bound.
+    wake(token);
   }
 
   function mouse(token, event) {
     const consumed = { handled: true, render: false };
     if (!current(token) || !policy(token)) return consumed;
-    const geometry = viewInput(token);
+    observeLayout(token);
+    const geometry = describeDesired(token);
     if (token.picker || !geometry) { token.drag = undefined; token.wheel = undefined; return consumed; }
     const layout = mouseLayout(token, geometry);
     if (token.drag?.layout !== layout) token.drag = undefined;
@@ -230,13 +316,15 @@ export function createViewerController({ native, presentation, getContext, getSn
       // Pi's delta is accelerated transcript lines, not physical wheel notches.
       // Retain one latest sign/position through preparation, not a report queue.
       token.wheel = { direction: event.wheelDelta < 0 ? 'in' : 'out', point,
-        base: baseLayout(token, geometry) };
-      queueWheel(token);
+        base: baseLayout(token, geometry), generation: token.generation, receivedAt: timing.now() };
+      wake(token);
       return consumed;
     }
     if (event.type === 'press') {
       token.drag = undefined; token.wheel = undefined;
-      if (event.button !== 'left' || !rendered || token.desiredKey !== token.ready.key || !inside) return consumed;
+      if (event.button !== 'left' || !rendered || !mappingAgrees(token, geometry) || !inside) {
+        wake(token); return consumed;
+      }
       const view = token.ready.view;
       // Grab occupied image cells, not the surrounding centered blank margins.
       if (point.column < view.origin.column || point.column >= view.origin.column + view.window.columns ||
@@ -253,6 +341,7 @@ export function createViewerController({ native, presentation, getContext, getSn
       drag.x = event.x; drag.y = event.y;
       if (event.type === 'release') token.drag = undefined;
       if (xCells || yCells) applyState(token, panViewport(geometry.input, { xCells, yCells }));
+      else if (event.type === 'release') wake(token);
     }
     return consumed; // Entire pane remains a barrier to hidden transcript input.
   }
@@ -267,6 +356,7 @@ export function createViewerController({ native, presentation, getContext, getSn
       else if (key(data, 'return')) select(token, token.snapshots[token.selected]);
       repaint(token); return;
     }
+    observeLayout(token);
     const geometry = viewInput(token);
     if (!geometry) return;
     let state;
@@ -302,7 +392,8 @@ export function createViewerController({ native, presentation, getContext, getSn
       put(height - 1, style('muted', '↑/↓ j/k select • Enter open • Esc close'));
       return lines;
     }
-    const geometry = intent(token, width);
+    observeLayout(token, width);
+    const geometry = describeDesired(token, width);
     if (!geometry || token.drag?.layout !== mouseLayout(token, geometry)) token.drag = undefined;
     const label = sanitizeText(token.snapshot?.label || 'Stored image');
     const title = viewerTitle(label, token.ready?.view || geometry?.view, width, { truncateToWidth, visibleWidth });
@@ -319,7 +410,7 @@ export function createViewerController({ native, presentation, getContext, getSn
     }
     const { frame } = geometry;
     const view = token.ready?.view || geometry.view;
-    if (token.ready && token.ready.key !== token.desiredKey) put(height - 2, style('muted', 'Updating viewport…'));
+    if (token.ready && dirty(token, geometry)) put(height - 2, style('muted', 'Updating viewport…'));
     const border = (text) => style('border', text);
     const prefix = ' '.repeat(frame.left);
     putCells(frame.top, prefix + border('┌' + '─'.repeat(frame.area.columns) + '┐'));
@@ -339,8 +430,10 @@ export function createViewerController({ native, presentation, getContext, getSn
     }
     putCells(frame.top + frame.area.rows + 1, prefix + border('└' + '─'.repeat(frame.area.columns) + '┘'));
     if (token.ready) {
-      token.drawn = { key: token.ready.key, base: token.ready.base };
-      queueWheel(token);
+      token.drawn = { key: token.ready.key, base: token.ready.base, generation: token.generation };
+      token.pacer?.rendered(token.ready.ticket);
+      // A receipt can unblock a waiting mapping, never consume its wheel inline.
+      if (token.wheel) token.pacer?.request();
     }
     return lines;
   }
@@ -364,7 +457,8 @@ export function createViewerController({ native, presentation, getContext, getSn
     const token = active;
     if (!token) return Promise.resolve();
     if (token.closing) return token.done;
-    token.closing = true; token.ready = undefined; token.latest = undefined;
+    token.closing = true; token.ready = undefined;
+    token.pacer?.cancel(); token.pacer = undefined;
     token.drag = undefined; token.wheel = undefined; token.drawn = undefined;
     token.controller.abort(); token.request?.abort();
     if (token.lease) native.releaseViewer(token.lease); // Revoke replay BEFORE deferred text removal.
@@ -387,7 +481,7 @@ export function createViewerController({ native, presentation, getContext, getSn
     if (connection.tui.hasOverlay()) throw new Error('Close the current dialog/search before opening the image viewer');
     let settle;
     const token = { ...connection, ctx, controller: new AbortController(), closing: false,
-      zoomFactor: 1, center: { x: 0.5, y: 0.5 }, selected: 0, disposed: false,
+      zoomFactor: 1, center: { x: 0.5, y: 0.5 }, generation: 0, selected: 0, disposed: false,
       done: new Promise((resolve) => { settle = resolve; }) };
     token.settle = settle; active = token; // Reserve BEFORE capability/normalization awaits.
     try {
@@ -411,7 +505,11 @@ export function createViewerController({ native, presentation, getContext, getSn
         render: (width) => render(token, width), invalidate() {},
         handleInput: (data) => input(token, data),
         handleMouse: (event) => mouse(token, event),
-        dispose() { if (token.disposed) return; token.disposed = true; },
+        dispose() {
+          if (token.disposed) return;
+          token.disposed = true;
+          if (current(token)) close('component-dispose');
+        },
       };
       token.handle = token.tui.showOverlay(token.component, { row: 0, col: 0, width: '100%', maxHeight: '100%' });
       if (snapshot) select(token, snapshot);

@@ -153,10 +153,36 @@ function mouseView(h, lines = screen(h)) {
   assert.ok(Number.isFinite(percent), "missing mouse zoom title");
   return { canvas, first: cells[0], last: cells.at(-1), percent };
 }
-async function mouseReady(h) {
+async function mouseReady(h, target = () => true, label = "mouse viewport ready") {
   await Promise.resolve(); h.tui.renderNow();
-  await until(() => { h.tui.renderNow(); return readyCells(screen(h), h.viewerPair.placementId); }, "mouse viewport ready");
+  await until(() => {
+    h.tui.renderNow();
+    return readyCells(screen(h), h.viewerPair.placementId) && target(mouseView(h));
+  }, label);
   return mouseView(h);
+}
+const atPercent = (percent) => (view) => view.percent === percent;
+function panTarget(view, xCells = 0, yCells = 0) {
+  return { column: Math.max(0, Math.min(view.canvas.columns - (view.last.column - view.first.column + 1), view.first.column + xCells)),
+    row: Math.max(0, Math.min(view.canvas.rows - (view.last.row - view.first.row + 1), view.first.row + yCells)) };
+}
+const atWindow = (target) => (view) => view.first.column === target.column && view.first.row === target.row;
+// Main-screen mode exposes no public screen-lines query. Decode the LAST full
+// private-cell output frame, never an old retained write behind a pending frame.
+function composedView(h) {
+  if (h.tui instanceof ui.TuiAltScreen) return readyCells(screen(h), h.viewerPair.placementId) ? mouseView(h) : undefined;
+  const bytes = h.terminal.writes.findLast((write) => privateCells([write], h.viewerPair.placementId));
+  if (!bytes || viewportPending([bytes])) return undefined;
+  const text = ui.stripTerminalSequences(bytes);
+  const marks = [...text.matchAll(/\u{10eeee}(.)(.)/gu)].map((m) => ({ row: DIACRITICS.indexOf(m[1]), column: DIACRITICS.indexOf(m[2]) }));
+  // Main-screen differential output can omit unchanged title rows during pan.
+  // Keep the latest publicly emitted title separately from the latest cell rows.
+  const titleWrite = h.terminal.writes.findLast((write) => /\d+% Fit/.test(ui.stripTerminalSequences(write)));
+  const title = titleWrite && ui.stripTerminalSequences(titleWrite);
+  const percent = Number(/(\d+)% Fit/.exec(title || "")?.[1]);
+  if (!marks.length || !Number.isFinite(percent)) return undefined;
+  return { percent, first: marks[0], last: marks.at(-1),
+    canvas: placements(graphics(h.terminal)).findLast((p) => p.placementId === h.viewerPair.placementId), atLimit: title.includes("(limit)") };
 }
 function sourceAt(view, point, cells = { widthPx: 8, heightPx: 16 }) {
   // Fixture PNG dimensions and the Kitty full-image aspect-fit rule. Keep this
@@ -299,6 +325,10 @@ async function seed(h, scratch, pdf = true) {
   const transferred = uploadedPayloads(graphics(h.terminal));
   const imageIds = attachments.map((attachment) => transferred.get(attachment.data));
   assert.ok(imageIds.every(Boolean), "captured PNG upload bytes differ from the canonical PNG snapshots");
+  h.imageDimensions = new Map(imageIds.map((imageId, index) => {
+    const png = Buffer.from(attachments[index].data, "base64");
+    return [imageId, { width: png.readUInt32BE(16), height: png.readUInt32BE(20) }];
+  }));
   assert.deepEqual(images(await h.runtime.session.agent.convertToLlm(h.runtime.session.messages)), h.settings.getBlockImages() ? [] : attachments);
   await rm(join(h.directory, "image.png")); if (pdf) await rm(join(h.directory, "two-pages.pdf"));
   const rasterCalls = (await readFile(join(scratch, "pdf-queries.log"), "utf8")).trim().split("\n").filter(Boolean).map(JSON.parse);
@@ -349,26 +379,179 @@ async function close(h) {
   await h.command;
 }
 async function key(h, data) {
-  const start = h.terminal.writes.length;
-  h.terminal.input(data); h.tui.renderNow(); await Promise.resolve(); h.tui.renderNow();
-  if (h.tui instanceof ui.TuiAltScreen) {
-    await until(() => { h.tui.renderNow(); return readyCells(screen(h), h.viewerPair.placementId); }, `ready cells after ${JSON.stringify(data)}`);
-  } else {
-    // Main-screen host has no public screen-lines query. The pending frame may
-    // retain OLD private cells; only a later private-cell write is a new ready
-    // frame. No-op controls and synchronous rows-only pan need no pending frame.
-    const pending = h.terminal.writes.findLastIndex((bytes, index) => index >= start && viewportPending([bytes]));
-    if (pending >= start) await until(() => {
-      h.tui.renderNow();
-      const lastPending = h.terminal.writes.findLastIndex((bytes, index) => index >= start && viewportPending([bytes]));
-      return privateCells(h.terminal.writes.slice(lastPending + 1), h.viewerPair.placementId);
-    }, `regular ready cells after ${JSON.stringify(data)}`);
+  h.tui.renderNow();
+  const before = composedView(h);
+  assert.ok(before, "keyboard target must start from an actual ready composed frame");
+  const atLimit = before.atLimit ?? plain(screen(h))[0].includes("(limit)");
+  let zoomPercent;
+  if (data === "+" || data === "-") {
+    const image = h.imageDimensions.get(before.canvas.imageId), cells = ui.getCellDimensions();
+    const area = { columns: Math.min(297, h.terminal.columns - 4), rows: Math.min(297, h.terminal.rows - 6) };
+    const fit = Math.min(area.columns * cells.widthPx / image.width, area.rows * cells.heightPx / image.height);
+    const maximum = Math.min(297 * cells.widthPx / image.width, 297 * cells.heightPx / image.height) / fit;
+    // Recover the nominal factor from the allowed discrete step families, not
+    // from quantized cells. Minimum and maximum clamps start new step families.
+    const candidates = [0.25, maximum];
+    for (let n = -6; n < 32; n++) {
+      for (const factor of [1.25 ** n, 0.25 * 1.25 ** n, maximum * 1.25 ** -n]) {
+        if (factor >= 0.25 && factor <= maximum && Math.round(100 * factor) === before.percent) candidates.push(factor);
+      }
+    }
+    const factor = atLimit ? maximum : candidates.find((value) => Math.round(100 * value) === before.percent);
+    assert.ok(factor, "public title cannot identify a valid nominal zoom-step family");
+    zoomPercent = Math.round(100 * Math.max(0.25, Math.min(maximum, data === "+" ? factor * 1.25 : factor / 1.25)));
   }
+  const pan = { h: [-4, 0], j: [0, 4], k: [0, -4], l: [4, 0] }[data];
+  const target = pan && panTarget(before, ...pan);
+  h.terminal.input(data); h.tui.renderNow();
+  await until(() => {
+    h.tui.renderNow(); const view = composedView(h);
+    if (!view) return false;
+    if (target) return atWindow(target)(view);
+    if (zoomPercent !== undefined) return view.percent === zoomPercent;
+    if (data === "0") return view.percent === 100 && view.first.column === 0 && view.first.row === 0;
+    return view.percent === before.percent && atWindow({ column: before.first.column, row: before.first.row })(view);
+  }, `exact ready target after ${JSON.stringify(data)}`);
+}
+
+// Deterministic application pacing over the installed public terminal/TUI seam.
+// This explicit 100 ms TEST allowance is not a proposed production cadence.
+function pacingClock() {
+  let now = 0, sequence = 0;
+  const timers = new Map(), continuations = [];
+  return {
+    idleMs: 100, wheelExpiryMs: null, now: () => now,
+    schedule(callback, delay) {
+      const handle = ++sequence;
+      timers.set(handle, { callback, due: now + delay });
+      assert.ok(timers.size <= 1, "viewer armed more than one pacing timer");
+      return handle;
+    },
+    cancelScheduled(handle) { timers.delete(handle); },
+    defer(callback) {
+      continuations.push(callback);
+      assert.ok(continuations.length <= 1, "viewer queued more than one pacing continuation");
+    },
+    flush() {
+      const pending = continuations.splice(0);
+      for (const callback of pending) callback();
+    },
+    advance(ms = 0) {
+      now += ms;
+      // Snapshot callbacks once: no catch-up loop or implicit repeated ticks.
+      const due = [...timers].filter(([, timer]) => timer.due <= now);
+      for (const [handle, timer] of due) {
+        if (!timers.delete(handle)) continue;
+        timer.callback();
+      }
+    },
+    get timerCount() { return timers.size; },
+    get continuationCount() { return continuations.length; },
+    get nextDelay() { return timers.size ? Math.max(0, [...timers.values()][0].due - now) : undefined; },
+  };
+}
+async function pacedPublicTui() {
+  const { createNativeRenderer } = await import("../src/native.mjs");
+  const { createPresentation } = await import("../src/presentation.mjs");
+  const { createViewerController } = await import("../src/viewer.mjs");
+  const terminal = new CaptureTerminal(), tui = new ui.TuiAltScreen(terminal);
+  const native = createNativeRenderer({ convertToPng: host.convertToPng }), presentation = createPresentation();
+  const clock = pacingClock(), counts = { reuse: 0, prepare: 0, guards: 0 };
+  const attachment = { type: "image", mimeType: "image/png", data: pngFixture().toString("base64") };
+  const snapshot = Object.freeze({ occurrence: "paced-public-snapshot", label: "Generated pacing PNG", attachment: Object.freeze(attachment) });
+  let widget, done, held, holdPost = false, missReuse = false, denied = false;
+  const ctx = { mode: "tui", ui: { setWidget(_name, factory) { widget = factory(tui); } } };
+  presentation.attach(ctx, true);
+  const editor = { focused: false, render: () => ["protected editor"], invalidate() {}, handleInput() { assert.fail("paced viewer forwarded input to editor"); } };
+  tui.addChild(editor); tui.setFocus(editor);
+  const counted = { ...native,
+    reuseViewer(...args) {
+      counts.reuse++;
+      // Constructor-bound collaborator fault injection, never a production
+      // runtime switch: exercise the guarded path after a read-only reuse miss.
+      if (missReuse) { missReuse = false; return undefined; }
+      return native.reuseViewer(...args);
+    },
+    async prepareViewer(...args) {
+      counts.prepare++;
+      const prepared = await native.prepareViewer(...args);
+      if (holdPost) {
+        holdPost = false;
+        let release;
+        const promise = new Promise((resolve) => { release = resolve; });
+        held = { promise, release, prepared };
+      }
+      return prepared;
+    },
+  };
+  const viewer = createViewerController({ native: counted, presentation, pacing: clock,
+    getContext: () => ctx, getSnapshots: () => [snapshot], getCells: ui.getCellDimensions,
+    matchesKey: ui.matchesKey, parseKey: ui.parseKey, truncateToWidth: ui.truncateToWidth, visibleWidth: ui.visibleWidth,
+    readyPolicy: () => denied ? "test display policy disabled" : undefined,
+    requireCapability: async (_ctx, signal) => {
+      counts.guards++; signal?.throwIfAborted();
+      if (held) {
+        const gate = held;
+        await gate.promise;
+        if (held === gate) held = undefined;
+      }
+      signal?.throwIfAborted();
+    },
+  });
+  const h = { terminal, tui, native, presentation, clock, counts, snapshot, ctx, viewer,
+    holdPost() { holdPost = true; }, missNextReuse() { missReuse = true; }, get held() { return held; },
+    set denied(value) { denied = value; },
+    // Only bootstrap/explicit target waits advance fake pacing. Incidental
+    // render assertions below NEVER call this helper, preventing false passes.
+    async target(check, label) {
+      await until(async () => {
+        await Promise.resolve(); tui.renderNow();
+        clock.flush();
+        if (check()) return true;
+        if (clock.nextDelay !== undefined) clock.advance(clock.nextDelay);
+        return false;
+      }, label);
+      tui.renderNow(); clock.flush();
+    },
+    async zoom() {
+      const percent = mouseView(h).percent;
+      terminal.input("+");
+      await h.target(() => readyCells(screen(h), h.viewerPair.placementId) && mouseView(h).percent > percent, "exact paced zoom target");
+    },
+    async cleanup() {
+      held?.release();
+      await viewer.close("test cleanup"); await done;
+      await viewer.dispose(); widget.dispose(); tui.stop();
+    },
+  };
+  try {
+    tui.start(); tui.renderNow();
+    // Same production owner: inline residency before viewer, not fake rows.
+    const prepared = await native.prepare({ attachment, occurrence: "paced-inline", geometry: {
+      columns: 40, rows: 10, cellWidthPx: 8, cellHeightPx: 16 } }, { epoch: presentation.epoch });
+    assert.equal(presentation.commit(prepared, { epoch: presentation.epoch }), true);
+    done = viewer.open();
+    await h.target(() => {
+      const pair = placements(graphics(terminal)).at(-1);
+      if (!pair || pair.placementId === prepared.placementId || !readyCells(screen(h), pair.placementId)) return false;
+      h.viewerPair = pair; return plain(screen(h))[0].includes("100% Fit");
+    }, "initial paced public ready frame");
+    for (let n = 0; n < 4; n++) await h.zoom();
+    const view = mouseView(h);
+    assert.equal(view.percent, 244);
+    assert.ok(view.canvas.columns > 76 && view.canvas.rows > 34, "paced drag must occupy both axes");
+    clock.advance(clock.idleMs);
+    return h;
+  } catch (error) { await h.cleanup(); throw error; }
+}
+function sameMapping(actual, expected) {
+  return actual.percent === expected.percent && JSON.stringify(actual.canvas) === JSON.stringify(expected.canvas) &&
+    actual.first.column === expected.first.column && actual.first.row === expected.first.row;
 }
 
 import test from "node:test";
 test("production viewer: isolated installed public SDK + InteractiveMode acceptance", {
-  skip: !root && "set PI_TEST_HOST_ROOT to installed Pi package root", timeout: 120000,
+  skip: !root && "set PI_TEST_HOST_ROOT to installed Pi package root", timeout: 180000,
 }, async (t) => {
   const scratch = await mkdtemp(join(tmpdir(), "pi-viewer-acceptance-"));
   const keys = ["TMUX", "TMUX_PANE", "PATH", "PI_OFFLINE", "PI_CODING_AGENT_DIR", "PI_IMAGE_PROTOCOL", "DISPLAY", "WAYLAND_DISPLAY"];
@@ -468,16 +651,15 @@ test("production viewer: isolated installed public SDK + InteractiveMode accepta
         assert.ok(view.canvas.columns > 76 && view.canvas.rows > 34, "performance fixture must pan in both axes");
         const panQueries = await queries(scratch), panGraphics = graphics(h.terminal).length;
         const panMetrics = await transportStats(h), started = performance.now();
-        // Unlike a synchronous burst, each report gets its own actual host frame.
-        // A slow rows-only async prepare would perform on-path visibility probes
-        // on every move even when no graphics bytes happen to be necessary.
+        // Each report is offered only after its preceding exact target has been
+        // produced. Pacing may intentionally retain old rows between reports;
+        // the query/transport-free contract still applies to every settled pan.
         h.terminal.mouse(0, 40, 20);
         for (let n = 0; n < 32; n++) {
           const previous = view, delta = n % 2 ? -1 : 1;
           h.terminal.mouse(32, 40 + (n % 2 ? 0 : 1), 20 + (n % 2 ? 0 : 1));
-          h.tui.renderNow();
+          view = await mouseReady(h, atWindow(panTarget(previous, -delta, -delta)), "exact separately offered resident drag target");
           assert.ok(readyCells(screen(h), h.viewerPair.placementId), "rendered resident drag blanked or entered async preparation");
-          view = mouseView(h);
           assert.deepEqual(view.canvas, previous.canvas);
           assert.equal(view.first.column, previous.first.column - delta);
           assert.equal(view.first.row, previous.first.row - delta);
@@ -486,7 +668,7 @@ test("production viewer: isolated installed public SDK + InteractiveMode accepta
         h.terminal.mouse(0, 40, 20, true);
         for (const control of ["l", "h", "j", "k", "l", "h", "j", "k"]) {
           const previous = view;
-          h.terminal.input(control); h.tui.renderNow();
+          await key(h, control);
           assert.ok(readyCells(screen(h), h.viewerPair.placementId), "keyboard pan lost resident cells");
           view = mouseView(h);
           assert.equal(view.first.column, previous.first.column + (control === "l" ? 4 : control === "h" ? -4 : 0));
@@ -496,7 +678,7 @@ test("production viewer: isolated installed public SDK + InteractiveMode accepta
         assert.deepEqual(await queries(scratch), panQueries, "same-layout resident pan ran fake tmux capability subprocesses");
         assert.equal(graphics(h.terminal).length, panGraphics, "resident pan transported PNG/prototype commands");
         assert.deepEqual(await transportStats(h), panMetrics, "rows-only reuse advanced successful transport metrics");
-        t.diagnostic(`40 separately rendered resident pans: ${(performance.now() - started).toFixed(1)} ms capture time including decoding/assertions/timers; 0 tmux queries; 0 graphics writes (not a pure render benchmark or human FPS).`);
+        t.diagnostic(`40 separately rendered resident pans: ${(performance.now() - started).toFixed(1)} ms capture time including pacing waits/decoding/assertions/timers; 0 tmux queries; 0 graphics writes (not a pure render benchmark or human FPS).`);
 
         const oldView = mouseView(h), base = (await queries(scratch)).length;
         const placementCount = placements(graphics(h.terminal)).length;
@@ -551,7 +733,7 @@ test("production viewer: isolated installed public SDK + InteractiveMode accepta
         const anchorBefore = sourceAt(intermediate, latestPoint);
         const staleAnchor = sourceAt(oldView, latestPoint);
         assert.ok(Math.abs(staleAnchor.x - anchorBefore.x) > firstAfter.cellX / 2, "latest-point fixture cannot distinguish old and newly rendered mappings");
-        view = await mouseReady(h);
+        view = await mouseReady(h, atPercent(244), "exact retained latest out-wheel target");
         assert.equal(view.percent, 244, "latest pending wheel sign was dropped or accumulated");
         assert.deepEqual(view.canvas, oldView.canvas, "latest out event did not restore exactly the prior canvas/IDs");
         assert.ok(view.first.column > 0 && view.last.column < view.canvas.columns - 1 &&
@@ -638,7 +820,7 @@ test("production viewer: isolated installed public SDK + InteractiveMode accepta
         assert.equal(initial.percent, 100, "not-ready input was applied after first frame");
         const noOp = async (reports, label) => {
           const oldView = mouseView(h), count = graphics(h.terminal).length;
-          reports(); await Promise.resolve(); h.tui.renderNow(); await sleep(20);
+          reports(); await Promise.resolve(); h.tui.renderNow(); await sleep(250); h.tui.renderNow();
           assert.deepEqual(mouseView(h), oldView, label);
           assert.equal(graphics(h.terminal).length, count, `${label}: unexpected transport`);
         };
@@ -647,30 +829,30 @@ test("production viewer: isolated installed public SDK + InteractiveMode accepta
           h.terminal.mouse(0, 30, 4); h.terminal.mouse(32, 35, 15); h.terminal.mouse(0, 35, 15, true);
         }, "centered blank margin started a grab");
         h.terminal.mouse(64, 30, 4);
-        assert.equal((await mouseReady(h)).percent, 125, "wheel in inner blank margin did not zoom");
+        assert.equal((await mouseReady(h, atPercent(125))).percent, 125, "wheel in inner blank margin did not zoom");
         await key(h, "0");
         const point = { x: 30, y: 16 };
         h.terminal.mouse(64, point.x, point.y);
-        let view = await mouseReady(h);
+        let view = await mouseReady(h, atPercent(125));
         assert.equal(view.percent, 125, "negative host wheelDelta must zoom in exactly one 1.25x step");
         assert.ok(view.canvas.columns > initial.canvas.columns);
-        h.terminal.mouse(65, point.x, point.y); view = await mouseReady(h);
+        h.terminal.mouse(65, point.x, point.y); view = await mouseReady(h, atPercent(100));
         assert.equal(view.percent, 100, "positive host wheelDelta must zoom out exactly one step");
         assert.deepEqual(view.canvas, initial.canvas);
         await key(h, "0");
         // Alt is a positive control for a different normalized host delta: Pi
         // multiplies it beyond its ordinary time-based transcript acceleration.
-        h.terminal.mouse(72, point.x, point.y); view = await mouseReady(h);
+        h.terminal.mouse(72, point.x, point.y); view = await mouseReady(h, atPercent(125));
         assert.equal(view.percent, 125, "accelerated/Alt wheel magnitude became multiple zoom steps");
         const accelerated = view.canvas;
-        await key(h, "0"); h.terminal.mouse(64, point.x, point.y); view = await mouseReady(h);
+        await key(h, "0"); h.terminal.mouse(64, point.x, point.y); view = await mouseReady(h, atPercent(125));
         assert.deepEqual(view.canvas, accelerated, "same wheel sign depends on transcript acceleration magnitude");
         await key(h, "0");
         const burstStart = placements(graphics(h.terminal)).length;
         const burstPoint = { x: 47, y: 18 }, expectedAnchor = sourceAt(mouseView(h), burstPoint);
         for (let n = 0; n < 10000; n++) h.terminal.mouse(n % 2 ? 73 : 72, 25 + n % 20, 15);
         h.terminal.mouse(64, burstPoint.x, burstPoint.y);
-        view = await mouseReady(h);
+        view = await mouseReady(h, atPercent(125));
         assert.equal(view.percent, 125, "synchronous wheel burst did not use only its latest direction");
         assert.equal(placements(graphics(h.terminal)).length - burstStart, 1, "wheel burst queued unbounded prototype work");
         let anchor = sourceAt(view, burstPoint);
@@ -682,7 +864,7 @@ test("production viewer: isolated installed public SDK + InteractiveMode accepta
         for (let n = 0; n < 4; n++) await key(h, "+");
         view = mouseView(h); assert.ok(view.canvas.columns > 76 && view.canvas.rows > 34);
         const anchorPoint = { x: 44, y: 22 }, oldAnchor = sourceAt(view, anchorPoint);
-        h.terminal.mouse(64, anchorPoint.x, anchorPoint.y); const anchored = await mouseReady(h);
+        h.terminal.mouse(64, anchorPoint.x, anchorPoint.y); const anchored = await mouseReady(h, atPercent(305));
         anchor = sourceAt(anchored, anchorPoint);
         assert.equal(anchored.percent, 305, "separate event-loop turn must apply one further wheel step");
         assert.ok(anchored.first.column > 0 && anchored.last.column < anchored.canvas.columns - 1 &&
@@ -707,27 +889,29 @@ test("production viewer: isolated installed public SDK + InteractiveMode accepta
         }, "chrome/outside/other buttons changed viewport");
         const panStart = graphics(h.terminal).length, grabbed = mouseView(h);
         h.terminal.mouse(0, 40, 20); h.terminal.mouse(32, 43, 22);
-        view = await mouseReady(h);
+        view = await mouseReady(h, atWindow(panTarget(grabbed, -3, -2)));
         assert.equal(view.first.column, grabbed.first.column - 3, "grab did not move image with horizontal pointer motion");
         assert.equal(view.first.row, grabbed.first.row - 2, "grab did not move image with vertical pointer motion");
         h.terminal.mouse(0, 43, 22, true); await mouseReady(h);
         await noOp(() => h.terminal.mouse(32, 46, 25), "motion after release continued pan");
+        const outsideStart = mouseView(h);
         h.terminal.mouse(0, 40, 20); h.terminal.mouse(32, 0, 0);
-        view = await mouseReady(h);
+        view = await mouseReady(h, atWindow(panTarget(outsideStart, 40, 20)));
         assert.ok(view.first.column > grabbed.first.column && view.first.row > grabbed.first.row, "captured two-axis drag stopped outside inner image area");
         assert.ok(view.last.column < view.canvas.columns && view.last.row < view.canvas.rows, "outside drag escaped canvas bounds");
         for (let n = 0; n < 2; n++) {
+          const previous = mouseView(h);
           h.terminal.mouse(0, 0, 0, true); h.terminal.mouse(0, 40, 20); h.terminal.mouse(32, 0, 0);
-          await mouseReady(h);
+          await mouseReady(h, atWindow(panTarget(previous, 40, 20)));
         }
         h.terminal.mouse(32, 0, 0); await mouseReady(h); // advance pointer at the clamped edge
         const clamped = mouseView(h);
         assert.equal(clamped.last.column, clamped.canvas.columns - 1, "drag did not reach horizontal canvas edge");
         assert.equal(clamped.last.row, clamped.canvas.rows - 1, "drag did not reach vertical canvas edge");
-        h.terminal.mouse(32, 1, 1); view = await mouseReady(h);
+        h.terminal.mouse(32, 1, 1); view = await mouseReady(h, atWindow(panTarget(clamped, -1, -1)));
         assert.equal(view.first.column, clamped.first.column - 1, "edge reversal accumulated hidden horizontal movement");
         assert.equal(view.first.row, clamped.first.row - 1, "edge reversal accumulated hidden vertical movement");
-        h.terminal.mouse(0, 3, 3, true); view = await mouseReady(h);
+        h.terminal.mouse(0, 3, 3, true); view = await mouseReady(h, atWindow(panTarget(clamped, -3, -3)));
         assert.equal(view.first.column, clamped.first.column - 3, "release dropped final horizontal displacement");
         assert.equal(view.first.row, clamped.first.row - 3, "release dropped final vertical displacement");
         await noOp(() => h.terminal.mouse(32, 20, 10), "outside release did not end capture");
@@ -1014,4 +1198,217 @@ test("production viewer: isolated installed public SDK + InteractiveMode accepta
     for (const name of keys) { if (old[name] === undefined) delete process.env[name]; else process.env[name] = old[name]; }
     await rm(scratch, { recursive: true, force: true });
   }
+});
+
+// A separate fast acceptance parent keeps deterministic deadlines independent of
+// installed-extension production defaults. All input still traverses installed
+// public Terminal.start callbacks and the real fullscreen mouse dispatcher.
+test("paced viewer public TUI: deterministic collection, receipts, guards and reservation safety", {
+  skip: !root && "set PI_TEST_HOST_ROOT to installed Pi package root", timeout: 30000,
+}, async (t) => {
+  const capabilities = { ...ui.getCapabilities() }, cells = { ...ui.getCellDimensions() };
+  ui.setCapabilities({ images: null, trueColor: true, hyperlinks: false });
+  ui.setCellDimensions({ widthPx: 8, heightPx: 16 });
+  try {
+    await t.test("10k raw SGR reports defer encoding; incidental renders remain passive; release settles the exact sequential clamp target", async () => {
+      const h = await pacedPublicTui();
+      try {
+        const initial = mouseView(h), before = { ...h.counts };
+        const transfer = structuredClone(h.native.stats(h.presentation.epoch).transfer), graphicsBefore = graphics(h.terminal).length;
+        const maxX = initial.canvas.columns - (initial.last.x - initial.first.x + 1);
+        const maxY = initial.canvas.rows - (initial.last.y - initial.first.y + 1);
+        let column = initial.first.column, row = initial.first.row, previous = { x: 40, y: 20 };
+        const reference = (point) => {
+          column = Math.max(0, Math.min(maxX, column + previous.x - point.x));
+          row = Math.max(0, Math.min(maxY, row + previous.y - point.y));
+          previous = point;
+        };
+        h.terminal.mouse(0, previous.x, previous.y);
+        for (let n = 0; n < 10000; n++) {
+          const point = [{ x: 0, y: 0 }, { x: 79, y: 39 }, { x: 40, y: 20 }][n % 3];
+          reference(point); h.terminal.mouse(32, point.x, point.y);
+          if (n % 1000 === 0) {
+            h.tui.renderNow();
+            assert.ok(sameMapping(mouseView(h), initial), "incidental host render adopted unsampled pan");
+          }
+        }
+        const release = { x: 43, y: 22 };
+        reference(release); h.terminal.mouse(0, release.x, release.y, true);
+        h.terminal.mouse(32, 55, 30); // Public capture ended: cannot alter final target.
+        h.tui.renderNow();
+        assert.deepEqual(h.counts, before, "raw drag/release reports encoded rows or prepared transport");
+        assert.equal(h.clock.timerCount, 1, "final release did not leave one dirty wake");
+        assert.ok(column !== initial.first.column || row !== initial.first.row, "edge/reversal oracle must distinguish final pose");
+        h.clock.advance(0); h.tui.renderNow();
+        await until(() => {
+          h.tui.renderNow(); const view = mouseView(h);
+          return readyCells(screen(h), h.viewerPair.placementId) && view.first.column === column && view.first.row === row;
+        }, "exact released pan target without subsequent input");
+        assert.equal(h.counts.reuse - before.reuse, 1, "10k reports did not collapse to one eligible encoding");
+        assert.equal(h.counts.prepare, before.prepare, "resident pan acquired async preparation");
+        assert.equal(h.counts.guards, before.guards, "resident pan ran capability checks");
+        assert.equal(graphics(h.terminal).length, graphicsBefore);
+        assert.deepEqual(h.native.stats(h.presentation.epoch).transfer, transfer, "text-only pan advanced transport accounting");
+        h.clock.flush(); h.clock.advance(10000); h.tui.renderNow(); h.clock.flush();
+        assert.equal(h.counts.reuse - before.reuse, 1, "idle tail replayed historical pan poses");
+        assert.equal(h.clock.timerCount, 0);
+      } finally { await h.cleanup(); }
+    });
+    await t.test("busy latest wheel waits for its own produced mapping and deferred cooldown, not incidental host renders", async () => {
+      const h = await pacedPublicTui();
+      try {
+        const original = mouseView(h), before = { ...h.counts }, prototypeCount = placements(graphics(h.terminal)).length;
+        const firstPoint = { x: 35, y: 18 }, latestPoint = { x: 44, y: 22 };
+        h.holdPost(); h.terminal.mouse(64, firstPoint.x, firstPoint.y); h.clock.advance(0);
+        await until(() => Boolean(h.held), "held admitted zoom post-check");
+        for (let n = 0; n < 16; n++) {
+          h.terminal.mouse(n % 2 ? 65 : 64, 25 + n, 18);
+          await Promise.resolve(); h.tui.renderNow();
+        }
+        h.terminal.mouse(65, latestPoint.x, latestPoint.y);
+        assert.equal(h.counts.prepare - before.prepare, 1, "busy wheel reports spawned prepare waiters");
+        assert.ok(sameMapping(mouseView(h), original), "held zoom exposed uncommitted mapping");
+        assert.equal(placements(graphics(h.terminal)).length, prototypeCount);
+        h.clock.advance(1000); h.tui.renderNow();
+        assert.equal(h.counts.prepare - before.prepare, 1, "late timer bypassed outstanding preparation");
+        h.held.release();
+        await until(() => {
+          h.tui.renderNow(); return /305% Fit/.test(plain(screen(h))[0]);
+        }, "first zoom component-produced frame");
+        const intermediate = mouseView(h);
+        assert.equal(placements(graphics(h.terminal)).length, prototypeCount + 1);
+        const anchor = sourceAt(intermediate, latestPoint), stale = sourceAt(original, latestPoint);
+        assert.ok(Math.abs(anchor.x - stale.x) > anchor.cellX / 2, "wheel fixture cannot distinguish rendered and stale mappings");
+        for (let n = 0; n < 8; n++) h.tui.renderNow();
+        assert.equal(h.counts.prepare - before.prepare, 1, "receipt/incidental render consumed unpaced wheel");
+        assert.equal(h.clock.continuationCount, 1);
+        h.clock.flush(); h.clock.advance(h.clock.idleMs - 1); h.tui.renderNow();
+        assert.equal(h.counts.prepare - before.prepare, 1, "wheel admitted before post-receipt cooldown");
+        assert.ok(sameMapping(mouseView(h), intermediate));
+        h.clock.advance(1);
+        await until(() => {
+          h.tui.renderNow(); return readyCells(screen(h), h.viewerPair.placementId) && mouseView(h).percent === 244;
+        }, "exact latest busy wheel target");
+        const final = mouseView(h), after = sourceAt(final, latestPoint);
+        assert.ok(Math.abs(anchor.x - after.x) <= after.cellX / 2 + 1e-10, "latest wheel used stale x mapping");
+        assert.ok(Math.abs(anchor.y - after.y) <= after.cellY / 2 + 1e-10, "latest wheel used stale y mapping");
+        assert.equal(h.counts.prepare - before.prepare, 2, "wheel accumulated historical steps");
+        assert.equal(placements(graphics(h.terminal)).length, prototypeCount + 2);
+        h.clock.flush(); h.clock.advance(10000); h.tui.renderNow();
+        assert.equal(h.counts.prepare - before.prepare, 2);
+      } finally { await h.cleanup(); }
+    });
+    await t.test("superseded admitted key writes nothing; native inline successor drains before the next pacing opportunity", async () => {
+      const h = await pacedPublicTui();
+      try {
+        const original = mouseView(h), prototypeCount = placements(graphics(h.terminal)).length;
+        h.holdPost(); h.terminal.input("+"); h.clock.advance(0);
+        await until(() => Boolean(h.held), "held superseded post-check");
+        h.terminal.input("+"); h.tui.renderNow(); // Canonical changes without a new admission.
+        assert.ok(sameMapping(mouseView(h), original));
+        let successor;
+        const prepared = h.native.prepare({ attachment: h.snapshot.attachment, occurrence: "paced-inline-successor", geometry: {
+          columns: 30, rows: 8, cellWidthPx: 8, cellHeightPx: 16 } }, { epoch: h.presentation.epoch })
+          .then((result) => { successor = result; });
+        await Promise.resolve(); assert.equal(successor, undefined, "successor overtook held reservation");
+        h.held.release(); await prepared;
+        assert.equal(placements(graphics(h.terminal)).length, prototypeCount, "superseded candidate transported obsolete prototype");
+        assert.equal(h.presentation.commit(successor, { epoch: h.presentation.epoch }), true);
+        await until(() => h.clock.timerCount === 1, "rejected dirty target rearmed wake");
+        const stats = h.native.stats(h.presentation.epoch);
+        assert.equal(stats.viewer.pending, false, "pacing wait retained viewer reservation");
+        h.clock.advance(h.clock.idleMs - 1); h.tui.renderNow();
+        // Rejection can revoke native residency even before any bytes. Only
+        // assert old geometry when its cells are still proven/published; text
+        // fallback is safe, but obsolete candidate cells are never acceptable.
+        if (privateCells(screen(h), h.viewerPair.placementId)) {
+          assert.ok(sameMapping(mouseView(h), original), "rejection published obsolete candidate cells");
+        }
+        h.clock.advance(1);
+        await until(() => {
+          h.tui.renderNow(); return readyCells(screen(h), h.viewerPair.placementId) && mouseView(h).percent === 381;
+        }, "latest canonical geometry after rejected candidate");
+        assert.equal(placements(graphics(h.terminal)).length, prototypeCount + 2, "expected only inline successor and latest viewer prototype");
+        h.clock.flush();
+        h.terminal.mouse(0, 40, 20); h.terminal.mouse(32, 43, 22); h.terminal.mouse(0, 43, 22, true);
+        assert.equal(h.clock.timerCount, 1);
+        // No reservation is admitted while cadence waits: another inline
+        // successor must finish without ticking the viewer clock at all.
+        const inline = await h.native.prepare({ attachment: h.snapshot.attachment, occurrence: "cadence-inline-successor", geometry: {
+          columns: 20, rows: 5, cellWidthPx: 8, cellHeightPx: 16 } }, { epoch: h.presentation.epoch });
+        assert.equal(h.presentation.commit(inline, { epoch: h.presentation.epoch }), true);
+        assert.equal(h.clock.timerCount, 1, "inline completion bypassed viewer eligibility");
+      } finally { await h.cleanup(); }
+    });
+    await t.test("release during held guarded pan rejects the old candidate and settles final displacement without more input", async () => {
+      const h = await pacedPublicTui();
+      try {
+        const original = mouseView(h), before = { ...h.counts }, bytesBefore = graphics(h.terminal).length;
+        const target = panTarget(original, -5, -4);
+        h.missNextReuse(); h.holdPost();
+        h.terminal.mouse(0, 40, 20); h.terminal.mouse(32, 43, 22); h.clock.advance(0);
+        await until(() => Boolean(h.held), "held guarded pan after read-only reuse miss");
+        assert.ok(sameMapping(mouseView(h), original), "uncommitted guarded pan exposed candidate rows");
+        h.terminal.mouse(0, 45, 24, true); // Additional two-cell release displacement.
+        h.tui.renderNow();
+        assert.equal(h.counts.prepare - before.prepare, 1, "release spawned a new prepare while old runner was held");
+        h.clock.advance(1000);
+        assert.equal(h.counts.prepare - before.prepare, 1, "late timer admitted another busy target");
+        h.held.release();
+        await until(() => h.clock.timerCount === 1, "rejected release target rearmed without pointer input");
+        assert.equal(graphics(h.terminal).length, bytesBefore, "rejected pan wrote obsolete graphics");
+        h.clock.advance(h.clock.idleMs);
+        await until(() => {
+          h.tui.renderNow();
+          return readyCells(screen(h), h.viewerPair.placementId) && atWindow(target)(mouseView(h));
+        }, "exact final release displacement after held rejection");
+        const final = mouseView(h);
+        assert.deepEqual(final.canvas, original.canvas);
+        assert.equal(final.percent, original.percent);
+        h.clock.flush(); h.clock.advance(10000); h.tui.renderNow(); h.clock.flush();
+        assert.equal((h.counts.prepare - before.prepare) + (h.counts.reuse - before.reuse), 3,
+          "release must have one forced reuse miss/guarded candidate and one latest reconciliation, not a historical retry chain");
+        assert.ok(h.counts.prepare - before.prepare <= 2, "release repeated guarded preparation");
+        assert.equal(graphics(h.terminal).length, bytesBefore, "same-canvas release transported pixels/prototypes");
+        assert.equal(h.clock.timerCount, 0);
+      } finally { await h.cleanup(); }
+    });
+    await t.test("Escape and public modal focus loss synchronously cancel timed work; stale continuations cannot affect reopen", async () => {
+      for (const action of ["escape", "focus-loss"]) {
+        const h = await pacedPublicTui();
+        try {
+          const before = { ...h.counts };
+          h.terminal.mouse(0, 40, 20); h.terminal.mouse(32, 43, 22); h.terminal.mouse(0, 43, 22, true);
+          assert.equal(h.clock.timerCount, 1);
+          let modal;
+          if (action === "escape") h.terminal.input("\x1b");
+          else modal = h.tui.showOverlay({ focused: false, render: () => ["UNRELATED MODAL"], invalidate() {} });
+          assert.equal(h.clock.timerCount, 0, `${action} left armed timer after logical cancellation`);
+          h.clock.advance(10000); h.clock.flush();
+          assert.equal(h.counts.reuse, before.reuse); assert.equal(h.counts.prepare, before.prepare);
+          await h.viewer.close("already closing"); h.tui.renderNow();
+          if (modal) { assert.equal(modal.isFocused(), true); assert.ok(modal.getBounds()); modal.hide(); }
+          const reopen = h.viewer.open();
+          await h.target(() => readyCells(screen(h), h.viewerPair.placementId) && mouseView(h).percent === 100, "fitted fresh reopen");
+          assert.equal(mouseView(h).percent, 100);
+          await h.viewer.close("close fresh reopen"); await reopen;
+          // Also cancel an already queued post-receipt continuation, not just
+          // an armed timer. It remains physically queued but must be inert.
+          const next = h.viewer.open();
+          await until(async () => {
+            await Promise.resolve(); h.tui.renderNow();
+            if (h.clock.nextDelay !== undefined) h.clock.advance(h.clock.nextDelay);
+            return readyCells(screen(h), h.viewerPair.placementId) && /100% Fit/.test(plain(screen(h))[0]);
+          }, "fresh frame with queued receipt continuation");
+          h.tui.renderNow();
+          assert.equal(h.clock.continuationCount, 1);
+          h.terminal.input("\x1b"); const cancelled = { ...h.counts };
+          h.clock.flush(); h.clock.advance(10000);
+          assert.equal(h.clock.timerCount, 0); assert.deepEqual(h.counts, cancelled);
+          await next;
+        } finally { await h.cleanup(); }
+      }
+    });
+    t.diagnostic("Real installed SGR dispatch and public component-produced frames; explicit fake 100 ms idle allowance/null wheel expiry. No simulated drain, outer-terminal display ACK, human latency or product-default claim.");
+  } finally { ui.setCapabilities(capabilities); ui.setCellDimensions(cells); }
 });

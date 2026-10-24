@@ -124,12 +124,25 @@ The overlay fills the current pane. In **fullscreen mode**, wheel zoom works
 inside the ready image area, and left-drag starts on occupied image cells.
 Dragging can continue outside the image area within the pane until release. Motion is
 terminal-cell-stepped, not pixel-smooth. Wheel zoom uses 1.25× steps,
-ignoring Pi's transcript-scroll acceleration; synchronous bursts coalesce to the
-latest direction/position. During a guarded zoom update, the last valid image
-stays visible with an “Updating viewport…” status. One latest wheel event is
-retained and applied after the new ready frame renders, rather than accumulating
-a backlog. Same-canvas pan is a resident text-only update without upload
-preparation or tmux queries. Picker, chrome, initial loading/error rows and
+ignoring Pi's transcript-scroll acceleration; bursts coalesce to the latest
+direction/position. During a guarded zoom update, the last valid image stays
+visible with an “Updating viewport…” status. One latest wheel event waits for
+the current mapping to render and the next eligible update, rather than
+accumulating a backlog. Same-canvas pan is a resident text-only update without
+upload preparation or tmux queries.
+
+**Latest-state pacing (0.4.2):** accepted drag deltas and keyboard actions update
+the desired viewport immediately, preserving edge clamps and reversals. Image
+presentation samples that latest state instead of encoding every pointer report.
+The first update is eligible immediately when idle; subsequent changed updates
+wait **150 ms after the prior frame's first local render/deferred continuation**.
+This leaves headroom for Pi and input processing; it is not a promised frame rate
+or a terminal display acknowledgment. Release retains its final pan target and
+settles without more pointer input. Wheel zoom waits for that pan's rendered
+mapping when necessary. Deferred wheel expiry is disabled. Escape and focus-loss
+cancellation do not wait for the pacing interval.
+
+Picker, chrome, initial loading/error rows and
 tiny-pane fallback consume mouse input
 without changing the viewport. Resize/cell changes, keyboard or wheel input cancel
 an active grab. Regular mode remains keyboard-only; the terminal owns its mouse
@@ -167,8 +180,13 @@ avoidable pan preparation and placeholder width scans, retains valid zoom frames
 and keeps one latest busy-phase wheel event. Upload capability checks are
 unchanged. See `docs/viewer-performance.md` for measurements and verification.
 The owner reports improvement but remaining lag/catch-up; performance is not fully
-accepted. `docs/viewer-frame-pacing-plan.md` records the proposed next investigation
-and latest-state pacing design, not an implemented feature.
+accepted. **0.4.2** adds owner-approved latest-state presentation pacing with
+150 ms idle headroom and no wheel expiry. `docs/viewer-pacing.md` records
+implementation and verification; `docs/viewer-pacing-profile.md` contains the
+repeatable benchmark and conditional slow-output evidence. Active reload and
+human responsiveness acceptance remain coordinated follow-up. Already emitted
+terminal bytes cannot be dropped or retracted, and slow output can still build a
+backlog; the package has no public drain/display acknowledgment.
 
 ## Images and model access
 
@@ -253,6 +271,8 @@ PI_OFFLINE=1 PI_TEST_HOST_ROOT=/path/to/installed/coding-agent/package \
   PI_IMAGE_HOST_MODULE=/path/to/installed/coding-agent/package/dist/index.js npm test
 PI_OFFLINE=1 PI_TEST_HOST_ROOT=/path/to/installed/coding-agent/package \
   node --test test/host-integration.mjs
+PI_OFFLINE=1 PI_TEST_HOST_ROOT=/path/to/installed/coding-agent/package \
+  node --test test/host-viewer-integration.mjs
 ```
 
 See `docs/renderer-seam.md`, `docs/viewer-seam.md`, `docs/viewer-crop.md`, `docs/viewer-lifetime.md`, `docs/kitty-protocol.md`, `docs/pixel-normalization.md`, `docs/capabilities.md` and `docs/graphics-memory.md` for integration boundaries, public-policy sourcing and specification attribution. The protocol helpers follow the public Kitty specification; no OMP implementation was copied and no project license has been selected.
