@@ -154,8 +154,10 @@ tmux 3.6a / Pi 1.0.3 with `terminal.images: auto` and `images.blockImages: true`
 This was not a case-by-case report; narrower unreported checks remain
 automated-only or human-pending. See `docs/viewer-verification.md` for detailed
 remaining cases and `docs/viewer-seam.md` for the public UI evidence boundary.
-The **0.4.0 wheel/grab enhancement** has separate automated verification in
-`docs/viewer-mouse.md`; human gesture/trackpad/appearance checks remain pending.
+The **0.4.0 wheel/grab enhancement (`fcf465f`)** was also generally owner-accepted:
+“it works!” after being asked to reload and try wheel zoom and dragging.
+`docs/viewer-mouse.md` records separate automated verification and the scope of
+that confirmation; narrower edge/resize/trackpad checks remain unreported.
 
 ## Images and model access
 

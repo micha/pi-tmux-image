@@ -6,9 +6,11 @@
 following the feasibility discussion. Fullscreen pointer-anchored wheel zoom and
 primary-button grab-to-pan now supersede the prior ignore/undecided wheel policy.
 Keyboard controls, regular-mode fallback and all native/lifetime contracts remain.
-See [viewer-mouse.md](viewer-mouse.md) for exact behavior, verification and pending
-human gesture acceptance. Prior 0.3.0 acceptance below is unchanged historical
-evidence, not acceptance of the new gestures.
+The owner generally accepted the implementation at `fcf465f` / 0.4.0 (“it works!”)
+after being asked to reload and try wheel zoom and dragging. See
+[viewer-mouse.md](viewer-mouse.md) for exact behavior, automated verification and
+scoped general acceptance; narrower unreported edge/resize/trackpad cases remain
+pending. Prior 0.3.0 acceptance below is unchanged historical evidence.
 
 **0.3.0 implementation / general owner acceptance:** final package is committed at
 `210d524`; pure viewport/protocol phase is committed at

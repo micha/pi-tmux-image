@@ -7,7 +7,8 @@ review of the current viewer and installed Pi 1.0.3 public mouse APIs. This
 supersedes the earlier ignore-wheel/undecided viewer mouse policy, not the
 inline transcript click/selection contracts. No budgeting or configuration change
 is authorized. Core 0.3.0 viewer human acceptance remains historical evidence;
-these new gestures still require coordinated human acceptance.
+the owner also generally accepted these new gestures after implementation at
+`fcf465f` / 0.4.0 (see the scoped confirmation below).
 
 - **Fullscreen only:** wheel up zooms in; wheel down zooms out. Use the existing
   1.25× fit-relative step, 25% minimum and dynamic 297×297 full-canvas maximum.
@@ -117,7 +118,25 @@ its dedicated page row rather than weakening the existing assertion. All final
 runs pass. These checks are math/stream/component evidence, not outer-terminal
 pixels, Kitty acknowledgments, measured heap/GPU bounds or a latency benchmark.
 
-Human checks still pending on the owner's Ghostty/tmux setup:
+## General owner acceptance and unreported manual cases
+
+After the 0.4.0 implementation commit **`fcf465f`**, the owner confirmed
+**“it works!”** in response to the handoff asking them to reload, open a PNG or PDF
+page, and try wheel zoom and dragging. This records general human acceptance of
+the new mouse interactions on the existing setup; it is separate from automated
+evidence and prior 0.3.0 acceptance.
+
+The owner did not identify the image/page, input device, reload step or individual
+edge/resize/modal cases exercised. Do not infer both PDF pages, trackpad testing,
+precise pointer anchoring, all edge/release cases or a latency measurement from
+that confirmation. No agent/camera pixel inspection was performed. The previously
+recorded setup is Ghostty 1.3.1 / tmux 3.6a / Pi 1.0.3 with
+`terminal.images: auto` / `images.blockImages: true`; no new configuration details
+were reported.
+
+The following narrower manual checks remain unreported, not a reason to label the
+core gestures unaccepted:
+
 
 1. Open a PNG and each PDF page; wheel over an off-center feature in both
    directions. The feature should stay near the pointer until an edge or fully

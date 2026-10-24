@@ -15,9 +15,11 @@ zoom and primary-button grab-to-pan are implemented in `src/viewer.mjs`, with pu
 `zoomViewportAt` in `src/viewport.mjs`. Read `docs/viewer-mouse.md` for sign-only
 burst coalescing, rendered-ready admission, public capture, layout/cell-change
 cancellation and verification. Keyboard zoom remains center-based; regular mode
-remains keyboard-only. New gesture pixels/responsiveness are human-pending;
-prior 0.3.0 general acceptance does not cover them. No native ownership,
-configuration, model-policy or budgeting changes.
+remains keyboard-only. The owner generally accepted 0.4.0 at `fcf465f` (“it works!”)
+after being asked to reload and try wheel zoom and dragging. This is not a
+case-by-case edge/resize/trackpad pass or latency measurement; see the scoped
+record in `docs/viewer-mouse.md`. No native ownership, configuration, model-policy
+or budgeting changes.
 
 ## Worker delegation
 
