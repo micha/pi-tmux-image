@@ -9,11 +9,13 @@ Human-facing setup, usage and limitations belong in `README.md`. Keep this file 
 - Do not activate/reload the owner's package without coordination. Pacing implementation/tuning changes also require coordination.
 - Current package: **0.4.2**. Core native behavior, viewer controls and latest-state pacing have general owner acceptance on Ghostty 1.3.1 / tmux 3.6a / Pi 1.0.3. This is not a case-by-case manual matrix pass or measured latency/FPS result. Do not infer human acceptance from automated streams, component receipts or synthetic FIFO drain.
 - Budgeting/eviction remains disabled. No new budget settings, placement slots or force path without separate owner approval.
+- Pending PDF design: `docs/pdf-document-viewer-plan.md` records owner-agreed first-page previews, session-embedded originals, large-file Keep/Temporary/Cancel and viewer pagination. Documentation only; obtain implementation proceed. Its scoped PDF changes supersede historical two-page/no-pagination restrictions when implemented, not native ownership, pacing or model-policy contracts.
 
 ## Required reading by task
 
 | Task | Read |
 | --- | --- |
+| PDF document storage, retention or viewer pagination | `docs/pdf-document-viewer-plan.md`, then its linked native/viewer/pacing/verification contracts |
 | Native encoding, replay, resizing, capability detection or budgeting | `docs/implementation-plan.md`, then the relevant protocol/normalization/capability/metrics docs below |
 | Overlay, zoom/pan or click behavior | `docs/image-viewer-plan.md` (historical), `docs/viewer-seam.md`, `docs/viewer-crop.md`, `docs/viewer-lifetime.md`, `docs/viewer-verification.md` |
 | Wheel zoom or grab-to-pan | `docs/viewer-mouse.md` |
@@ -48,7 +50,7 @@ For Pi API changes, read the installed Pi docs and extension examples, following
 1. Use Kitty Unicode placeholders (`U=1`), not ordinary positioned placements. Pixels bypass tmux; placeholder cells go through Pi text layout. Foreground color encodes the image ID: never restyle these rows or put cursor movement/upload escapes in transcript text.
 2. Use standard Pi image content from the built-in read pipeline. Do not filter image messages or change `images.blockImages`; local display must not depend on model blocking. Blocking does not prevent session storage.
 3. Keep uploads/placeholders out of model-facing content and session details. Tool-execution display messages use `triggerTurn: false`; preserve tool-call/result ordering without steering or starting another model turn. The overlay itself emits no messages/attachments/turns.
-4. Preserve `/tmux-image`, `/tmux-pdf`, `/tmux-image-view`, `/tmux-image-refresh`, `/tmux-image-stats`, `tmux_show_image` and `tmux_show_pdf` unless a breaking change is requested. Preserve the two-page PDF default.
+4. Preserve `/tmux-image`, `/tmux-pdf`, `/tmux-image-view`, `/tmux-image-refresh`, `/tmux-image-stats`, `tmux_show_image` and `tmux_show_pdf` unless a breaking change is requested. Preserve the current two-page PDF default until the separately agreed document-viewer change in `docs/pdf-document-viewer-plan.md` is implemented.
 
 ### Capabilities and subprocesses
 
