@@ -11,6 +11,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { deflateSync } from "node:zlib";
 import { DIACRITICS } from "../src/kitty-diacritics.mjs";
+import { withPdfPages } from "../src/pdf.mjs";
 
 const run = promisify(execFile);
 const root = process.env.PI_TEST_HOST_ROOT && resolve(process.env.PI_TEST_HOST_ROOT);
@@ -315,8 +316,17 @@ async function seed(h, scratch, pdf = true) {
   assert.equal(snapshots(h).length, 1, "image source command failed");
   if (pdf) {
     await writeFile(join(h.directory, "two-pages.pdf"), pdfFixture());
-    await h.runtime.session.prompt("/tmux-pdf two-pages.pdf");
-    assert.equal(snapshots(h).length, 3, "two-page PDF default changed");
+    // Explicit pre-document legacy history: two independent native-v1 page
+    // snapshots. New imports are tested separately in host-pdf-integration.mjs;
+    // these entries must never acquire full-document navigation by filename.
+    await withPdfPages(join(h.directory, "two-pages.pdf"), async (path, page) => {
+      const result = await host.createReadTool(h.directory).execute("legacy-pdf-fixture", { path });
+      await h.runtime.session.sendCustomMessage({ customType: "pi-tmux-image", content: result.content, display: true,
+        details: { schema: "pi-tmux-image/native-v1", occurrence: `legacy-page-${page}`,
+          label: `${join(h.directory, "two-pages.pdf")} — page ${page}`,
+          geometry: { columns: 48, rows: 24, cellWidthPx: 8, cellHeightPx: 16 } } }, { triggerTurn: false });
+    });
+    assert.equal(snapshots(h).length, 3, "legacy pages must remain independent snapshots");
   }
   const renderer = h.runtime.services.resourceLoader.getExtensions().extensions.find((e) => e.commands.has("tmux-image")).messageRenderers.get("pi-tmux-image");
   const components = snapshots(h).map((m) => renderer(m, { expanded: false, outputPad: 1 }, { fg: (_color, text) => text }));

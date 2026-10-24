@@ -2,25 +2,38 @@
 
 ## 1. Status, authority and next action
 
-**Documentation-only design checkpoint.** The owner requested a review and a
-written handoff after agreeing the behavior below. This checkpoint does not
-implement pagination, activate/reload the package, bump its version, change
-settings, or authorize graphics budgeting. Obtain an explicit implementation
-proceed before starting the phases.
+**Implemented / automated-verified in 0.5.0; new PDF human checks pending.**
+The original documentation-only checkpoint below was followed by explicit owner
+implementation/delegation authorization. Provider, import and viewer code is now
+delivered in **0.5.0**, with independent production review and final offline
+automated suites/isolated installation gates passing. The owner also explicitly approved
+**truthful submitted-preview/selected-retention semantics** after the public Pi
+1.0.3 send gate showed there is no extension publication/persistence ACK. This
+narrow adjustment supersedes transactional-send assumptions in the original plan,
+not native ownership, pacing, model policy or disabled budgeting.
 
-Reviewed checkout: **`5f5c59b`**, package **0.4.2**, tested host API **Pi 1.0.3**.
-Discover dependencies from the current environment; installed-host paths and
-historical temporary fixtures are not prerequisites. Current production still
-shows the first two PDF pages as independent image messages.
+Read [pdf-document-viewer.md](pdf-document-viewer.md) for current delivered
+interfaces, publication boundary and final automated evidence. Coordinator release
+documentation authorization followed independent production review and the full
+**0.5.0** stable gates. New PDF visuals/regular scrollback/responsiveness remain
+human-pending; this handoff is not an activation/reload instruction or new human
+acceptance.
 
-This plan supersedes earlier plans' two-page-default/no-pagination/no-PDF-work
-restrictions **only for the proposed PDF-document feature**. Until implemented,
-those documents correctly describe production. All image behavior, native
-ownership, policy gates, approved pacing and disabled budgeting remain in force.
-The new exception is rasterization of a requested PDF page from an immutable
-captured document, never rereading its original path during viewing.
+Historical planning baseline: **`5f5c59b`**, package **0.4.2**, tested host API
+**Pi 1.0.3**. At that checkpoint production showed the first two PDF pages as
+independent image messages. Sections describing proposed APIs, source before
+implementation and checkpoint-only evidence preserve that historical context;
+current implementation records supersede helper names and verification status.
+Discover dependencies from the current environment; historical host/fixture paths
+are not prerequisites.
 
-First next-session actions:
+The scoped new-PDF implementation supersedes earlier two-page-default/no-pagination
+restrictions. Existing old PDF-page snapshots remain independent images. All image
+behavior, native ownership, policy gates, approved pacing and disabled budgeting
+remain in force. Requested later pages rasterize from an immutable captured
+document, never its original path.
+
+Original next-session actions (historical checkpoint):
 
 1. Read `AGENTS.md`, inspect Git state and preserve unrelated work.
 2. Read this plan and its relevant linked contracts below.
@@ -266,17 +279,28 @@ filesystem/source-path logic. Avoid making native own original PDF bytes.
    for allocation/encoding/storage failure. For Temporary, register only its
    runtime snapshot under session-runtime identity + occurrence. Finish all
    preparation and recheck cancellation, generation and capability before sending.
-8. Send exactly one preview message with `triggerTurn: false`; preserve sequential
-   tool execution and tool-result-before-display ordering. Commit temporary
-   ownership only for the matching successfully published occurrence; rollback on
-   failure. Return a truthful compact summary indicating retention and page count.
+8. After final guards, synchronously stage transaction ownership and submit exactly
+   one preview with `triggerTurn: false`, without an intervening await. Preserve
+   sequential tool execution and tool-result-before-display ordering. Return a
+   truthful compact **submitted preview / selected retention / page count** summary.
+   The public extension send is void; neither its normal return nor tree presence
+   proves display or disk success. Waiting inside a tool for deferred append would
+   deadlock the tool-result boundary. Accepted send cannot be retracted; subsequent
+   cancellation/host errors cannot retroactively turn a returned tool into failure.
 9. Remove initial PNG scratch and untransferred PDF snapshots on all exit paths.
-   Never claim successful durable storage if the public send/persistence operation
-   throws. Pi's send operation is not an extension-controlled atomic disk transaction;
-   test/report its failure boundary rather than promising crash-proof persistence.
-   A host failure may follow an in-memory append or partial disk write. Do not
-   rewrite history to roll it back or blindly retry and duplicate the preview;
-   report the failure and reconcile ownership against the actual occurrence.
+   All known pre-send failures/cancellation produce zero preview entries. Once send
+   is attempted, a synchronous throw and immediate history absence do not prove
+   rejection before handoff: queued acceptance may have happened. Preserve staged
+   Temporary until matching occurrence/hash exists or a final drained same-runtime
+   boundary proves absence across **all history**, not just the active branch.
+   Snapshot boundary-eligible candidate records before awaited cleanup and guard
+   exact runtime/record identities. Presence resolves runtime browsing ownership
+   only; Pi owns later persistence/error reporting. Do not retry blindly, rewrite
+   history, force durable flush, or promise atomic durable save/rollback.
+
+This is the owner-authorized publication correction from the executed public-host
+gate; see [the current publication record](pdf-document-viewer.md#publication-boundary).
+The remainder of this section's lifetime design remains applicable.
 
 The selector is import UI, not viewer UI. Refuse competing import selectors;
 never use a modal to displace a live viewer as an accidental control path. A
@@ -519,7 +543,7 @@ review, full tests and local commits. This planning checkpoint spawned no worker
 | Area | Required evidence |
 | --- | --- |
 | Threshold/selector | Below/at threshold no dialog; above threshold all three choices; undefined/abort/invalid results never Keep; no source access before capability denial; changed source size cannot bypass consent. |
-| Single-entry import | One PDF message/one preview image, exact source hash/count/retention, one copy of PDF bytes in details only; no entry on cancel or pre-publication failure; injected host send/persistence failure is explicit and never blindly retried; tool ordering/sequential execution preserved. |
+| Single-entry import | One PDF message/one preview image, exact source hash/count/retention, one copy of PDF bytes in details only; no entry on cancel or pre-send failure; truthful submitted summary, actual void/deferred/error boundary and conservative staged ownership tested, no blind retry or durable ACK claim; tool ordering/sequential execution preserved. |
 | Restoration | Retained bytes work after original edit/delete, reload and fresh process resume; copied/branched/forked session independent of deleted parent; custom session dirs and `--no-session` respected. |
 | Temporary | Original removed immediately after import still browses during runtime; close/reopen/tree/refresh preserve access; shutdown/reload/replacement release copies; restored page-one preview works and pagination explains absence. |
 | Navigation | 1/last boundaries, latest-target bursts/reversals, jump empty/zero/out-of-range/overflow/backspace/error/Escape, mixed dimensions, revisits fit, current-ready-page no-op, tiny-to-usable restoration. |

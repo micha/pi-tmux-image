@@ -1,6 +1,7 @@
 // Optional actual-host integration: node --test test/host-integration.mjs
 // Uses only public package exports. No physical Pi imports in the portable suite.
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -213,7 +214,7 @@ async function verifyLiveLayoutAndRefresh(h, scratch, component, before) {
     assert.deepEqual(component.render(80), initialLines, "resize reversal changed retained placement rows");
     assert.equal(h.writes.length, 0, "resize reversal did not reuse ready geometry");
 
-    const beforeFailureStats = await verifyStats(h, scratch, { imageIds: 3, payloads: 3, prototypes: 6, normalizedPayloads: 3 });
+    const beforeFailureStats = await verifyStats(h, scratch, { imageIds: 2, payloads: 2, prototypes: 5, normalizedPayloads: 2 });
     h.transport.writeFaults = 1;
     for (let i = 0; i < 100; i++) {
       const lines = component.render(19);
@@ -228,7 +229,7 @@ async function verifyLiveLayoutAndRefresh(h, scratch, component, before) {
     const repaints = h.transport.repaints;
     await h.session.prompt("/tmux-image-refresh");
     assert.ok(h.transport.repaints > repaints, "refresh did not request repaint");
-    const zero = await verifyStats(h, scratch, { imageIds: 0, payloads: 0, prototypes: 0, normalizedPayloads: 3,
+    const zero = await verifyStats(h, scratch, { imageIds: 0, payloads: 0, prototypes: 0, normalizedPayloads: 2,
       epoch: { wireBytes: 0, chunks: 0, commands: 0 }, runtime: beforeFailureStats.runtime });
     await waitCells([component], 19);
     assert.ok(h.writes.join("").includes("a=t"), "refresh did not invalidate image residency");
@@ -239,7 +240,7 @@ async function verifyLiveLayoutAndRefresh(h, scratch, component, before) {
         "same-ID PNG reupload deleted a retained scrollback prototype without restoring it");
     }
     const afterRefresh = await verifyStats(h, scratch, { imageIds: 1, payloads: 1, occurrences: 1,
-      prototypes: 5, normalizedPayloads: 3, pngBytes: Buffer.from(png, "base64").length, rgbaBytes: 4,
+      prototypes: 5, normalizedPayloads: 2, pngBytes: Buffer.from(png, "base64").length, rgbaBytes: 4,
       epoch: observedWire(h.writes) });
     for (const name of ["wireBytes", "chunks", "commands"]) assert.equal(afterRefresh.runtime[name], zero.runtime[name] + afterRefresh.epoch[name]);
     assert.equal(h.requests.length, 2, "refresh triggered a model request");
@@ -257,6 +258,7 @@ async function verifyLegacyResume(scratch, blockImages, viewer) {
   const h = await makeSession(scratch, blockImages, "tui", manager);
   try {
     const before = JSON.stringify(h.session.messages);
+    const entriesBefore = JSON.stringify(h.manager.getEntries());
     const message = h.session.messages.find((m) => m.role === "custom");
     const renderer = h.extension.messageRenderers.get("pi-tmux-image");
     const theme = { fg: (_color, text) => text };
@@ -268,6 +270,7 @@ async function verifyLegacyResume(scratch, blockImages, viewer) {
     await waitCells([renderer(message, { expanded: false }, theme)], 30);
     assert.equal(h.writes.length, count, "legacy occurrence changed identity on rebuild");
     assert.equal(JSON.stringify(h.session.messages), before, "legacy migration rewrote persisted messages");
+    assert.equal(JSON.stringify(h.manager.getEntries()), entriesBefore, "legacy migration rewrote entries");
     assert.equal(h.requests.length, 0, "resuming legacy content triggered a request");
     assert.deepEqual(imageBlocks(await h.session.agent.convertToLlm(h.session.messages)), blockImages ? [] : imageBlocks([viewer]));
   } finally {
@@ -351,7 +354,7 @@ async function makeSession(scratch, blockImages, mode, restoredManager, policyOv
   const tui = { terminal: { columns: 80, rows: 40, write(bytes) {
     if (transport.writeFaults > 0) { transport.writeFaults--; throw new Error("offline terminal write failure"); }
     writes.push(bytes);
-  } }, requestRender() { transport.repaints++; } };
+  } }, hasOverlay() { return false; }, requestRender() { transport.repaints++; } };
   const uiContext = {
     notify(message, level) { notifications.push({ message: String(message), level }); },
     setWidget(_key, factory) {
@@ -403,14 +406,30 @@ async function verifySession(scratch, blockImages, mode = "tui", options = {}) {
       assert.ok(results.every((m) => !m.isError), JSON.stringify(results));
       assert.equal(results[0].details.path, join(scratch, "workspace", "image.png"));
       assert.equal(results[1].details.path, join(scratch, "workspace", "two-pages.pdf"));
-      assert.equal(viewers.length, 3, "one image and first two PDF pages are retained");
-      assert.equal(imageBlocks(viewers).length, 3);
-      assert.equal(imageBlocks(h.manager.buildSessionContext().messages).length, 3, "blocking is NOT a storage policy");
+      assert.equal(viewers.length, 2, "one image and one PDF document preview are retained");
+      assert.equal(imageBlocks(viewers).length, 2);
+      assert.equal(imageBlocks(h.manager.buildSessionContext().messages).length, 2, "blocking is NOT a storage policy");
+      const document = viewers[1].details.document;
+      const original = Buffer.from(pdfFixture());
+      assert.equal(viewers[1].details.schema, "pi-tmux-image/pdf-v1");
+      assert.equal(document.retention, "keep");
+      assert.equal(document.pageCount, 2);
+      assert.equal(document.previewPage, 1);
+      assert.equal(document.byteLength, original.length);
+      assert.equal(document.sha256, createHash("sha256").update(original).digest("hex"));
+      assert.equal(document.data, original.toString("base64"), "details changed exact original PDF bytes");
+      assert.match(results[1].content.map((b) => b.text || "").join(""), /submitted/i, "tool must report submission, not a disk ACK");
+      for (const result of results) {
+        assert.equal(JSON.stringify(result).includes(document.data), false, "tool result duplicated original PDF");
+        assert.equal(JSON.stringify(result).includes(imageBlocks([viewers[1]])[0].data), false, "tool result duplicated preview");
+      }
+      assert.equal(JSON.stringify(viewers[1].content).includes(document.data), false, "original PDF entered model-facing content");
+      assert.equal(JSON.stringify(h.session.messages).split(document.data).length - 1, 1, "original bytes must occur once in details only");
       const lastResult = Math.max(...results.map((m) => h.session.messages.indexOf(m)));
       assert.ok(viewers.every((m) => h.session.messages.indexOf(m) > lastResult), "viewer interrupted tool-call/result ordering");
       assert.equal(h.session.messages.filter((m) => m.role === "assistant").length, 2);
       assert.equal(h.session.messages.filter((m) => m.role === "user").length, 1, "viewer steered another user turn");
-      assert.equal(imageBlocks(h.requests[1].messages).length, blockImages ? 0 : 3);
+      assert.equal(imageBlocks(h.requests[1].messages).length, blockImages ? 0 : 2);
       assert.deepEqual(imageBlocks(h.requests[1].messages), blockImages ? [] : imageBlocks(viewers));
       const converted = await h.session.agent.convertToLlm(h.session.messages);
       assert.deepEqual(imageBlocks(converted), blockImages ? [] : imageBlocks(viewers), "public agent conversion must match the actual request");
@@ -418,6 +437,7 @@ async function verifySession(scratch, blockImages, mode = "tui", options = {}) {
       // Exercise the loaded renderer with its standard stored snapshot. Native
       // asynchronous preparation must remain outside model/session content.
       const before = JSON.stringify(h.session.messages);
+      const entriesBefore = JSON.stringify(h.manager.getEntries());
       const theme = { fg: (_color, text) => text };
       const renderer = h.extension.messageRenderers.get("pi-tmux-image");
       const unknown = renderer({ ...viewers[0], details: { ...viewers[0].details, schema: "pi-tmux-image/native-future" } }, { expanded: false }, theme);
@@ -445,8 +465,8 @@ async function verifySession(scratch, blockImages, mode = "tui", options = {}) {
       const snapshotBytes = imageBlocks(viewers).map((block) => Buffer.from(block.data, "base64"));
       const inventoryPngBytes = snapshotBytes.reduce((sum, bytes) => sum + bytes.length, 0);
       const inventoryRgbaBytes = snapshotBytes.reduce((sum, bytes) => sum + 4 * bytes.readUInt32BE(16) * bytes.readUInt32BE(20), 0);
-      const firstStats = await verifyStats(h, scratch, { imageIds: 3, payloads: 3, occurrences: 3, prototypes: 3,
-        normalizedPayloads: 3, normalizedPngBytes: inventoryPngBytes, pngBytes: inventoryPngBytes, rgbaBytes: inventoryRgbaBytes,
+      const firstStats = await verifyStats(h, scratch, { imageIds: 2, payloads: 2, occurrences: 2, prototypes: 2,
+        normalizedPayloads: 2, normalizedPngBytes: inventoryPngBytes, pngBytes: inventoryPngBytes, rgbaBytes: inventoryRgbaBytes,
         epoch: observedWire(h.writes), runtime: observedWire(h.writes) });
       const firstWrites = h.writes.length;
       for (const component of components) { component.invalidate(); component.render(80); }
@@ -481,6 +501,7 @@ async function verifySession(scratch, blockImages, mode = "tui", options = {}) {
       assert.equal(h.requests.length, 2, "reload/replay triggered model work");
       await verifyLiveLayoutAndRefresh(h, scratch, replay[0], before);
       await verifyLegacyResume(scratch, blockImages, viewers[0]);
+      assert.equal(JSON.stringify(h.manager.getEntries()), entriesBefore, "render/reload/resize/refresh changed exact entries");
       assert.deepEqual(imageBlocks(await h.session.agent.convertToLlm(h.session.messages)), blockImages ? [] : imageBlocks(viewers));
     }
     assertCleanModelContent(h.requests);
