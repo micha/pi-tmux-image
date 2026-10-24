@@ -6,7 +6,12 @@ After generally confirming 0.4.0 wheel zoom/grab-to-pan worked, the owner report
 that **“zooming and panning is quite slow and somewhat janky.”** That is a real
 responsiveness issue, not contradicted by the earlier functional acceptance or
 passing correctness tests. The 0.4.1 patch addresses avoidable package hot-path
-work; improved live appearance/responsiveness remains human-pending.
+work. The owner subsequently reported that 0.4.1 is **“better now, but still laggy”**,
+with bogging down followed by racing forward to catch up. This is partial observed
+improvement, not full responsiveness acceptance or a measured queue diagnosis.
+The documentation-only next-phase handoff is
+[viewer-frame-pacing-plan.md](viewer-frame-pacing-plan.md); no pacing implementation
+or new tuning policy is authorized merely by writing that plan.
 
 No terminal/Pi settings, capability TTLs, native ownership, model-image policy,
 placement slot count, PDF behavior or budgeting policy are changed. The supported

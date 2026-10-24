@@ -32,8 +32,12 @@ remain unchanged; reuse/render have current synchronous policy gates. Presentati
 calls `onUploadStarted` only after final guards and before nonempty write, revoking
 row trust and retaining a first attempted tuple for scoped cleanup if necessary.
 Known-width ID rows bypass redundant viewer width scans, not host layout.
-Read `docs/viewer-performance.md` before hot-path changes. Performance patch live
-acceptance is pending; original functional confirmation is not latency acceptance.
+Read `docs/viewer-performance.md` before hot-path changes. The owner reports 0.4.1
+is better but still bogs down and races forward to catch up; this is partial
+improvement, not performance acceptance. The documentation-only next-phase
+handoff is `docs/viewer-frame-pacing-plan.md`; read it before pacing/input sampling
+work. Implementation, tuning defaults and active reload require coordination.
+Original functional confirmation is not latency acceptance.
 No new settings, placement slots, budget/eviction or force path.
 
 ## Worker delegation

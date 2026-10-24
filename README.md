@@ -165,8 +165,10 @@ that confirmation; narrower edge/resize/trackpad checks remain unreported.
 The owner subsequently reported slow/janky zoom and pan. **0.4.1** removes
 avoidable pan preparation and placeholder width scans, retains valid zoom frames,
 and keeps one latest busy-phase wheel event. Upload capability checks are
-unchanged. See `docs/viewer-performance.md` for measurements and verification;
-improved live responsiveness still needs the owner's follow-up.
+unchanged. See `docs/viewer-performance.md` for measurements and verification.
+The owner reports improvement but remaining lag/catch-up; performance is not fully
+accepted. `docs/viewer-frame-pacing-plan.md` records the proposed next investigation
+and latest-state pacing design, not an implemented feature.
 
 ## Images and model access
 

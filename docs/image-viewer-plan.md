@@ -8,7 +8,10 @@ human-pending evidence are in [viewer-performance.md](viewer-performance.md).
 Same-layout resident pan avoids async preparation; guarded zoom retains its own
 valid frame and one latest wheel event. Native transport gates, ownership, model
 policy and disabled budgeting are unchanged. Earlier functional acceptance is not
-acceptance of the new patch's responsiveness.
+acceptance of the new patch's responsiveness. The owner now reports partial
+improvement but remaining lag/catch-up; the documentation-only next handoff is
+[viewer-frame-pacing-plan.md](viewer-frame-pacing-plan.md), not implemented pacing
+or permission to change the existing native/configuration contracts.
 
 **0.4.0 mouse enhancement:** the owner approved wheel zoom plus click-drag pan
 following the feasibility discussion. Fullscreen pointer-anchored wheel zoom and
