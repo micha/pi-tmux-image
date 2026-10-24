@@ -6,14 +6,15 @@ The owner authorized implementation and worker delegation after the
 [frame-pacing handoff](viewer-frame-pacing-plan.md). After the Phase A profile,
 the owner explicitly approved **150 ms idle headroom after the deferred first
 own component receipt**, with **wheel expiry disabled**, as the initial production
-candidate. The helper/design checkpoint is `253ebe9`; baseline production is
-`1f00268` / 0.4.1.
+candidate. The helper/design checkpoint is `253ebe9`; production implementation
+is **`ab1301d` / 0.4.2**. Baseline production is `1f00268` / 0.4.1.
 
 This is an implementation and automated-verification record, not human latency
 acceptance or authorization to reload the active package. The earlier functional
 viewer/mouse acceptance and partial 0.4.1 improvement remain separate. No owner
-output trace, terminal graphics, settings/tmux changes or real model request was
-used in this work. Coordinator semantic/stream verification is recorded below;
+output trace, real terminal graphics or settings/tmux changes were used. Test
+harnesses made no real model/provider requests. Coordinator semantic/stream
+verification is recorded below;
 matched performance evidence and its remaining limits are maintained in the
 separate profile report.
 
@@ -166,11 +167,22 @@ these semantic/stream gates.
 
 [viewer-pacing-profile.md](viewer-pacing-profile.md) documents the reproducible
 standalone harness, baseline CPU/bytes, declared FIFO capacity/storage/horizon,
-byte conservation and matched candidate evidence. The baseline encoded 999 subsets
-for one frame under a 1,000-drag batch. At 292×61 with occupied 288×55 cells,
-changed text frames were approximately 175 KB. The 150 ms candidate was selected
-from full-host cost and byte-rate evidence, not the earlier 0.04 ms component-only
-timing or an arbitrary 60 FPS goal.
+byte conservation and matched candidate evidence. The final matched 292×61,
+250-reports/s traces used 1/3/6 offered seconds and preserved every exact final
+viewport. Native subset encodings fell **251/751/1,501 → 5/15/28**; emitted text
+fell about **96%**. Final accepted-release local receipts were approximately
+**208/225/54 ms** in that final pass, demonstrating the phase-dependent settling
+trade-off rather than a latency guarantee. All 72 modeled FIFO cases conserved
+bytes and drained. Under the declared 1 MB/s service, 1 MiB storage limit and
+100 ms stall, the candidate showed no sustained backlog growth across those
+longer traces; 250 KB/s remained a sustained deficit and explicitly overloaded
+at longer horizons. Independent review accepted the scoped artifacts/claims,
+not a universal output or human-performance bound.
+
+The baseline encoded 999 subsets for one frame under a 1,000-drag batch. At
+292×61 with occupied 288×55 cells, changed text frames were approximately 175 KB.
+The 150 ms candidate was selected from full-host cost and byte-rate evidence,
+not the earlier 0.04 ms component-only timing or an arbitrary 60 FPS goal.
 
 A local component receipt/deferred continuation is an application timing proxy,
 **not outer-terminal display completion or a successful full-host write ACK**.
