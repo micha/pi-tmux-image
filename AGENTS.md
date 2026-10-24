@@ -1,116 +1,101 @@
-# Instructions for robots
+# Agent instructions
 
-This file is for coding agents. Human-facing installation, usage and limitations belong in `README.md`; do not turn this file into a second user manual.
+Human-facing setup, usage and limitations belong in `README.md`. Keep this file an actionable contract and task index; detailed design, history and acceptance evidence belong in `docs/`.
 
-The approved next-phase handoff is in `docs/implementation-plan.md`. Read it before implementing native encoding, replay/resizing, capability detection or graphics budgeting. It records the implementation order, acceptance criteria, scope boundaries and reviewed OMP sources.
+## Start here
 
-The agreed viewer UX and feasibility-first handoff are in `docs/image-viewer-plan.md` (historical plan checkpoint; current 0.3.0 acceptance status below). Read it before overlay, zoom/pan or click work. Known-working observed baseline is `9dc2944` / 0.2.0; the plan checkpoint is `d324d87` / `checkpoint/image-viewer-plan`. Budgeting/eviction remains disabled.
+- Inspect the checkout and preserve unrelated work. Resolve paths from this checkout; historical host/fixture paths in handoffs are not prerequisites.
+- Read the task-specific docs below before implementing. Historical plans explain intent; current implementation/verification records supersede proposed API paths, not native ownership or no-budgeting contracts.
+- Do not activate/reload the owner's package without coordination. Pacing implementation/tuning changes also require coordination.
+- Current package: **0.4.2**. Core native behavior, viewer controls and latest-state pacing have general owner acceptance on Ghostty 1.3.1 / tmux 3.6a / Pi 1.0.3. This is not a case-by-case manual matrix pass or measured latency/FPS result. Do not infer human acceptance from automated streams, component receipts or synthetic FIFO drain.
+- Budgeting/eviction remains disabled. No new budget settings, placement slots or force path without separate owner approval.
 
-Viewer Step 1 was owner-authorized and automated-gate-passed at `e92b1cd` (131/131 host suite), not manual viewer acceptance. Read `docs/viewer-seam.md`, `docs/viewer-crop.md` and `docs/viewer-lifetime.md`: use widget-injected public `TUI.showOverlay` / owned handle (not `ctx.ui.custom`), refuse pre-existing modals/search, close on public focus loss with synchronous lease cancellation and deferred scoped cleanup, and use an independently addressed subset of a full-image canvas bounded at 297x297 instead of ignored virtual source crop. Pure phase is `dd13569`, shared runtime is `5898185`; package 0.3.0 is committed at `210d524`, verified by production SDK15/15, host181/181, existing SDK12/12 and portable150 passed/31 optional skips. The owner generally human-accepted the new in-pane viewer on Ghostty 1.3.1/tmux 3.6a/Pi 1.0.3 with `terminal.images: auto` / `images.blockImages: true`: “all is working!” after being asked to reload and try click-open/zoom/pan/reset/Esc. This is not a case-by-case manual matrix pass; see `docs/viewer-verification.md` for unreported cases. These statuses supersede earlier proposed API paths, not existing native or no-budgeting contracts.
+## Required reading by task
 
-The viewer UI/controller is now implemented in `src/viewer.mjs` and wired by `extensions/tmux-image/index.ts`: ready-cell-only fullscreen clicks and `/tmux-image-view` use active-branch immutable snapshots, newest-first same-overlay picker, public raw overlay admission/focus-loss policy, one pending/latest prepare runner and shared native surface APIs. Controls use 1.25× fit-relative zoom (25% minimum, dynamic 297-canvas maximum), four-cell pan, fit/reset on open, and resize-center preservation; panes below 20×7 remain keyboard-owned text fallback. `+` uses literal/public `parseKey` recognition (Pi 1.0.3 `matchesKey('+','+')` is false). Zoom/limit chrome is width-reserved and PDF page identity has a separate hint. Core viewer general human acceptance is recorded; narrower unreported pixel/manual cases remain automated-only or pending. Do not activate/reload the owner's package without coordination.
+| Task | Read |
+| --- | --- |
+| Native encoding, replay, resizing, capability detection or budgeting | `docs/implementation-plan.md`, then the relevant protocol/normalization/capability/metrics docs below |
+| Overlay, zoom/pan or click behavior | `docs/image-viewer-plan.md` (historical), `docs/viewer-seam.md`, `docs/viewer-crop.md`, `docs/viewer-lifetime.md`, `docs/viewer-verification.md` |
+| Wheel zoom or grab-to-pan | `docs/viewer-mouse.md` |
+| Viewer hot paths, input sampling or pacing | `docs/viewer-performance.md`, `docs/viewer-frame-pacing-plan.md` (handoff), `docs/viewer-pacing-design.md`, `docs/viewer-pacing-profile.md`, `docs/viewer-pacing.md` |
+| Transport/host integration | `docs/renderer-seam.md` |
+| Kitty protocol or image normalization | `docs/kitty-protocol.md`, `docs/pixel-normalization.md` |
+| Capability/settings policy | `docs/capabilities.md` |
+| Accounting or graphics memory | `docs/graphics-memory.md` |
+| Test/acceptance claims | `docs/verification.md` and the relevant viewer verification records |
 
-The 0.4.0 mouse enhancement is owner-authorized: fullscreen pointer-anchored wheel
-zoom and primary-button grab-to-pan are implemented in `src/viewer.mjs`, with pure
-`zoomViewportAt` in `src/viewport.mjs`. Read `docs/viewer-mouse.md` for sign-only
-burst coalescing, rendered-ready admission, public capture, layout/cell-change
-cancellation and verification. Keyboard zoom remains center-based; regular mode
-remains keyboard-only. The owner generally accepted 0.4.0 at `fcf465f` (“it works!”)
-after being asked to reload and try wheel zoom and dragging. This is not a
-case-by-case edge/resize/trackpad pass or latency measurement; see the scoped
-record in `docs/viewer-mouse.md`. No native ownership, configuration, model-policy
-or budgeting changes.
+For Pi API changes, read the installed Pi docs and extension examples, following related references. The tested API version is Pi 1.0.3; do not guess newer signatures.
 
-## Viewer performance follow-up
+## Code map
 
-After 0.4.0 functional acceptance, the owner reported slow/janky zoom and pan.
-0.4.1 adds native synchronous `reuseViewer` / persistent `isResident` proofs for
-same-layout committed-canvas text-only pan, retaining one own-geometry ready frame
-during guarded zoom and one latest busy/unrendered-frame wheel event. Actual
-prepare/upload/replay/resize pre/post capability checks and fresh `on` visibility
-remain unchanged; reuse/render have current synchronous policy gates. Presentation
-calls `onUploadStarted` only after final guards and before nonempty write, revoking
-row trust and retaining a first attempted tuple for scoped cleanup if necessary.
-Known-width ID rows bypass redundant viewer width scans, not host layout.
-Read `docs/viewer-performance.md` before hot-path changes. The owner reports 0.4.1
-is better but still bogs down and races forward to catch up; this is partial
-improvement, not performance acceptance. The documentation-only next-phase
-handoff is `docs/viewer-frame-pacing-plan.md`; read it before pacing/input sampling
-work. Implementation, tuning defaults and active reload require coordination.
-Original functional confirmation is not latency acceptance.
+- `extensions/tmux-image/index.ts`: commands/tools, standard image attachments, local renderer and public settings/capability wiring.
+- `src/viewer.mjs`: active-branch immutable snapshot picker, raw-overlay lease, canonical desired state, admitted samples, resident ready frame and one pending/latest prepare runner; no source reads, messages or model-policy changes.
+- `src/viewport.mjs`: pure viewport geometry, including pointer-anchored `zoomViewportAt`.
+- `src/viewer-pacing.mjs`: host-import-free scheduler with injected monotonic clock, one timer/ticket/demand bit, deferred cooldown and cancellation identities; no viewport/input queue, native reservations, terminal effects or chosen helper policy.
+- `src/presentation.mjs`: public zero-row widget/TUI seam, connection epochs, asynchronous upload-before-placement/repaint ordering and successful-write callbacks.
+- `src/native.mjs`: normalization cache, live aspect fitting, versioned metadata/runtime-only legacy migration, serialized per-epoch upload commits and native surface APIs. Geometry keys include actual component width, usable height and cell pixels; inline policy reserves eight rows and caps grids at 60×24, not exact viewport measurement.
+- `src/kitty.mjs`, `src/kitty-diacritics.mjs`, `src/identity.mjs`, `src/normalize.mjs`: pure/bounded protocol, IDs and immutable normalization using injected public Pi conversion; no terminal side effects. Chafa is obsolete and removed.
+- `src/capabilities.mjs`: bounded/cached read-only actual-pane client and inherited passthrough detection; conservative one-layer Ghostty/Kitty allowlist and public policy gates.
+- `src/metrics.mjs`: measurement-only normalization inventory and successful-write transport/residency accounting; epoch trust is distinct from cumulative runtime totals.
+- `src/pdf.mjs`: bounded two-page Poppler rasterization and scratch cleanup.
+- `test/*.test.mjs`: dependency-free Node suite, with optional installed-host API checks. `test/host-integration.mjs` and `test/host-viewer-integration.mjs`: offline SDK integration.
+- `package.json`: explicit Pi manifest; host extension imports are peer dependencies, never bundled runtime dependencies.
 
-0.4.2 implements latest-state presentation pacing, authorized by the owner after
-the documentation-only handoff; the owner reviewed the Phase A profile and
-approved an initial **150 ms idle-after-deferred-own-receipt** candidate with
-**wheel expiry disabled**. `src/viewer-pacing.mjs` owns only one timer, ticket and
-demand bit; `src/viewer.mjs` reduces cheap canonical pan/key state per event,
-samples at eligibility, recomputes canonical/live keys at final commit and keeps
-render passive. First own component receipt unlocks deferred cooldown, not a
-screen ACK. Lost native proof cancels the dead receipt generation; canonical
-final targets survive benign rejection and observed layout changes. See
-`docs/viewer-pacing-design.md`, `docs/viewer-pacing-profile.md` and
-`docs/viewer-pacing.md` before hot-path changes. The owner subsequently generally
-accepted 0.4.2's performance after the reload/live-check handoff: “it's much, much
-better! i'm satisfied with the performance!” This is owner-reported satisfaction,
-not a measured latency/FPS result or case-by-case edge/resize/trackpad pass. No
-reload steps, image/device/pane details or new setup were separately reported;
-see the scoped acceptance record in `docs/viewer-pacing.md`. No active reload or
-human acceptance is inferred from implementation, stream tests or synthetic FIFO
-drain. No new settings, placement slots, budget/eviction or force path.
+## Non-negotiable contracts
+
+### Display and model policy
+
+1. Use Kitty Unicode placeholders (`U=1`), not ordinary positioned placements. Pixels bypass tmux; placeholder cells go through Pi text layout. Foreground color encodes the image ID: never restyle these rows or put cursor movement/upload escapes in transcript text.
+2. Use standard Pi image content from the built-in read pipeline. Do not filter image messages or change `images.blockImages`; local display must not depend on model blocking. Blocking does not prevent session storage.
+3. Keep uploads/placeholders out of model-facing content and session details. Tool-execution display messages use `triggerTurn: false`; preserve tool-call/result ordering without steering or starting another model turn. The overlay itself emits no messages/attachments/turns.
+4. Preserve `/tmux-image`, `/tmux-pdf`, `/tmux-image-view`, `/tmux-image-refresh`, `/tmux-image-stats`, `tmux_show_image` and `tmux_show_pdf` unless a breaking change is requested. Preserve the two-page PDF default.
+
+### Capabilities and subprocesses
+
+5. Require interactive Pi inside tmux; non-interactive paths must emit zero graphics. Use public `pi.getSettings()` and `getCapabilities()`. Unknown, nested, multi-client, control-client and linked-window paths fail closed; no force/native-ownership workaround.
+6. Gate tools before source access and every initial/replay/resize/refresh preparation before transport. Preserve pre/post checks and fresh visibility checks on `on` paths; release upload reservations after post-preparation denial. Synchronous ready-row/reuse/render policy gates remain subprocess-free.
+7. Refresh invalidates detector decisions, failed presentation records and residency together, not just TTL. It uses snapshots without file rereads, new messages or turns. Legacy migration is runtime-only; do not mutate stored content/details.
+8. Resolve executables through PATH, use argument arrays (never a shell), and retain timeouts/output limits. Remove PDF scratch files on success, error and cancellation. No machine-specific `/nix/store` paths, automatic installs, persistent environment overrides or stdout patches.
+9. Never mutate user Pi settings or tmux configuration. Installation tests use an isolated agent directory, not the active user's settings.
+
+### Native ownership and viewer lifecycle
+
+10. Retain all successfully committed occurrence/geometry prototypes and restore them after same-ID PNG retransmission: Kitty replacement deletes every placement. Count PNG chunks and placement batches separately. Shutdown/reload retains terminal resources for scrollback; never globally delete images. Universal reconnect detection and graphics budgeting are not implemented.
+11. Use widget-injected public `TUI.showOverlay` and an owned handle, not `ctx.ui.custom`. Refuse existing modals/search. Focus loss synchronously revokes replay/aborts the lease, with deferred scoped hide/disposal. Crop an independently addressed subset of a full-image canvas bounded at 297×297; virtual source crop is ignored by the terminal.
+12. Flush the public `renderNow` removal frame before scoped placement retirement/reopen. Frame failure retains the native obligation; every retry reflushes before deletion. `retryRetirement` captures connection/context after draining close. Never delete shared PNG pixels or inline history.
+13. Admit transcript clicks and drag starts only on rendered-ready occupied image cells; wheel zoom uses the rendered-ready image area. Regular mode is keyboard-only. Preserve center-based keyboard zoom, pointer-based wheel zoom, sign-only burst coalescing and layout/cell-change grab cancellation. `+` requires literal/public `parseKey` recognition: Pi 1.0.3 `matchesKey('+','+')` is false.
+14. Same-layout pan reuses committed-canvas synchronous `reuseViewer` / persistent `isResident` proof. Guarded zoom retains one own-geometry ready frame and at most one latest busy/unrendered wheel event. Call `onUploadStarted` only after final guards and before a nonempty write; revoke row trust and retain the first attempted tuple for scoped cleanup. Known-width ID rows may bypass viewer width scans, not host layout.
+15. Keep canonical desired state distinct from immutable admitted samples and ready frames. Reduce cheap pan/key state per event; sample only at eligibility and recompute canonical/live keys at final commit. Render stays passive and never adopts unsampled input. Lost native proof cancels the dead receipt generation; final targets survive benign rejection and observed layout changes.
+16. Current approved pacing: **150 ms idle after deferred first-own component receipt**, **wheel expiry disabled**. Receipt is not a screen ACK. No extra timers/input queues or implicit tuning-policy changes in the pure scheduler.
+
+### Metrics
+
+17. Derive payload identity from exact normalized PNG bytes. Count wrapped wire totals once per successful current-epoch write, including restored prototypes; preparation, failures, stale work and zero-byte reuse are not transport. Commit functional residency before accounting; report accounting errors without breaking rows/queue or forcing reuploads.
+18. Epoch reset clears local trust, not terminal resources. PNG/RGBA estimates are not terminal ACKs or global/GPU bounds; prior-runtime/external resources and overhead are unobservable. `/tmux-image-stats` must not query detectors, upload, emit messages, start turns or evict.
+
+## Verification and completion
+
+- Run `npm test` before committing. Optional host checks (discover the installed package root locally):
+
+  ```sh
+  PI_OFFLINE=1 PI_TEST_HOST_ROOT=/path/to/installed/coding-agent/package \
+    PI_IMAGE_HOST_MODULE=/path/to/installed/coding-agent/package/dist/index.js npm test
+  PI_OFFLINE=1 PI_TEST_HOST_ROOT=/path/to/installed/coding-agent/package \
+    node --test test/host-integration.mjs
+  PI_OFFLINE=1 PI_TEST_HOST_ROOT=/path/to/installed/coding-agent/package \
+    node --test test/host-viewer-integration.mjs
+  ```
+
+  The root must contain `dist/index.js` and host-supplied `node_modules/@earendil-works/pi-tui`. Do not install physical host dependencies into this repository.
+- Verify `pi install .` in a temporary `PI_CODING_AGENT_DIR`; inspect discovery/loading without contacting an LLM provider.
+- Preserve integration coverage for zero-graphics/pre-source rejection, public preference precedence, both model-blocking states, ready-row disablement and denied-to-supported refresh with unchanged messages/turns. Use isolated public SDK settings and temporary PATH-resolved fake tmux, not the active server. Do not add runtime test flags.
+- For renderer changes, coordinate human checks of images/PDFs, continued text, scrolling, pane position, resizing and window switching. Report automated versus human-observed evidence separately. Narrower resize/edge/reconnect/format/terminal cases remain human-pending; source-deleted replay is automated-only. Consult the linked acceptance records rather than promoting old suite counts into current claims.
+- Keep README examples/limitations consistent with code. Keep generated images/PDFs, screenshots, logs, credentials, session data, `node_modules` and machine-local fixtures out of Git.
+- Commit completed changes locally with a clean working tree, preserving unrelated work. Do not push/create a remote repository or select a license without the owner's request/decision.
 
 ## Worker delegation
 
-Use Pi model `us.openai.gpt-6.1-sol`: planning and review workers use `--thinking xhigh`; implementation workers use `--thinking medium`. This owner-updated role policy supersedes the earlier all-workers-medium baseline, not historical tested-worker records. Coordinate through workmux using stable named tabs in the current workspace, never window indexes; say **thank you** when a worker is safe to close.
-
-- Write worker prompts and follow-up messages in normal, properly spaced prose. Use clear headings or bullets for scope, file ownership, interfaces, constraints and expected verification.
-- Do not minify instructions or concatenate ordinary words to save tokens. Preserve exact code, command and path literals where their spacing is meaningful.
-- Inspect the exact prompt text before dispatch, including prompt-file contents and literal follow-up messages. Correct missing spaces, run-together words and ambiguous instructions before sending.
-- If a worker's received prompt looks corrupted, compare it with the text supplied at dispatch before attributing the problem to Pi, tmux or workmux.
-
-## Scope and architecture
-
-- `extensions/tmux-image/index.ts`: Pi commands, tools, standard image attachments and custom local renderer.
-- `src/viewer-pacing.mjs`: host-import-free one-shot opportunity/first-own-receipt scheduler with injected monotonic clock, deferred cooldown and cancellation identities; no viewport/input queue, native reservation, terminal side effects or chosen helper policy. Controller supplies the reviewed cadence; local component receipt is not a terminal ACK.
-- `src/viewer.mjs`: session-local snapshot selector/picker and single raw-overlay lease; canonical desired state is distinct from immutable admitted sample and one resident own-view ready frame. Render validates proof/policy/layout without adopting unsampled input. Synchronous replay revocation/abort on focus loss, deferred own-handle hide/disposal, bounded prepare and public `renderNow` removal frame before scoped retirement/reopen; frame failure retains the native obligation, and all retries reflush before deletion. `retryRetirement` captures connection/context after draining close. Never creates messages, reads sources or changes model-image policy.
-- `src/presentation.mjs`: public zero-row widget/TUI transport seam, connection epochs and asynchronous upload-before-placement/repaint ordering; successful-write callbacks commit runtime residency. See `docs/renderer-seam.md` for verified host boundaries.
-- `src/native.mjs`: snapshot normalization cache, live aspect fitting keyed by actual component width/usable height/cell pixels, versioned metadata/legacy runtime migration and serialized per-epoch upload commits; uses pure `src/kitty.mjs`/`src/identity.mjs` helpers and injected public Pi conversion via `src/normalize.mjs`. Vertical policy reserves 8 terminal rows, caps image grids at 60x24 and is not an exact viewport measurement. Retain successfully committed occurrence/geometry prototypes per image and restore all after same-ID PNG retransmission (Kitty deletes all placements on replacement); count PNG chunks and placement batches separately.
-- `src/kitty.mjs`, `src/kitty-diacritics.mjs`, `src/identity.mjs` and `src/normalize.mjs`: pure/bounded native protocol, stable IDs and immutable snapshot normalization; no terminal side effects. The obsolete Chafa implementation was removed after advertised format parity checks passed.
-- `src/capabilities.mjs`: bounded/cached read-only actual-pane tmux client/effective inherited passthrough detection, conservative one-layer Ghostty/Kitty allowlist and public Pi settings/capability policy gates. `extensions/tmux-image/index.ts` uses public `pi.getSettings()` plus `getCapabilities()`, guards tools before source access and every prepare before handing uploads to the seam; never gate local display on `images.blockImages`. `on` paths recheck visibility before transport preparation.
-- `src/metrics.mjs`: measurement-only metadata accounting injected into native rendering; normalization inventory plus successful-write batched transport/residency counters, with epoch trust distinct from cumulative runtime totals. Native catches accounting errors after committing functional residency so rows/queue remain safe. `/tmux-image-stats` is a local diagnostic only: no detector queries, uploads, messages, model turns or eviction.
-- `src/pdf.mjs`: bounded two-page Poppler rasterization with temporary-file cleanup.
-- `test/*.test.mjs`: dependency-free Node tests for parsing, subprocess contracts, cleanup, packaging and presentation; optional `test/host-seam.test.mjs` exercises installed Pi public APIs without model requests.
-- `package.json`: explicit Pi package manifest. Extension imports are supplied by Pi as peer dependencies, never bundled runtime dependencies.
-
-## Preserve the important contracts
-
-1. Use Kitty Unicode placeholders (`U=1`), not ordinary positioned image placements. Pixel uploads bypass tmux; placeholder cells go through Pi's normal text layout.
-2. The foreground color encodes the image ID. Do not restyle placeholder rows. Keep cursor movement and pixel-upload escapes out of transcript rows.
-3. Use standard Pi image content from the built-in read pipeline. Do not filter image messages yourself or change `images.blockImages`; Pi owns model-image policy.
-4. Rendering details must not leak uploads or placeholder text into model-facing content. Blocking images does not prevent session storage; document that distinction.
-5. Use `triggerTurn: false` for viewer messages emitted during tool execution. Preserve tool-call/result ordering and do not accidentally steer or start another model turn.
-6. Preserve `/tmux-image`, `/tmux-pdf`, `tmux_show_image` and `tmux_show_pdf` unless a breaking change is requested.
-7. Require interactive Pi inside tmux. Non-interactive calls must fail without writing terminal graphics.
-8. Resolve executables through PATH. Do not introduce machine-specific `/nix/store` paths, automatic package installation, persistent environment overrides, or stdout monkey patches.
-9. Use subprocess argument arrays, never a shell. Keep timeouts and output limits. Remove PDF scratch files on success, error and cancellation.
-10. Do not mutate the user's Pi settings or tmux configuration in the extension. Installation testing must use an isolated agent directory.
-11. Preserve capability gates for initial display, snapshot/legacy replay, resizing and refresh; release native upload reservations if a post-preparation capability check fails. Refresh must invalidate detector decisions, presentation failures and residency together, not rely on cache TTL. Sync ready-row policy gates must remain subprocess-free. Unknown/nested/multi/control/linked paths fail closed; no force/native ownership workaround.
-
-## Verification
-
-- Run `npm test` before committing.
-- Run optional actual-host tests with `PI_OFFLINE=1 PI_TEST_HOST_ROOT=/path/to/installed/coding-agent/package PI_IMAGE_HOST_MODULE=/path/to/installed/coding-agent/package/dist/index.js npm test` and `PI_OFFLINE=1 PI_TEST_HOST_ROOT=/path/to/installed/coding-agent/package node --test test/host-integration.mjs`. The root must contain `dist/index.js` and its host-supplied `node_modules/@earendil-works/pi-tui`; do not install physical host dependencies into this repository. Stream/component assertions are automated evidence, not human-observed pixels.
-- Verify `pi install .` using a temporary `PI_CODING_AGENT_DIR`, not the active user's settings. Inspect package discovery/loading without contacting an LLM provider.
-- For changes to Pi APIs, consult the installed Pi docs and extension examples. The tested starting API version is Pi 1.0.3; do not guess newer signatures.
-- For renderer changes, visually test images and PDFs: new text, scroll up/down, pane position, resizing, and switching windows. State explicitly which checks were automated versus human-observed.
-- Snapshot replay, runtime-only legacy migration and `/tmux-image-refresh` are automated-tested. Refresh clears failed prepared records and residency, without file rereads, new messages or model turns. Shutdown/reload deliberately retains prior-runtime terminal resources to avoid orphaning scrollback; never globally delete images. Prior-runtime graphics memory can remain until terminal reset; budgeting and universal reconnect detection are not implemented.
-- `test/host-integration.mjs` uses a temporary PATH-resolved fake tmux executable plus isolated public SDK settings to test supported/unsupported paths without querying the active tmux server. Preserve zero-graphics/pre-source rejection, public preference precedence, both model-blocking states, ready-row disablement and explicit denied-to-supported refresh recovery with unchanged messages/turns. Do not add package runtime test flags.
-- Metrics must derive normalized payload identity from exact PNG bytes and count wrapped wire totals once per successful current-epoch write, including every restored prototype; never treat describe/preparation/failure/stale/zero-byte reuse as transport. Epoch reset clears local trust, not terminal resources. Report accounting failures explicitly without breaking residency/rows. PNG/RGBA estimates are not terminal ACKs or global/GPU memory bounds; external/prior-runtime resources and overhead are unobservable. Eviction/budget settings remain disabled until separately owner-approved.
-- Core native live checks are now owner-observed on Ghostty 1.3.1/tmux 3.6a/Pi 1.0.3: PNG/two-page PDF appearance, continued conversation, transcript scrolling, zoom/unzoom, window switching, explicit refresh and reload recovery appearance. Narrower pane-position, width/height drag, isolated height/cell-size, partial-edge, reconnect/resume, other-format and other-terminal checks remain human-pending; live sources were not removed, so source-deleted/no-reread replay is automated SDK evidence only. See `docs/verification.md` for exact scope. Automated geometry/stream tests do not establish unobserved pixels. Preserve the two-page PDF default.
-- Keep README installation examples and limitations consistent with the code.
-
-## Repository hygiene
-
-- Resolve repository paths from the current checkout. Historical host/fixture paths and placeholder external checkout paths in handoffs are not contributor prerequisites; discover installed-host test roots locally and generate disposable fixtures instead of assuming the original machine layout.
-- Keep screenshots, PDFs, generated PNGs, logs, credentials, session data, node_modules and machine-local integration fixtures out of Git.
-- Preserve unrelated work. Do not push or create a remote GitHub repository unless asked.
-- Commit completed changes locally with a clean working tree. This package has no declared license yet; do not choose a license without the owner's decision.
+- Use Pi model `us.openai.gpt-6.1-sol`: planning/review workers use `--thinking xhigh`; implementation workers use `--thinking medium`. This role policy supersedes the earlier all-medium baseline, not historical records.
+- Coordinate through workmux using stable named tabs in the current workspace, never window indexes. Say **thank you** when a worker is safe to close.
+- Write normal, properly spaced prompts/follow-ups with clear scope, file ownership, interfaces, constraints and verification. Do not minify prose; preserve exact literals.
+- Inspect exact prompt-file contents and literal follow-ups before dispatch; correct run-together words and ambiguity. If a received prompt looks corrupted, compare it with dispatch text before blaming Pi, tmux or workmux.
