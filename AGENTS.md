@@ -110,6 +110,7 @@ Use Pi model `us.openai.gpt-6.1-sol`: planning and review workers use `--thinkin
 
 ## Repository hygiene
 
+- Resolve repository paths from the current checkout. Historical host/fixture paths and placeholder external checkout paths in handoffs are not contributor prerequisites; discover installed-host test roots locally and generate disposable fixtures instead of assuming the original machine layout.
 - Keep screenshots, PDFs, generated PNGs, logs, credentials, session data, node_modules and machine-local integration fixtures out of Git.
 - Preserve unrelated work. Do not push or create a remote GitHub repository unless asked.
 - Commit completed changes locally with a clean working tree. This package has no declared license yet; do not choose a license without the owner's decision.

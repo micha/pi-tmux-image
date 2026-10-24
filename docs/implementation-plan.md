@@ -1,5 +1,16 @@
 # Agent handoff: native tmux image rendering and lifecycle improvements
 
+## Contributor context
+
+Resolve this project's file paths relative to the **current checkout root**.
+External `/path/to/...` locations below are placeholders, not directories assumed
+to exist. Host versions, temporary fixture locations and completed verification
+records describe the original implementation environment; they are not proof of
+what is installed or available on another contributor's machine. Use `README.md`
+for current requirements, discover optional installed-host test roots locally,
+and generate your own disposable fixtures. Do not change system configuration or
+install dependencies merely to reproduce a historical machine layout.
+
 ## Status and authorization
 
 **Viewer 0.3.0 implementation / general owner acceptance:** UI/controller is
@@ -184,7 +195,9 @@ Approved order:
 
 ## Current system and what has actually been demonstrated
 
-Repository: `/work/repos/micha/pi-tmux-image`.
+Repository: the current `pi-tmux-image` checkout root. Repository file paths
+below are relative to that root unless explicitly identified as external
+reference paths or historical temporary fixture locations.
 
 Current code:
 
@@ -237,8 +250,8 @@ Current code:
   graphics, probing, conversation or model effects. It uses a temporary
   PATH-resolved tmux fixture to cover unsupported/disabled/timeout paths without
   active-server changes and an offline test model runtime,
-  never the active incompatible model. Public clipping tests retain independent
-  row/column marks and both ID colors when top/left cells are clipped.
+  never an arbitrary active provider model. Public clipping tests retain
+  independent row/column marks and both ID colors when top/left cells are clipped.
 
 Human-observed legacy prototype success: Ghostty behind tmux 3.6a, Pi 1.0.3,
 image/PDF display surviving additional responses and transcript scrolling. Native
@@ -249,24 +262,31 @@ visual corners. The native OMP code was inspected, not installed
 or visually tested; no OMP implementation was copied. Do not treat its tests as
 proof of our extension's behavior.
 
-Machine prerequisites are currently installed: Chafa 1.18.2 and Poppler CLI tools
-26.06.0. Chafa is no longer required by the active extension. `pdftoppm` is on
-`/run/current-system/sw/bin` after the independently verified NixOS configuration
-commit `5b724a2`. No OS changes are needed for this handoff. Package code must
-continue resolving executables through PATH.
+**Historical implementation host:** the recorded environment had Chafa 1.18.2
+and Poppler CLI tools 26.06.0 available. These are observed versions, not an
+installation inventory or required version pins for contributors. Chafa is no
+longer required. Ensure `pdftoppm` is available through your own PATH when testing
+PDFs, following `README.md`; package code must continue resolving executables
+through PATH rather than a host-specific installation directory.
 
-Temporary manual fixtures may still exist:
+The original manual checks used disposable generated fixtures at these locations:
 
 - `/tmp/test-image.png`
 - `/tmp/pi-pdf-spike/charts.pdf`: two pages containing SVG-origin bar, line, donut
   and scatter charts.
 
-They are disposable, not test prerequisites. Generate replacement fixtures when
-absent and keep generated images, PDFs and logs out of Git.
+These are historical references, not files expected to exist on any contributor's
+machine or test prerequisites. Generate your own replacements in a writable
+temporary directory and keep generated images, PDFs and logs out of Git.
 
 ## Reference implementation and licensing boundary
 
-Local source checkout: `/work/repos/can1357/oh-my-pi`.
+Optional external reference checkout: `/path/to/oh-my-pi` (a placeholder for a
+contributor-chosen location), from <https://github.com/can1357/oh-my-pi>.
+Normal package usage and tests do not require this checkout. If reproducing the
+upstream review, locate or obtain it separately rather than assuming it already
+exists on the current machine.
+
 Reviewed revision: `0b5c27ab24719c86a5986b95ee55f4e75bc1aaa0`.
 Use that revision to reproduce the observations; explicitly record any newer
 revision you consult.
@@ -540,7 +560,8 @@ For each phase:
    model-conversion pipeline or a valid host integration harness. Assert that
    local display works with blocking on, image content is absent from the model
    request when on, and eligible image content survives when off. Do not send
-   actual images to the current incompatible Bedrock model to perform this test.
+   actual fixture images to an arbitrary active provider model to perform this
+   test; use the offline test runtime instead.
 4. Run the relevant manual matrix above in a real terminal. Record separately
    automated results, owner-observed results and unresolved compatibility limits.
 5. Update README requirements, metrics and limitations. Update AGENTS architecture
