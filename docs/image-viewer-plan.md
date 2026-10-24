@@ -2,6 +2,14 @@
 
 ## Status, baseline and authority
 
+**0.4.1 performance follow-up:** the owner subsequently reported slow/janky zoom
+and pan despite working gestures. The narrow hot-path fix and separate measured /
+human-pending evidence are in [viewer-performance.md](viewer-performance.md).
+Same-layout resident pan avoids async preparation; guarded zoom retains its own
+valid frame and one latest wheel event. Native transport gates, ownership, model
+policy and disabled budgeting are unchanged. Earlier functional acceptance is not
+acceptance of the new patch's responsiveness.
+
 **0.4.0 mouse enhancement:** the owner approved wheel zoom plus click-drag pan
 following the feasibility discussion. Fullscreen pointer-anchored wheel zoom and
 primary-button grab-to-pan now supersede the prior ignore/undecided wheel policy.

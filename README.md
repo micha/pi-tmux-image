@@ -125,8 +125,12 @@ inside the ready image area, and left-drag starts on occupied image cells.
 Dragging can continue outside the image area within the pane until release. Motion is
 terminal-cell-stepped, not pixel-smooth. Wheel zoom uses 1.25× steps,
 ignoring Pi's transcript-scroll acceleration; synchronous bursts coalesce to the
-latest direction/position. Wheel reports during viewport preparation are ignored.
-Picker, chrome, loading/error rows and tiny-pane fallback consume mouse input
+latest direction/position. During a guarded zoom update, the last valid image
+stays visible with an “Updating viewport…” status. One latest wheel event is
+retained and applied after the new ready frame renders, rather than accumulating
+a backlog. Same-canvas pan is a resident text-only update without upload
+preparation or tmux queries. Picker, chrome, initial loading/error rows and
+tiny-pane fallback consume mouse input
 without changing the viewport. Resize/cell changes, keyboard or wheel input cancel
 an active grab. Regular mode remains keyboard-only; the terminal owns its mouse
 and scrollback. Unknown keys do not reach the hidden editor. Close any existing
@@ -158,6 +162,11 @@ The **0.4.0 wheel/grab enhancement (`fcf465f`)** was also generally owner-accept
 “it works!” after being asked to reload and try wheel zoom and dragging.
 `docs/viewer-mouse.md` records separate automated verification and the scope of
 that confirmation; narrower edge/resize/trackpad checks remain unreported.
+The owner subsequently reported slow/janky zoom and pan. **0.4.1** removes
+avoidable pan preparation and placeholder width scans, retains valid zoom frames,
+and keeps one latest busy-phase wheel event. Upload capability checks are
+unchanged. See `docs/viewer-performance.md` for measurements and verification;
+improved live responsiveness still needs the owner's follow-up.
 
 ## Images and model access
 

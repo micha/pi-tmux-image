@@ -1,4 +1,12 @@
-# Viewer mouse gestures — 0.4.0
+# Viewer mouse gestures — 0.4.x
+
+**0.4.1 performance follow-up:** after functional acceptance, the owner reported
+slow/janky zoom and pan. [viewer-performance.md](viewer-performance.md) records the
+measured hot paths and fix. Same-layout resident pan is now synchronous rows-only;
+zoom retains a proven own-geometry frame while guarded replacement prepares, and
+one latest busy/unrendered-frame wheel event is retained until a new frame renders.
+Actual transport gates and one-slot ownership remain. Improved live responsiveness
+is human-pending; the 0.4.0 test totals/confirmation below are historical evidence.
 
 ## Authorization and behavior
 
@@ -20,7 +28,8 @@ the owner also generally accepted these new gestures after implementation at
   count: only its sign is used. A synchronous input burst retains one latest
   direction/point and applies one step in one microtask, not a step per line.
   Loading/error rows, picker, chrome and tiny-pane fallback consume wheel without
-  zooming; reports arriving while a new viewport is preparing are ignored.
+  zooming. In 0.4.1 a live guarded replacement retains one latest wheel event,
+  consumed only after the new resident frame renders; 0.4.0 ignored those reports.
 - **Left-drag grabs occupied image cells:** the image follows the pointer in both
   axes, one displayed cell per pointer cell. Centered blank margins and other
   buttons do not start a grab. Public capture permits continuing outside the

@@ -24,9 +24,16 @@ async function until(check, label = "host frame", timeout = 5000) {
   while (!(await check())) { assert.ok(Date.now() < end, `${label} did not arrive`); await sleep(); }
 }
 class CaptureTerminal {
-  columns = 80; rows = 40; kittyProtocolActive = false; writes = [];
+  columns = 80; rows = 40; kittyProtocolActive = false; writes = []; failNextGraphics = false;
   start(input, resize) { this.input = input; this.resize = resize; }
-  stop() {} async drainInput() {} write(bytes) { this.writes.push(bytes); }
+  stop() {} async drainInput() {} write(bytes) {
+    this.writes.push(bytes);
+    if (this.failNextGraphics && bytes.includes("\x1bPtmux;")) {
+      this.failNextGraphics = false;
+      throw new Error("Injected uncertain graphics write after capture");
+    }
+    this.onWrite?.(bytes);
+  }
   moveBy() {} hideCursor() {} showCursor() {} clearLine() {} clearFromCursor() {} clearScreen() {} setTitle() {} setProgress() {}
   get output() { return this.writes.join(""); }
   mouse(button, x, y, release = false) { this.input(`\x1b[<${button};${x + 1};${y + 1}${release ? "m" : "M"}`); }
@@ -118,20 +125,27 @@ const screen = (h) => h.tui.getScreenLines(); // Exported concrete TuiAltScreen 
 const placementColor = (id) => `58:2::${(id >>> 16) & 255}:${(id >>> 8) & 255}:${id & 255}`;
 const imageColor = (id) => `38;2;${(id >>> 16) & 255};${(id >>> 8) & 255};${id & 255}`;
 const privateCells = (lines, id) => lines.some((line) => line.includes(PH) && line.includes(placementColor(id)));
+const viewportPending = (lines) => plain(lines).some((line) => /Updating viewport|Preparing viewport|Preparing stored image/.test(line));
+const readyCells = (lines, id) => privateCells(lines, id) && !viewportPending(lines);
 // Decode the actual composed private cells, not production viewport/controller
 // internals. Kitty row/column marks expose the realized, cell-quantized mapping.
-function mouseView(h) {
-  const lines = screen(h), canvas = placements(graphics(h.terminal)).findLast((placement) =>
+function mouseView(h, lines = screen(h)) {
+  const canvas = placements(graphics(h.terminal)).findLast((placement) =>
     placement.imageId === h.viewerPair.imageId && placement.placementId === h.viewerPair.placementId);
   assert.ok(canvas, "no prototype for the selected private surface");
   const cells = [];
   lines.forEach((line, y) => {
     if (!line.includes(placementColor(h.viewerPair.placementId))) return;
     const text = ui.stripTerminalSequences(line);
+    let x, previousIndex;
     for (const match of text.matchAll(/\u{10eeee}(.)(.)/gu)) {
       const row = DIACRITICS.indexOf(match[1]), column = DIACRITICS.indexOf(match[2]);
       assert.ok(row >= 0 && column >= 0, "compositor lost independently addressed cell marks");
-      cells.push({ x: ui.visibleWidth(text.slice(0, match.index)), y, column, row });
+      // Constant-size slices avoid quadratic width scans of long placeholder
+      // rows, which would measure the oracle rather than production rendering.
+      x = previousIndex === undefined ? ui.visibleWidth(text.slice(0, match.index))
+        : x + ui.visibleWidth(text.slice(previousIndex, match.index));
+      cells.push({ x, y, column, row }); previousIndex = match.index;
     }
   });
   assert.ok(cells.length, "no ready private cells in mouse acceptance frame");
@@ -141,7 +155,7 @@ function mouseView(h) {
 }
 async function mouseReady(h) {
   await Promise.resolve(); h.tui.renderNow();
-  await until(() => { h.tui.renderNow(); return privateCells(screen(h), h.viewerPair.placementId); }, "mouse viewport ready");
+  await until(() => { h.tui.renderNow(); return readyCells(screen(h), h.viewerPair.placementId); }, "mouse viewport ready");
   return mouseView(h);
 }
 function sourceAt(view, point, cells = { widthPx: 8, heightPx: 16 }) {
@@ -164,6 +178,20 @@ async function fixture(scratch, values = {}) {
   await writeFile(join(scratch, "tmux-fixture.json"), JSON.stringify({ passthrough: "on", termtype: "ghostty 1.3.1", termname: "xterm-ghostty", delay: 0, ...values }));
   await writeFile(join(scratch, "tmux-queries.log"), "");
 }
+async function patchFixture(scratch, values) {
+  const path = join(scratch, "tmux-fixture.json");
+  await writeFile(path, JSON.stringify({ ...JSON.parse(await readFile(path, "utf8")), ...values }));
+}
+async function queries(scratch) {
+  return (await readFile(join(scratch, "tmux-queries.log"), "utf8")).trim().split("\n").filter(Boolean).map(JSON.parse);
+}
+async function transportStats(h) {
+  const extension = h.runtime.services.resourceLoader.getExtensions().extensions.find((e) => e.commands.has("tmux-image-stats"));
+  let text;
+  await extension.commands.get("tmux-image-stats").handler("", { ...h.ctx, ui: { ...h.ctx.ui, notify(message) { text = message; } } });
+  assert.match(text, /Epoch transfer:/, "public stats command did not report transport accounting");
+  return text.split("\n").filter((line) => /^(?:Epoch transfer:|Runtime transfer:|Viewer operations:)/.test(line));
+}
 async function executable(name, path) {
   for (const directory of path.split(":")) {
     const candidate = join(directory, name);
@@ -179,13 +207,20 @@ const fs = require("node:fs");
 const args = process.argv.slice(2);
 const f = JSON.parse(fs.readFileSync(${JSON.stringify(join(scratch, "tmux-fixture.json"))}, "utf8"));
 fs.appendFileSync(${JSON.stringify(join(scratch, "tmux-queries.log"))}, JSON.stringify(args) + "\\n");
+const ordinal = fs.readFileSync(${JSON.stringify(join(scratch, "tmux-queries.log"))}, "utf8").trim().split("\\n").length;
 function reply() {
- if (args[0] === "display-message") process.stdout.write("%1\\t$1\\t1\\t0\\t1\\t0\\n");
+ if (args[0] === "display-message") process.stdout.write("%1\\t$1\\t" + (f.visible === false ? "0" : "1") + "\\t0\\t1\\t0\\n");
  else if (args[0] === "show-options") process.stdout.write(f.passthrough + "\\n");
  else if (args[0] === "list-clients") process.stdout.write("offline-client\\t" + f.termtype + "\\t" + f.termname + "\\t0\\n");
  else { process.stderr.write("Unexpected non-read-only tmux operation"); process.exitCode = 1; }
 }
-if (f.delay) setTimeout(reply, f.delay); else reply();
+if (f.holdQueries?.includes(ordinal)) {
+ const started = Date.now(), release = ${JSON.stringify(scratch)} + "/query-" + ordinal + ".release";
+ const wait = () => {
+  if (fs.existsSync(release) || Date.now() - started >= 200) reply(); else setTimeout(wait, 5);
+ };
+ wait();
+} else if (f.delay) setTimeout(reply, f.delay); else reply();
 `, { mode: 0o755 });
   const poppler = await executable("pdftoppm", originalPath);
   await writeFile(join(scratch, "bin", "pdftoppm"), `#!/usr/bin/env node
@@ -291,7 +326,7 @@ async function viewerReady(h) {
       const pair = placements(graphics(h.terminal)).at(-1);
       if (!pair) return false;
       const lines = h.tui instanceof ui.TuiAltScreen ? screen(h) : h.terminal.writes.slice(h.viewerStart || 0);
-      if (!privateCells(lines, pair.placementId)) return false;
+      if (!(h.tui instanceof ui.TuiAltScreen ? readyCells(lines, pair.placementId) : privateCells(lines, pair.placementId))) return false;
       assert.ok(lines.some((line) => line.includes(PH) && line.includes(placementColor(pair.placementId)) && line.includes(imageColor(pair.imageId))), "host composition lost encoded PNG foreground or private underline ID");
       h.viewerPair = pair; return true;
     }, "production private viewport glyphs");
@@ -317,12 +352,17 @@ async function key(h, data) {
   const start = h.terminal.writes.length;
   h.terminal.input(data); h.tui.renderNow(); await Promise.resolve(); h.tui.renderNow();
   if (h.tui instanceof ui.TuiAltScreen) {
-    await until(() => { h.tui.renderNow(); return privateCells(screen(h), h.viewerPair.placementId); }, `ready cells after ${JSON.stringify(data)}`);
+    await until(() => { h.tui.renderNow(); return readyCells(screen(h), h.viewerPair.placementId); }, `ready cells after ${JSON.stringify(data)}`);
   } else {
-    // Main-screen host has no public screen-lines query. A changed intent first
-    // removes its cells with Preparing viewport; wait for a later captured row.
-    const changed = h.terminal.writes.slice(start).some((bytes) => ui.stripTerminalSequences(bytes).includes("Preparing viewport"));
-    if (changed) await until(() => { h.tui.renderNow(); return privateCells(h.terminal.writes.slice(start), h.viewerPair.placementId); }, `regular ready cells after ${JSON.stringify(data)}`);
+    // Main-screen host has no public screen-lines query. The pending frame may
+    // retain OLD private cells; only a later private-cell write is a new ready
+    // frame. No-op controls and synchronous rows-only pan need no pending frame.
+    const pending = h.terminal.writes.findLastIndex((bytes, index) => index >= start && viewportPending([bytes]));
+    if (pending >= start) await until(() => {
+      h.tui.renderNow();
+      const lastPending = h.terminal.writes.findLastIndex((bytes, index) => index >= start && viewportPending([bytes]));
+      return privateCells(h.terminal.writes.slice(lastPending + 1), h.viewerPair.placementId);
+    }, `regular ready cells after ${JSON.stringify(data)}`);
   }
 }
 
@@ -416,6 +456,158 @@ test("production viewer: isolated installed public SDK + InteractiveMode accepta
         } finally { await h.cleanup(); }
       });
     }
+    await t.test("option on performance: rendered pan is query/transport-free; guarded zoom retains mapping and drains one latest wheel", async () => {
+      await fixture(scratch); const h = await interactive(scratch, true);
+      try {
+        const seeded = await seed(h, scratch, false), before = await invariant(h);
+        h.ctx.ui.setEditorText("performance draft"); h.tui.renderNow(); const top = h.tui.viewportTop;
+        await open(h);
+        for (let n = 0; n < 4; n++) await key(h, "+");
+        let view = mouseView(h);
+        assert.equal(view.percent, 244);
+        assert.ok(view.canvas.columns > 76 && view.canvas.rows > 34, "performance fixture must pan in both axes");
+        const panQueries = await queries(scratch), panGraphics = graphics(h.terminal).length;
+        const panMetrics = await transportStats(h), started = performance.now();
+        // Unlike a synchronous burst, each report gets its own actual host frame.
+        // A slow rows-only async prepare would perform on-path visibility probes
+        // on every move even when no graphics bytes happen to be necessary.
+        h.terminal.mouse(0, 40, 20);
+        for (let n = 0; n < 32; n++) {
+          const previous = view, delta = n % 2 ? -1 : 1;
+          h.terminal.mouse(32, 40 + (n % 2 ? 0 : 1), 20 + (n % 2 ? 0 : 1));
+          h.tui.renderNow();
+          assert.ok(readyCells(screen(h), h.viewerPair.placementId), "rendered resident drag blanked or entered async preparation");
+          view = mouseView(h);
+          assert.deepEqual(view.canvas, previous.canvas);
+          assert.equal(view.first.column, previous.first.column - delta);
+          assert.equal(view.first.row, previous.first.row - delta);
+          await sleep(1); // Separate event-loop turn, not coalesced input.
+        }
+        h.terminal.mouse(0, 40, 20, true);
+        for (const control of ["l", "h", "j", "k", "l", "h", "j", "k"]) {
+          const previous = view;
+          h.terminal.input(control); h.tui.renderNow();
+          assert.ok(readyCells(screen(h), h.viewerPair.placementId), "keyboard pan lost resident cells");
+          view = mouseView(h);
+          assert.equal(view.first.column, previous.first.column + (control === "l" ? 4 : control === "h" ? -4 : 0));
+          assert.equal(view.first.row, previous.first.row + (control === "j" ? 4 : control === "k" ? -4 : 0));
+          await sleep(1);
+        }
+        assert.deepEqual(await queries(scratch), panQueries, "same-layout resident pan ran fake tmux capability subprocesses");
+        assert.equal(graphics(h.terminal).length, panGraphics, "resident pan transported PNG/prototype commands");
+        assert.deepEqual(await transportStats(h), panMetrics, "rows-only reuse advanced successful transport metrics");
+        t.diagnostic(`40 separately rendered resident pans: ${(performance.now() - started).toFixed(1)} ms capture time including decoding/assertions/timers; 0 tmux queries; 0 graphics writes (not a pure render benchmark or human FPS).`);
+
+        const oldView = mouseView(h), base = (await queries(scratch)).length;
+        const placementCount = placements(graphics(h.terminal)).length;
+        await patchFixture(scratch, { holdQueries: [base + 1, base + 4] });
+        const updating = () => {
+          h.tui.renderNow();
+          assert.deepEqual(mouseView(h), oldView, "pending zoom exposed desired canvas/title/origin rather than committed mapping");
+          const lines = plain(screen(h));
+          assert.match(lines.at(-2), /Updating viewport/, "pending status must be below border and above controls");
+          assert.match(lines.at(-1), /Esc close/);
+          assert.equal(lines.some((line) => /Preparing viewport|Preparing stored image/.test(line)), false, "guarded replacement blanked the resident image");
+          assert.equal(placements(graphics(h.terminal)).length, placementCount, "prototype transported before post gate release");
+        };
+        const firstPoint = { x: 35, y: 18 }, latestPoint = { x: 44, y: 22 };
+        h.terminal.mouse(64, firstPoint.x, firstPoint.y);
+        await until(async () => (await queries(scratch)).length === base + 1, "delayed pre-prepare visibility check");
+        // Reports on separate turns plus a burst overwrite ONE pending event.
+        // Latest sign is out, so final state is 244%, not accumulated/min/max.
+        h.terminal.mouse(64, 27, 16); await Promise.resolve();
+        h.terminal.mouse(65, 33, 19); await Promise.resolve();
+        for (let n = 0; n < 8; n++) h.terminal.mouse(n % 2 ? 65 : 64, 25 + n, 18);
+        h.terminal.mouse(65, latestPoint.x, latestPoint.y);
+        await Promise.resolve();
+        assert.equal((await queries(scratch)).length, base + 1, "pending wheel spawned additional async probes");
+        updating();
+        await writeFile(join(scratch, `query-${base + 1}.release`), "release");
+        await until(async () => (await queries(scratch)).length === base + 4, "delayed post-prepare visibility check");
+        updating();
+        let intermediate, intermediateCommands;
+        // Observe the actual captured output frame, not a timer-polled cached
+        // screen: Pi can render and consume the queued wheel within one turn.
+        // Fullscreen changed-row writes have public terminal cursor addressing;
+        // replay just those rows onto the previously captured screen.
+        const composed = screen(h).slice();
+        h.terminal.onWrite = (bytes) => {
+          if (!bytes.startsWith("\x1b[?2026h")) return;
+          for (const match of bytes.matchAll(/\x1b\[(\d+);1H\x1b\[2K([\s\S]*?)(?=\x1b\[\d+;\d+H|\x1b\[\?25|\x1b\[\?2026l)/g)) composed[Number(match[1]) - 1] = match[2];
+          if (readyCells(composed, h.viewerPair.placementId) && /305% Fit/.test(plain(composed)[0])) {
+            intermediate = mouseView(h, composed);
+            intermediateCommands = placements(graphics(h.terminal)).length;
+          }
+        };
+        await writeFile(join(scratch, `query-${base + 4}.release`), "release");
+        await until(() => { h.tui.renderNow(); return intermediate; }, "new ready zoom rendered before retained wheel consumption");
+        h.terminal.onWrite = undefined;
+        assert.equal(intermediate.percent, 305);
+        assert.equal(intermediateCommands, placementCount + 1, "latest wheel transported before the first new ready mapping rendered");
+        assert.deepEqual(intermediate.canvas, { imageId: oldView.canvas.imageId, placementId: oldView.canvas.placementId, columns: 232, rows: 58 }, "first replacement changed IDs or fit-relative canvas");
+        const firstBefore = sourceAt(oldView, firstPoint), firstAfter = sourceAt(intermediate, firstPoint);
+        assert.ok(Math.abs(firstBefore.x - firstAfter.x) <= firstAfter.cellX / 2 + 1e-10, "first replacement lost rendered x anchor");
+        assert.ok(Math.abs(firstBefore.y - firstAfter.y) <= firstAfter.cellY / 2 + 1e-10, "first replacement lost rendered y anchor");
+        const anchorBefore = sourceAt(intermediate, latestPoint);
+        const staleAnchor = sourceAt(oldView, latestPoint);
+        assert.ok(Math.abs(staleAnchor.x - anchorBefore.x) > firstAfter.cellX / 2, "latest-point fixture cannot distinguish old and newly rendered mappings");
+        view = await mouseReady(h);
+        assert.equal(view.percent, 244, "latest pending wheel sign was dropped or accumulated");
+        assert.deepEqual(view.canvas, oldView.canvas, "latest out event did not restore exactly the prior canvas/IDs");
+        assert.ok(view.first.column > 0 && view.last.column < view.canvas.columns - 1 &&
+          view.first.row > 0 && view.last.row < view.canvas.rows - 1, "latest anchor fixture unexpectedly clamped");
+        const anchorAfter = sourceAt(view, latestPoint);
+        assert.ok(Math.abs(anchorBefore.x - anchorAfter.x) <= anchorAfter.cellX / 2 + 1e-10, "retained latest wheel x anchor did not use newly rendered mapping");
+        assert.ok(Math.abs(anchorBefore.y - anchorAfter.y) <= anchorAfter.cellY / 2 + 1e-10, "retained latest wheel y anchor did not use newly rendered mapping");
+        assert.equal(placements(graphics(h.terminal)).length, placementCount + 2, "pending wheel created more than one follow-up replacement");
+        const zoomQueries = (await queries(scratch)).slice(base);
+        assert.deepEqual(zoomQueries.map((q) => q[0]), Array.from({ length: 4 }, () => ["display-message", "show-options", "list-clients"]).flat(), "two zooms must preserve exact fresh pre/post on-path checks");
+        await sleep(60); h.tui.renderNow();
+        assert.equal((await queries(scratch)).length, base + 12, "wheel queue kept launching after latest event drained");
+        assert.equal(uploads(h.terminal.writes.slice(h.viewerStart)), 0);
+        assert.equal(h.ctx.ui.getEditorText(), "performance draft"); assert.equal(h.tui.viewportTop, top);
+        await unchanged(h, before);
+        assert.equal(await readFile(join(scratch, "pdf-queries.log"), "utf8"), seeded.pdfLog);
+        t.diagnostic("Guarded zoom + latest wheel: exactly 12 fake tmux queries (two pre/post triplets), two resident prototype replacements, zero PNG uploads.");
+        await patchFixture(scratch, { holdQueries: [] });
+
+        // Negative control: pane layout changes may not borrow the old ready
+        // mapping even if its private prototype is otherwise resident.
+        const resizeBase = (await queries(scratch)).length;
+        await patchFixture(scratch, { holdQueries: [resizeBase + 1] });
+        h.terminal.columns = 70; h.terminal.resize(); h.tui.renderNow();
+        await until(async () => (await queries(scratch)).length === resizeBase + 1, "resize requires fresh asynchronous guard");
+        h.tui.renderNow();
+        assert.equal(privateCells(screen(h), h.viewerPair.placementId), false, "pane change reused old-layout cells");
+        await writeFile(join(scratch, `query-${resizeBase + 1}.release`), "release");
+        await mouseReady(h);
+        assert.equal((await queries(scratch)).length - resizeBase, 6, "resize bypassed pre/post on-path checks");
+        await patchFixture(scratch, { holdQueries: [] });
+        h.terminal.columns = 80; h.terminal.resize(); await mouseReady(h);
+
+        // A partial/uncertain write invalidates retained rows and native trust.
+        const uncertainBase = (await queries(scratch)).length, uncertainMetrics = await transportStats(h);
+        h.terminal.failNextGraphics = true; h.terminal.input("+");
+        await until(() => { h.tui.renderNow(); return plain(screen(h)).some((line) => line.includes("Injected uncertain graphics write")); }, "uncertain replacement failure");
+        assert.equal(privateCells(screen(h), h.viewerPair.placementId), false, "uncertain transport retained unproven old cells");
+        assert.equal((await queries(scratch)).length - uncertainBase, 6);
+        assert.deepEqual(await transportStats(h), uncertainMetrics, "uncertain write counted successful transport");
+        const policyBase = await queries(scratch), policyGraphics = graphics(h.terminal).length;
+        h.settings.applyOverrides({ terminal: { showImages: false } });
+        h.terminal.input("l"); h.tui.renderNow();
+        assert.equal(privateCells(screen(h), h.viewerPair.placementId), false);
+        assert.deepEqual(await queries(scratch), policyBase, "sync policy loss queried tmux");
+        assert.equal(graphics(h.terminal).length, policyGraphics, "policy loss wrote graphics");
+        await until(() => !h.tui.hasOverlay(), "policy cancellation after uncertain write"); await h.command;
+        h.settings.applyOverrides({ terminal: { showImages: true } });
+        const refreshBase = (await queries(scratch)).length;
+        await h.runtime.session.prompt("/tmux-image-refresh");
+        await open(h); assert.equal(mouseView(h).percent, 100, "refresh reopened with stale desired geometry");
+        assert.ok((await queries(scratch)).length > refreshBase, "refresh failed to invalidate capability decisions");
+        assert.ok(uploads(graphics(h.terminal)) > 1, "uncertain/refresh recovery incorrectly trusted old residency");
+        await close(h); await unchanged(h, before);
+      } finally { await fixture(scratch); await h.cleanup(); }
+    });
     await t.test("fullscreen production mouse: anchored one-step wheel, bounded bursts, captured pan and gesture cancellation", async () => {
       await fixture(scratch); const h = await interactive(scratch, false);
       try {

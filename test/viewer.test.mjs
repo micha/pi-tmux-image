@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createViewerController, indexSnapshots, viewerArea, viewerTitle } from '../src/viewer.mjs';
-import { encodePlaceholderRows, PLACEHOLDER } from '../src/kitty.mjs';
+import { encodeViewportRows, PLACEHOLDER } from '../src/kitty.mjs';
 import { computeViewport } from '../src/viewport.mjs';
 
 const strip = (text) => text.replace(/\x1b\[[0-9:;]*m/g, '').replace(/\p{Mark}/gu, '');
@@ -12,11 +12,15 @@ async function until(check) { for (let n = 0; n < 100; n++) { if (check()) retur
 const snapshots = [1, 2].map((page) => ({ occurrence: `page-${page}`, label: `PDF — page ${page}`, attachment: { type: 'image', mimeType: 'image/png', data: `snapshot-${page}` } }));
 
 function harness(options = {}) {
-  const terminal = { columns: 40, rows: 16, writes: [], write(bytes) { this.writes.push(bytes); } };
+  const terminal = { columns: 40, rows: 16, writes: [], write(bytes) {
+    if (writeFailure) throw new Error('mock partial graphics write');
+    this.writes.push(bytes);
+  } };
   const overlays = [], preparations = [], events = [];
   let focused, connection, observer, policy, hold, cleanupHold, normalize = 0, reserve = 0, pending = 0, maxPending = 0, retirement = false;
   const retirementEpochs = [];
-  let frameFailure = false, cells = { widthPx: 8, heightPx: 16 };
+  let frameFailure = false, writeFailure = false, cells = { widthPx: 8, heightPx: 16 };
+  let liveLease, committed, capabilityCalls = 0, reuses = 0, reusedInput, capabilityHold;
   const tui = {
     terminal, requestRender() {}, renderNow() { if (frameFailure) throw new Error('mock host removal frame failed'); events.push('repaint'); }, hasOverlay: () => overlays.length > 0,
     showOverlay(component) {
@@ -37,20 +41,29 @@ function harness(options = {}) {
     get connection() { return connection; },
     commit(prepared, context) {
       if (!connection || connection.epoch !== context.epoch || context.signal.aborted) { prepared.onUploadFailed?.(); return false; }
-      if (prepared.uploads) terminal.write(prepared.uploads);
+      if (prepared.uploads) { prepared.onUploadStarted?.(); terminal.write(prepared.uploads); }
       prepared.onUploaded?.(); return true;
     },
   };
   const native = {
     async resolvePayload(attachment, signal) { normalize++; signal.throwIfAborted(); return { width: 640, height: 480, attachment }; },
-    reserveViewerPlacement() { reserve++; return { generation: reserve }; },
-    releaseViewer(lease) { events.push('release'); retirement = Boolean(lease.committed); },
+    reserveViewerPlacement() { reserve++; liveLease = { generation: reserve }; return liveLease; },
+    releaseViewer(lease) { events.push('release'); retirement = Boolean(lease.committed || lease.attempted); liveLease = undefined; },
+    reuseViewer(input, context) {
+      if (!options.reuse || pending || !resident(input, context)) return;
+      reuses++; reusedInput = input;
+      return { uploads: '', lines: rows(input), isResident: () => resident(input, context),
+        isCurrent: () => resident(input, context), onUploaded() {}, onUploadFailed() {} };
+    },
     async prepareViewer(input, context) {
       pending++; maxPending = Math.max(maxPending, pending); preparations.push({ ...input, context });
       if (hold) await new Promise((resolve) => { hold.finish = resolve; });
       pending--;
-      return { uploads: `WRITE-${preparations.length}`, lines: encodePlaceholderRows({ imageId: 42, placementId: 43, columns: input.window.columns, rows: input.window.rows }),
-        onUploaded() { input.lease.committed = true; events.push('uploaded'); }, onUploadFailed() { events.push('failed'); } };
+      return { uploads: `WRITE-${preparations.length}`, lines: rows(input),
+        isResident: () => resident(input, context),
+        onUploadStarted() { input.lease.attempted = true; committed = undefined; },
+        onUploaded() { input.lease.committed = true; committed = { ...input, epoch: context.epoch }; events.push('uploaded'); },
+        onUploadFailed() { events.push('failed'); } };
     },
     async prepareViewerRetirement(context) {
       if (!retirement) return { uploads: '', lines: [] };
@@ -58,18 +71,41 @@ function harness(options = {}) {
       events.push('retire'); return { uploads: 'RETIRE', lines: [], onUploaded() { retirement = false; events.push('retired'); }, onUploadFailed() { events.push('retirement-failed'); } };
     },
   };
+  function resident(input, context) {
+    return committed?.lease === input.lease && liveLease === input.lease &&
+      committed.epoch === context.epoch && connection?.epoch === context.epoch &&
+      JSON.stringify(committed.canvas) === JSON.stringify(input.canvas);
+  }
+  function rows(input) {
+    return encodeViewportRows({ ...input.window, imageId: 42, placementId: 43,
+      canvasColumns: input.canvas.columns, canvasRows: input.canvas.rows });
+  }
   const controller = createViewerController({ native, presentation, getContext: () => ({ mode: 'tui' }),
     getSnapshots: () => options.snapshots || [snapshots[0]], requireCapability: async (_ctx, signal) => {
+      capabilityCalls++;
+      if (capabilityHold?.target === capabilityCalls) await new Promise((resolve) => { capabilityHold.finish = resolve; });
       signal?.throwIfAborted(); if (cleanupHold && events.includes('hide')) await new Promise((resolve) => { cleanupHold.finish = resolve; });
       if (policy) throw new Error(policy);
     },
     readyPolicy: () => policy, getCells: () => cells,
     // Match the real Pi '+' syntax boundary: literal '+' is not a matcher key.
-    matchesKey: (data, name) => name !== '+' && data === name, truncateToWidth: cut, visibleWidth: width,
+    matchesKey: (data, name) => name !== '+' && data === name,
+    truncateToWidth(text, limit) {
+      if (options.forbidRowScanning && text.includes(PLACEHOLDER)) throw new Error('known-width cells were truncated');
+      return cut(text, limit);
+    },
+    visibleWidth(text) {
+      if (options.forbidRowScanning && text.includes(PLACEHOLDER)) throw new Error('known-width cells were rescanned');
+      return width(text);
+    },
     notify: (message) => events.push(message), sanitizeText: (text) => String(text).replace(/[\x00-\x1f\x7f-\x9f]/g, '') });
   return { controller, terminal, tui, preparations, events,
     get component() { return overlays[0]?.component; }, get overlays() { return overlays; },
     get normalize() { return normalize; }, get reserve() { return reserve; }, get maxPending() { return maxPending; },
+    get capabilityCalls() { return capabilityCalls; }, get reuses() { return reuses; },
+    get reusedInput() { return reusedInput; },
+    holdCapability(offset = 1) { capabilityHold = { target: capabilityCalls + offset }; return capabilityHold; },
+    releaseCapability() { const old = capabilityHold; capabilityHold = undefined; old?.finish?.(); },
     render() { return overlays[0]?.component.render(terminal.columns) || []; },
     key(data) { focused?.handleInput?.(data); },
     mouse(event) { return focused?.handleMouse?.({ x: 20, y: 8, button: 'none', ...event }); },
@@ -79,7 +115,7 @@ function harness(options = {}) {
     refresh() { observer?.onDisconnect(connection); connection = { tui, epoch: Symbol('refreshed') }; },
     get epoch() { return connection?.epoch; }, retirementEpochs,
     setPolicy(reason) { policy = reason; }, setFrameFailure(value) { frameFailure = value; },
-    setCells(value) { cells = value; },
+    setCells(value) { cells = value; }, setWriteFailure(value) { writeFailure = value; },
     get retirementPending() { return retirement; },
     disconnect() { observer?.onDisconnect(connection); connection = undefined; },
   };
@@ -121,11 +157,11 @@ test('single snapshot auto-opens fit, controls/pointer barrier, new open resets 
   const h = harness(); const { done } = await openReady(h);
   assert.equal(h.normalize, 1); assert.equal(h.reserve, 1);
   const first = h.preparations[0].canvas;
-  h.key('+'); await until(() => h.preparations.length === 2); await until(() => h.render().some((row) => row.includes(PLACEHOLDER)));
+  h.key('+'); await until(() => h.preparations.length === 2); await mouseReady(h);
   assert.ok(h.preparations[1].canvas.columns > first.columns);
   h.key('l'); h.key('j'); h.key('garbage');
   const mouse = h.component.handleMouse({ type: 'wheel' }); assert.equal(mouse.handled, true);
-  h.key('0'); await until(() => h.render().some((row) => row.includes(PLACEHOLDER)));
+  h.key('0'); await mouseReady(h);
   assert.deepEqual(h.preparations.at(-1).canvas, first);
   h.key('escape'); await done;
   assert.ok(h.events.indexOf('release') < h.events.indexOf('hide')); assert.ok(h.events.indexOf('hide') < h.events.indexOf('retire'));
@@ -135,7 +171,15 @@ test('single snapshot auto-opens fit, controls/pointer barrier, new open resets 
   await h.controller.close(); await next.done;
 });
 
-const mouseReady = async (h) => until(() => h.render().some((row) => row.includes(PLACEHOLDER)));
+async function mouseReady(h) {
+  for (let n = 0; n < 100; n++) {
+    const before = h.render(); await turn(); const after = h.render();
+    if (before.some((row) => row.includes(PLACEHOLDER)) &&
+        !before.some((row) => row.includes('Updating viewport')) &&
+        before.join('\n') === after.join('\n')) return;
+  }
+  assert.fail('viewer did not reach a stable resident frame');
+}
 const lastPrepare = (h) => h.preparations.at(-1);
 
 // Terminal-cell centers reconstructed independently from the prepared subset.
@@ -284,6 +328,86 @@ test('10000 captured moves during held prepare stay bounded and cannot publish a
   const closed = h.controller.close(); await turn(); h.unhold(); await closed; await done;
   assert.equal(h.terminal.writes.length, writes + 1, 'cancelled pan published transport after close');
   assert.equal(h.terminal.writes.at(-1), 'RETIRE');
+});
+
+test('resident pan reuses rows synchronously with no capability calls, prepares or transport', async () => {
+  const h = harness({ reuse: true }); const { done } = await openReady(h);
+  for (let n = 0; n < 5; n++) { h.key('+'); await mouseReady(h); }
+  const calls = h.capabilityCalls, writes = h.terminal.writes.length, prepared = h.preparations.length;
+  const original = lastPrepare(h).window;
+  assert.equal(h.mouse({ type: 'press', button: 'left' }).capture, true);
+  h.mouse({ type: 'drag', button: 'left', x: 23, y: 10 });
+  assert.equal(h.reusedInput.window.columnOffset, original.columnOffset - 3);
+  assert.equal(h.reusedInput.window.rowOffset, original.rowOffset - 2);
+  for (let n = 0; n < 10000; n++) h.mouse({ type: 'drag', button: 'left', x: 20 + n % 2, y: 8 + n % 2 });
+  h.mouse({ type: 'release', button: 'none', x: 20, y: 8 });
+  assert.ok(h.render().some((line) => line.includes(PLACEHOLDER)));
+  assert.ok(h.reuses >= 10000);
+  assert.equal(h.capabilityCalls, calls); assert.equal(h.preparations.length, prepared);
+  assert.equal(h.terminal.writes.length, writes); assert.equal(h.normalize, 1); assert.equal(h.reserve, 1);
+  await h.controller.close(); await done;
+});
+
+test('pending zoom preserves its own old frame and consumes only latest wheel after new frame renders', async () => {
+  const h = harness({ reuse: true }); const { done } = await openReady(h);
+  const old = h.render(), images = (lines) => lines.filter((line) => line.includes(PLACEHOLDER));
+  const gate = h.hold(); h.mouse({ type: 'wheel', wheelDelta: -1 }); await until(() => gate.finish);
+  const pending = h.render();
+  assert.deepEqual(images(pending), images(old), 'old cells were moved into desired geometry');
+  assert.match(strip(pending[0]), /100% Fit/); assert.match(strip(pending.at(-2)), /Updating viewport/);
+  for (let n = 0; n < 10000; n++) h.mouse({ type: 'wheel', wheelDelta: n === 9999 ? 1 : -1, x: 14, y: 7 });
+  await turn();
+  assert.equal(h.preparations.length, 2); assert.equal(h.preparations[1].context.signal.aborted, false);
+  h.unhold(); await until(() => h.events.filter((event) => event === 'uploaded').length === 2);
+  // There has been no new render since commit: even another report must wait.
+  h.mouse({ type: 'wheel', wheelDelta: 1, x: 15, y: 7 }); await turn();
+  assert.equal(h.preparations.length, 2);
+  const committed = h.render(); assert.match(strip(committed[0]), /125% Fit/);
+  await mouseReady(h);
+  assert.equal(h.preparations.length, 3); assert.match(strip(h.render()[0]), /100% Fit/);
+  assert.equal(h.maxPending, 1);
+  await h.controller.close(); await done;
+});
+
+test('live width, height and cells are resampled after final gate even before render', async () => {
+  for (const change of [
+    (h) => { h.terminal.columns = 38; },
+    (h) => { h.terminal.rows = 15; },
+    (h) => h.setCells({ widthPx: 9, heightPx: 18 }),
+  ]) {
+    const h = harness({ reuse: true }); const { done } = await openReady(h);
+    const writes = h.terminal.writes.length, gate = h.holdCapability(2);
+    h.key('+'); await until(() => gate.finish);
+    change(h); h.releaseCapability(); await turn();
+    assert.equal(h.terminal.writes.length, writes, 'old live layout committed without a render');
+    assert.equal(h.preparations.length, 2); assert.ok(h.events.includes('failed'));
+    h.render(); await mouseReady(h); assert.equal(h.preparations.length, 3);
+    await h.controller.close(); await done;
+  }
+});
+
+test('failed zoom clears retained cells and queued wheel across a resize round trip', async () => {
+  const h = harness({ reuse: true }); const { done } = await openReady(h);
+  const gate = h.hold(); h.mouse({ type: 'wheel', wheelDelta: -1 }); await until(() => gate.finish);
+  h.render(); h.mouse({ type: 'wheel', wheelDelta: 1 }); await turn();
+  h.setWriteFailure(true); h.unhold(); await turn();
+  const failed = h.render(); assert.ok(!failed.some((line) => line.includes(PLACEHOLDER)));
+  assert.match(failed.join('\n'), /mock partial graphics write/);
+  h.setWriteFailure(false); h.terminal.columns = 38; h.render(); await mouseReady(h);
+  h.terminal.columns = 40; h.render(); await mouseReady(h);
+  assert.equal(h.preparations.length, 4, 'failed pending wheel survived recovery');
+  assert.match(strip(h.render()[0]), /125% Fit/);
+  await h.controller.close(); await done;
+});
+
+test('validated placeholder rows bypass redundant width scans and remain within supplied width', async () => {
+  const h = harness({ reuse: true, forbidRowScanning: true }); const { done } = await openReady(h);
+  for (const columns of [20, 40, 100, 320]) {
+    h.terminal.columns = columns; h.render(); await mouseReady(h);
+    h.key('+'); await mouseReady(h);
+    for (const line of h.render()) assert.ok(width(line) <= columns);
+  }
+  await h.controller.close(); await done;
 });
 
 test('newest-first picker uses same owned overlay and prepares only selected immutable page', async () => {

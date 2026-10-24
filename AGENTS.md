@@ -21,6 +21,21 @@ case-by-case edge/resize/trackpad pass or latency measurement; see the scoped
 record in `docs/viewer-mouse.md`. No native ownership, configuration, model-policy
 or budgeting changes.
 
+## Viewer performance follow-up
+
+After 0.4.0 functional acceptance, the owner reported slow/janky zoom and pan.
+0.4.1 adds native synchronous `reuseViewer` / persistent `isResident` proofs for
+same-layout committed-canvas text-only pan, retaining one own-geometry ready frame
+during guarded zoom and one latest busy/unrendered-frame wheel event. Actual
+prepare/upload/replay/resize pre/post capability checks and fresh `on` visibility
+remain unchanged; reuse/render have current synchronous policy gates. Presentation
+calls `onUploadStarted` only after final guards and before nonempty write, revoking
+row trust and retaining a first attempted tuple for scoped cleanup if necessary.
+Known-width ID rows bypass redundant viewer width scans, not host layout.
+Read `docs/viewer-performance.md` before hot-path changes. Performance patch live
+acceptance is pending; original functional confirmation is not latency acceptance.
+No new settings, placement slots, budget/eviction or force path.
+
 ## Worker delegation
 
 Use Pi model `us.openai.gpt-6.1-sol`: planning and review workers use `--thinking xhigh`; implementation workers use `--thinking medium`. This owner-updated role policy supersedes the earlier all-workers-medium baseline, not historical tested-worker records. Coordinate through workmux using stable named tabs in the current workspace, never window indexes; say **thank you** when a worker is safe to close.

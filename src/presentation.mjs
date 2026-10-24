@@ -24,7 +24,10 @@ export function createPresentation() {
     try {
       if (typeof prepared.uploads !== "string") throw new Error("Invalid prepared image transport");
       // No await between final guards, public synchronous write and commit.
-      if (prepared.uploads) active.tui.terminal.write(prepared.uploads);
+      if (prepared.uploads) {
+        prepared.onUploadStarted?.(); // Revoke old row trust before a possibly partial write.
+        active.tui.terminal.write(prepared.uploads);
+      }
       prepared.onUploaded?.();
       return true;
     } catch (error) { prepared.onUploadFailed?.(error); throw error; }

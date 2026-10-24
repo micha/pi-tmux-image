@@ -91,7 +91,7 @@ export function createNativeRenderer({ convertToPng, identity = new GraphicsIden
   function epochState(epoch) {
     if (epoch === undefined || epoch === null) throw new TypeError("Image transport epoch is required");
     if (!current || current.epoch !== epoch) {
-      current = { epoch, images: new Set(), placements: new Map(), tail: Promise.resolve() };
+      current = { epoch, images: new Set(), placements: new Map(), tail: Promise.resolve(), privateRevision: 0 };
     }
     account(() => metrics.beginEpoch(epoch));
     return current;
@@ -125,16 +125,30 @@ export function createNativeRenderer({ convertToPng, identity = new GraphicsIden
     } catch (error) { finish(false); throw error; }
   }
 
-  async function prepareSurface(image, activePlacement, context, view) {
+  // Residency outlives the short write reservation and a superseded request's
+  // signal. The lease, epoch and committed canvas (including cell pixels) own it.
+  function viewerResident(view, placement, state) {
+    return current === state && viewer === view && !view.controller.signal.aborted &&
+      view.prototype?.geometryKey === placement.geometryKey &&
+      view.prototype?.placementKey === placement.placementKey &&
+      state.images.has(placement.imageId) &&
+      state.placements.get(placement.placementKey) === placement.geometryKey;
+  }
+
+  async function prepareSurface(image, activePlacement, context, view, viewerLines) {
     const { epoch, signal } = context;
     const validLease = () => !view || viewer === view && !view.controller.signal.aborted;
-    const reserved = await reservation(epoch, signal, validLease, () => {
+    const work = {};
+    let reserved;
+    reserved = await reservation(epoch, signal, validLease, () => {
+      if (reserved?.state.privateWork === work) reserved.state.privateWork = undefined;
       if (view) { view.pending = undefined; viewerWork = undefined; }
     });
     const { state, finish } = reserved;
     try {
       // Only committed/live overlay prototypes are historical replay candidates.
-      const retainedViewer = viewer?.prototype;
+      const privateView = viewer;
+      const retainedViewer = privateView?.prototype;
       const imageUploaded = !state.images.has(activePlacement.imageId);
       let placementBatch = [];
       if (imageUploaded) {
@@ -152,6 +166,10 @@ export function createNativeRenderer({ convertToPng, identity = new GraphicsIden
       const uploads = [...imageCommands, ...placementBatch.map(p => encodeVirtualPlacement({
         imageId: p.imageId, placementId: p.placementId, ...p.geometry,
       }))].join("");
+      const privatePlacement = placementBatch.find(p => p.surface === "viewer");
+      let privateRevision = state.privateRevision;
+      if (privatePlacement) state.privateWork = work;
+      let callbackSettled = false, uploadStarted = false;
       const transport = {
         epoch, image: { imageId: activePlacement.imageId, payloadKey: image.payloadKey,
           pngBytes: image.outputBytes, width: image.width, height: image.height },
@@ -163,16 +181,35 @@ export function createNativeRenderer({ convertToPng, identity = new GraphicsIden
       };
       return {
         uploads, geometry: activePlacement.geometry,
-        lines: view ? encodeViewportRows({ imageId: activePlacement.imageId, placementId: activePlacement.placementId,
-          ...view.window, canvasColumns: activePlacement.geometry.columns, canvasRows: activePlacement.geometry.rows })
+        lines: view ? viewerLines
           : encodePlaceholderRows({ imageId: activePlacement.imageId, placementId: activePlacement.placementId, ...activePlacement.geometry }),
         isCurrent: () => reserved.isCurrent() && replayCurrent(),
+        ...(view ? { isResident: () => viewerResident(view, activePlacement, state) } : {}),
+        onUploadStarted: () => {
+          if (!uploads || uploadStarted || callbackSettled || !reserved.isCurrent() || !replayCurrent()) return;
+          uploadStarted = true;
+          // Final guards have passed, but a synchronous write can still throw
+          // after partial effect. Revoke trust BEFORE the first byte, retaining
+          // only a fixed-slot cleanup obligation, never a replay prototype.
+          if (imageUploaded) state.images.delete(activePlacement.imageId);
+          for (const p of placementBatch) state.placements.delete(p.placementKey);
+          if (privatePlacement && viewer === privateView && privateView) {
+            if (!privateView.prototype) privateView.attempted = privatePlacement;
+            privateRevision = ++state.privateRevision;
+          }
+        },
         onUploaded: () => {
+          if (callbackSettled) return;
+          callbackSettled = true;
           if (!replayCurrent()) { finish(false); return; }
           finish(true, () => {
             state.images.add(activePlacement.imageId);
             if (view) view.prototype = activePlacement;
-            else {
+            if (view || privatePlacement) {
+              state.privateRevision++;
+              if (viewer === privateView && privateView) privateView.attempted = undefined;
+            }
+            if (!view) {
               let known = ownedPlacements.get(activePlacement.imageId);
               if (!known) ownedPlacements.set(activePlacement.imageId, known = new Map());
               known.set(activePlacement.placementKey, activePlacement);
@@ -181,7 +218,21 @@ export function createNativeRenderer({ convertToPng, identity = new GraphicsIden
             if (transport.wireBytes > 0) account(() => metrics.recordTransport(transport));
           });
         },
-        onUploadFailed: () => finish(false),
+        onUploadFailed: () => {
+          if (callbackSettled) return;
+          callbackSettled = true;
+          // A rejection can follow a partial write or a policy denial: neither
+          // proves the old private cells still mean what they did. Also cover
+          // inline PNG replay batches carrying this tuple. Do not let an old
+          // callback revoke a later successful commit, lease or epoch.
+          if (uploads && privatePlacement && current === state && viewer === privateView &&
+              privateView && state.privateRevision === privateRevision) {
+            state.placements.delete(privatePlacement.placementKey);
+            if (imageUploaded) state.images.delete(activePlacement.imageId);
+            state.privateRevision++;
+          }
+          finish(false);
+        },
         metrics: { pngBytes: image.outputBytes, transportBytes: transport.wireBytes,
           uploadChunks: transport.uploadChunks, placementCommands: transport.placementCommands },
       };
@@ -225,8 +276,27 @@ export function createNativeRenderer({ convertToPng, identity = new GraphicsIden
       viewerSlot ||= identity.reserveViewerPlacement();
       const lease = Object.freeze({ imageId: payload.imageId, payloadKey: payload.payloadKey,
         placementId: viewerSlot.placementId, occurrence, generation: ++viewerGeneration });
-      viewer = { lease, image: payload, controller: new AbortController(), prototype: undefined, pending: undefined };
+      viewer = { lease, image: payload, controller: new AbortController(), prototype: undefined, attempted: undefined, pending: undefined };
       return lease;
+    },
+    /** Rows only: no epoch creation, queue reservation or mutation on hit/miss. */
+    reuseViewer({ lease, canvas, window }, { epoch, signal } = {}) {
+      const view = viewer, state = current;
+      if (epoch === undefined || epoch === null || !state || state.epoch !== epoch || signal?.aborted ||
+          !view || view.lease !== lease || view.pending || viewerWork || retirement || retirementWork || state.privateWork) return undefined;
+      const placement = view.prototype;
+      if (!placement) return undefined;
+      try {
+        if (geometryIdentity(canvas) !== placement.geometryKey || !viewerResident(view, placement, state)) return undefined;
+        // This single encoding validates the bounded window and canvas too.
+        const lines = encodeViewportRows({ ...window, imageId: lease.imageId, placementId: lease.placementId,
+          canvasColumns: placement.geometry.columns, canvasRows: placement.geometry.rows });
+        const isResident = () => !signal?.aborted && viewerResident(view, placement, state);
+        return { uploads: "", lines, geometry: placement.geometry, isResident,
+          isCurrent: () => isResident() && !view.pending && !viewerWork && !retirement && !retirementWork && !state.privateWork,
+          onUploaded() {}, onUploadFailed() {},
+          metrics: { pngBytes: view.image.outputBytes, transportBytes: 0, uploadChunks: 0, placementCommands: 0 } };
+      } catch { return undefined; }
     },
     async prepareViewer({ lease, canvas, window }, { epoch, signal } = {}) {
       const view = viewer;
@@ -236,7 +306,7 @@ export function createNativeRenderer({ convertToPng, identity = new GraphicsIden
       const geometry = Object.freeze({ columns: canvas.columns, rows: canvas.rows,
         cellWidthPx: canvas.cellWidthPx, cellHeightPx: canvas.cellHeightPx });
       // Validate bounded canvas/window before taking any native reservation.
-      encodeViewportRows({ imageId: lease.imageId, placementId: lease.placementId, ...window,
+      const lines = encodeViewportRows({ ...window, imageId: lease.imageId, placementId: lease.placementId,
         canvasColumns: geometry.columns, canvasRows: geometry.rows });
       view.window = Object.freeze({ columns: window.columns, rows: window.rows,
         rowOffset: window.rowOffset ?? 0, columnOffset: window.columnOffset ?? 0 });
@@ -246,7 +316,7 @@ export function createNativeRenderer({ convertToPng, identity = new GraphicsIden
       const placement = Object.freeze({ imageId: lease.imageId, placementId: lease.placementId,
         placementKey: JSON.stringify(["viewer", lease.imageId, lease.placementId]),
         occurrenceKey: lease.occurrence, geometryKey, geometry, surface: "viewer" });
-      try { return await prepareSurface(view.image, placement, { epoch, signal: combined }, view); }
+      try { return await prepareSurface(view.image, placement, { epoch, signal: combined }, view, lines); }
       catch (error) {
         if (view.pending === controller) view.pending = undefined;
         if (viewerWork === controller) viewerWork = undefined;
@@ -256,7 +326,7 @@ export function createNativeRenderer({ convertToPng, identity = new GraphicsIden
     releaseViewer(lease) {
       if (!viewer || viewer.lease !== lease) return false;
       const old = viewer; viewer = undefined;
-      if (old.prototype) retirement = old.prototype;
+      if (old.prototype || old.attempted) retirement = old.prototype || old.attempted;
       old.controller.abort();
       account(() => metrics.recordViewerRelease({ imageId: lease.imageId, placementId: lease.placementId }));
       return true;
@@ -278,13 +348,25 @@ export function createNativeRenderer({ convertToPng, identity = new GraphicsIden
       let uploads, wireBytes;
       try { uploads = encodeOwnedVirtualRetirement(owned); wireBytes = Buffer.byteLength(uploads); }
       catch (error) { reserved.finish(false); throw error; }
+      let uploadStarted = false, callbackSettled = false;
       return { uploads, lines: [], isCurrent: reserved.isCurrent,
-        onUploaded: () => reserved.finish(true, state => {
-          state.placements.delete(owned.placementKey); retirement = undefined; retirementFailure = undefined;
-          account(() => metrics.recordRetirement({ epoch, imageId: owned.imageId, placementId: owned.placementId, wireBytes }));
-        }),
+        onUploadStarted: () => {
+          if (uploadStarted || callbackSettled || !reserved.isCurrent()) return;
+          uploadStarted = true;
+          reserved.state.placements.delete(owned.placementKey);
+        },
+        onUploaded: () => {
+          if (callbackSettled) return;
+          callbackSettled = true;
+          reserved.finish(true, state => {
+            state.placements.delete(owned.placementKey); retirement = undefined; retirementFailure = undefined;
+            account(() => metrics.recordRetirement({ epoch, imageId: owned.imageId, placementId: owned.placementId, wireBytes }));
+          });
+        },
         onUploadFailed: (error) => {
-          if (retirement === owned) retirementFailure = sanitizeDisplayText(error?.message || "Retirement did not commit; terminal effect remains untrusted");
+          if (callbackSettled) return;
+          callbackSettled = true;
+          if (current === reserved.state && retirement === owned) retirementFailure = sanitizeDisplayText(error?.message || "Retirement did not commit; terminal effect remains untrusted");
           reserved.finish(false);
         },
         metrics: { transportBytes: wireBytes, uploadChunks: 0, placementCommands: 0, retirementCommands: 1 },
@@ -295,7 +377,7 @@ export function createNativeRenderer({ convertToPng, identity = new GraphicsIden
       if (presentationEpoch !== undefined) account(() => metrics.beginEpoch(presentationEpoch));
       const snapshot = account(() => metrics.snapshot());
       return { ...(snapshot || { scope: { terminalAcknowledged: false, evictionEnabled: false } }),
-        viewer: { leased: Boolean(viewer), livePrototype: Boolean(viewer?.prototype), retirementPending: Boolean(retirement),
+        viewer: { leased: Boolean(viewer), livePrototype: Boolean(viewer?.prototype), attempted: Boolean(viewer?.attempted), retirementPending: Boolean(retirement),
           slotAllocated: Boolean(viewerSlot), pending: Boolean(viewerWork), retirementWriting: Boolean(retirementWork),
           retirementFailure,
           allocatedIds: identity.allocatedIds },

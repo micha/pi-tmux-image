@@ -30,6 +30,39 @@ test("only interactive tmux attaches a zero-row transport owner", () => {
   assert.throws(() => h.presentation.write("upload"), /not connected/);
 });
 
+test("nonempty commits revoke trust immediately before write; denied and rows-only commits do not", () => {
+  const h = harness(); h.presentation.attach(h.ctx, true);
+  const controller = new AbortController(), context = { epoch: h.presentation.epoch, signal: controller.signal };
+  const prepared = { uploads: "graphics", isCurrent: () => true,
+    onUploadStarted: () => h.events.push(["start"]),
+    onUploaded: () => h.events.push(["success"]),
+    onUploadFailed: () => h.events.push(["failure"]) };
+  assert.equal(h.presentation.commit(prepared, context), true);
+  assert.deepEqual(h.events, [["start"], ["write", "graphics"], ["success"]]);
+  h.events.length = 0;
+  assert.equal(h.presentation.commit({ ...prepared, uploads: "" }, context), true);
+  assert.deepEqual(h.events, [["success"]]);
+  h.events.length = 0;
+  assert.equal(h.presentation.commit({ ...prepared, isCurrent: () => false }, context), false);
+  assert.deepEqual(h.events, [["failure"]]);
+  h.events.length = 0; controller.abort();
+  assert.equal(h.presentation.commit(prepared, context), false);
+  assert.deepEqual(h.events, [["failure"]]);
+});
+
+test("throwing write and throwing attempt notification fail without successful commit", () => {
+  const h = harness(); h.presentation.attach(h.ctx, true);
+  const context = { epoch: h.presentation.epoch, signal: new AbortController().signal };
+  h.tui.terminal.write = () => { h.events.push(["partial-write"]); throw new Error("partial"); };
+  const prepared = { uploads: "graphics", onUploadStarted: () => h.events.push(["start"]),
+    onUploaded: () => h.events.push(["success"]), onUploadFailed: () => h.events.push(["failure"]) };
+  assert.throws(() => h.presentation.commit(prepared, context), /partial/);
+  assert.deepEqual(h.events, [["start"], ["partial-write"], ["failure"]]);
+  h.events.length = 0;
+  assert.throws(() => h.presentation.commit({ ...prepared, onUploadStarted() { throw new Error("attempt"); } }, context), /attempt/);
+  assert.deepEqual(h.events, [["failure"]]);
+});
+
 test("async preparation hides cells, uploads before repaint, and reuses geometry across rebuild", async () => {
   const h = harness();
   h.presentation.attach(h.ctx, true);

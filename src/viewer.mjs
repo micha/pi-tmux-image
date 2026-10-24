@@ -59,19 +59,54 @@ export function createViewerController({ native, presentation, getContext, getSn
       zoomFactor: token.zoomFactor, center: token.center } };
   }
 
+  function baseLayout(token, geometry) {
+    return JSON.stringify([token.tui.terminal.columns, token.tui.terminal.rows,
+      geometry.frame, geometry.input.cells]);
+  }
+
+  function residentReady(token, geometry) {
+    return token.ready?.base === baseLayout(token, geometry) && token.ready.isResident?.() === true;
+  }
+
+  function publish(token, job, prepared) {
+    token.ready = { key: job.key, base: job.base, lines: prepared.lines,
+      view: job.view, isResident: prepared.isResident };
+    token.error = undefined; token.failedKey = undefined;
+  }
+
   function intent(token, width) {
     const geometry = viewInput(token, width);
     if (!geometry) {
       token.desiredKey = undefined; token.latest = undefined; token.ready = undefined;
-      token.request?.abort(); return undefined;
+      token.wheel = undefined; token.request?.abort(); return undefined;
     }
-    const view = computeViewport(geometry.input);
+    const view = computeViewport(geometry.input), base = baseLayout(token, geometry);
     token.zoomFactor = view.zoomFactor; token.center = view.center;
-    const id = JSON.stringify([view.canvas, view.window, geometry.input.cells]);
+    const id = JSON.stringify([base, view.canvas, view.window]);
     token.desiredKey = id;
-    if (token.ready?.key !== id) token.ready = undefined;
-    if (token.ready || token.runningKey === id || (token.latest?.key === id && token.runner) || token.failedKey === id) return { ...geometry, view };
-    token.latest = { key: id, view, cells: geometry.input.cells };
+    if (token.ready && !residentReady(token, geometry)) {
+      token.ready = undefined; token.wheel = undefined; token.drag = undefined;
+    }
+    if (token.ready?.key === id) {
+      token.ready.view = view; // Zoom factors can change without changing quantized cells.
+      return { ...geometry, view };
+    }
+    const job = { key: id, base, view, cells: geometry.input.cells };
+    // Addressing another subset of an already committed canvas needs only text,
+    // not an upload preparation, queue reservation or tmux subprocess. Layout
+    // changes still take the fully guarded asynchronous path.
+    if (token.ready && !token.request && native.reuseViewer) {
+      const reused = native.reuseViewer({ lease: token.lease,
+        canvas: { ...view.canvas, cellWidthPx: job.cells.widthPx, cellHeightPx: job.cells.heightPx },
+        window: view.window }, { epoch: token.epoch, signal: token.controller.signal });
+      if (reused && reused.uploads === '' && policy(token) && presentation.commit(reused,
+          { epoch: token.epoch, signal: token.controller.signal })) {
+        publish(token, job, reused); token.latest = undefined;
+        return { ...geometry, view };
+      }
+    }
+    if (token.runningKey === id || (token.latest?.key === id && token.runner) || token.failedKey === id) return { ...geometry, view };
+    token.latest = job;
     if (token.runningKey !== id) token.request?.abort();
     if (!token.runner) {
       // Set the runner before any await; rapid input replaces latest, not promises.
@@ -95,19 +130,25 @@ export function createViewerController({ native, presentation, getContext, getSn
         prepared = await native.prepareViewer({ lease: token.lease,
           canvas: { ...job.view.canvas, cellWidthPx: job.cells.widthPx, cellHeightPx: job.cells.heightPx }, window: job.view.window }, context);
         await requireCapability(token.ctx, request.signal);
-        if (!current(token) || request.signal.aborted || token.desiredKey !== job.key || !policy(token)) {
-          prepared.onUploadFailed?.(new Error('Viewer preparation superseded')); continue;
+        // Terminal dimensions/cells can change before Pi schedules its next
+        // render. Resample live layout here, not only the last desired key.
+        const live = current(token) && viewInput(token);
+        const layoutCurrent = live && baseLayout(token, live) === job.base;
+        if (!layoutCurrent) { token.ready = undefined; token.wheel = undefined; token.drag = undefined; }
+        if (!current(token) || request.signal.aborted || !layoutCurrent || token.desiredKey !== job.key || !policy(token)) {
+          prepared.onUploadFailed?.(new Error('Viewer preparation superseded')); repaint(token); continue;
         }
         if (presentation.commit(prepared, context)) {
-          token.ready = { key: job.key, lines: prepared.lines.slice(), view: job.view };
-          token.error = undefined; token.failedKey = undefined;
+          publish(token, job, prepared);
           repaint(token);
         } else {
+          token.ready = undefined; token.wheel = undefined;
           token.error = 'Viewer surface is no longer current'; token.failedKey = job.key; repaint(token);
         }
       } catch (error) {
         prepared?.onUploadFailed?.(error);
         if (current(token) && !request.signal.aborted && token.desiredKey === job.key) {
+          token.ready = undefined; token.wheel = undefined;
           token.error = sanitizeText(error.message || error); token.failedKey = job.key; repaint(token);
         }
       } finally {
@@ -148,6 +189,25 @@ export function createViewerController({ native, presentation, getContext, getSn
     intent(token); repaint(token);
   }
 
+  function queueWheel(token) {
+    if (!token.wheel || token.wheelQueued) return;
+    token.wheelQueued = true;
+    queueMicrotask(() => {
+      token.wheelQueued = false;
+      if (!current(token) || !policy(token)) { token.wheel = undefined; return; }
+      const job = token.wheel, geometry = viewInput(token);
+      if (!job) return;
+      if (!geometry || baseLayout(token, geometry) !== job.base) { token.wheel = undefined; return; }
+      // Keep one latest event through preparation. Only a newly rendered,
+      // resident ready mapping can anchor it; desired/unpainted geometry cannot.
+      if (!residentReady(token, geometry) || token.drawn?.key !== token.ready.key ||
+          token.desiredKey !== token.ready.key) return;
+      token.wheel = undefined;
+      applyState(token, zoomViewportAt({ ...geometry.input,
+        zoomFactor: token.ready.view.zoomFactor, center: token.ready.view.center }, job.direction, job.point));
+    });
+  }
+
   function mouse(token, event) {
     const consumed = { handled: true, render: false };
     if (!current(token) || !policy(token)) return consumed;
@@ -160,34 +220,23 @@ export function createViewerController({ native, presentation, getContext, getSn
       row: event.y - geometry.frame.top - 1 + 0.5 };
     const inside = point.column >= 0 && point.column < geometry.frame.area.columns &&
       point.row >= 0 && point.row < geometry.frame.area.rows;
-    const ready = token.ready && token.drawn?.key === token.ready.key &&
-      token.desiredKey === token.ready.key && token.drawn.layout === layout;
+    const ready = token.ready && residentReady(token, geometry) &&
+      token.drawn?.base === baseLayout(token, geometry);
+    const rendered = ready && token.drawn.key === token.ready.key;
 
     if (event.type === 'wheel') {
       token.drag = undefined;
       if (!ready || !inside || !Number.isFinite(event.wheelDelta) || !event.wheelDelta) return consumed;
       // Pi's delta is accelerated transcript lines, not physical wheel notches.
-      // Use only its sign and one latest event per synchronous input burst; there
-      // is at most one microtask and no timer or promise chain per wheel report.
+      // Retain one latest sign/position through preparation, not a report queue.
       token.wheel = { direction: event.wheelDelta < 0 ? 'in' : 'out', point,
-        layout, key: token.ready.key };
-      if (!token.wheelQueued) {
-        token.wheelQueued = true;
-        queueMicrotask(() => {
-          token.wheelQueued = false;
-          const job = token.wheel; token.wheel = undefined;
-          if (!job || !current(token) || !policy(token)) return;
-          const live = viewInput(token);
-          if (!live || mouseLayout(token, live) !== job.layout ||
-              token.ready?.key !== job.key || token.drawn?.key !== job.key) return;
-          applyState(token, zoomViewportAt(live.input, job.direction, job.point));
-        });
-      }
+        base: baseLayout(token, geometry) };
+      queueWheel(token);
       return consumed;
     }
     if (event.type === 'press') {
       token.drag = undefined; token.wheel = undefined;
-      if (event.button !== 'left' || !ready || !inside) return consumed;
+      if (event.button !== 'left' || !rendered || token.desiredKey !== token.ready.key || !inside) return consumed;
       const view = token.ready.view;
       // Grab occupied image cells, not the surrounding centered blank margins.
       if (point.column < view.origin.column || point.column >= view.origin.column + view.window.columns ||
@@ -238,6 +287,7 @@ export function createViewerController({ native, presentation, getContext, getSn
     const height = Math.max(1, token.tui.terminal.rows);
     const lines = Array.from({ length: height }, () => ' '.repeat(width));
     const put = (row, text) => { if (row >= 0 && row < height) lines[row] = fitText(text, width); };
+    const putCells = (row, text) => { if (row >= 0 && row < height) lines[row] = text; };
     if (token.picker) {
       put(0, style('accent', 'Stored images — newest first'));
       const count = Math.max(0, height - 4);
@@ -255,7 +305,7 @@ export function createViewerController({ native, presentation, getContext, getSn
     const geometry = intent(token, width);
     if (!geometry || token.drag?.layout !== mouseLayout(token, geometry)) token.drag = undefined;
     const label = sanitizeText(token.snapshot?.label || 'Stored image');
-    const title = viewerTitle(label, geometry?.view, width, { truncateToWidth, visibleWidth });
+    const title = viewerTitle(label, token.ready?.view || geometry?.view, width, { truncateToWidth, visibleWidth });
     put(0, style('accent', title.title));
     // PDF page identity retains its dedicated row; keyboard hints take width
     // precedence, with mouse hints appended when that row is occupied.
@@ -267,24 +317,31 @@ export function createViewerController({ native, presentation, getContext, getSn
       if (token.payload && height > 4) put(3, style('muted', 'Need 20×7; Esc close'));
       return lines;
     }
-    const { frame, view } = geometry;
+    const { frame } = geometry;
+    const view = token.ready?.view || geometry.view;
+    if (token.ready && token.ready.key !== token.desiredKey) put(height - 2, style('muted', 'Updating viewport…'));
     const border = (text) => style('border', text);
     const prefix = ' '.repeat(frame.left);
-    put(frame.top, prefix + border('┌' + '─'.repeat(frame.area.columns) + '┐'));
+    putCells(frame.top, prefix + border('┌' + '─'.repeat(frame.area.columns) + '┐'));
     for (let row = 0; row < frame.area.rows; row++) {
       const local = row - view.origin.row;
       let body = ' '.repeat(frame.area.columns);
       if (token.ready && local >= 0 && local < token.ready.lines.length) {
         const cells = token.ready.lines[local];
-        body = ' '.repeat(view.origin.column) + cells + ' '.repeat(Math.max(0, frame.area.columns - view.origin.column - visibleWidth(cells)));
+        // Encoder guarantees one column per addressed cell. These rows already
+        // fit by construction: avoid rescanning/truncating Unicode ID cells.
+        body = ' '.repeat(view.origin.column) + cells + ' '.repeat(Math.max(0, frame.area.columns - view.origin.column - view.window.columns));
       } else if (row === 0 && !token.ready) {
         const text = fitText(token.error ? `Viewer: ${token.error}` : 'Preparing viewport…', frame.area.columns);
         body = text + ' '.repeat(Math.max(0, frame.area.columns - visibleWidth(text)));
       }
-      put(frame.top + 1 + row, prefix + border('│') + body + border('│'));
+      putCells(frame.top + 1 + row, prefix + border('│') + body + border('│'));
     }
-    put(frame.top + frame.area.rows + 1, prefix + border('└' + '─'.repeat(frame.area.columns) + '┘'));
-    if (token.ready) token.drawn = { key: token.ready.key, layout: mouseLayout(token, geometry) };
+    putCells(frame.top + frame.area.rows + 1, prefix + border('└' + '─'.repeat(frame.area.columns) + '┘'));
+    if (token.ready) {
+      token.drawn = { key: token.ready.key, base: token.ready.base };
+      queueWheel(token);
+    }
     return lines;
   }
 
