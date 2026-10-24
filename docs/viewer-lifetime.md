@@ -59,7 +59,7 @@ and [implementation-plan.md](implementation-plan.md).
   success/current-epoch only. Placement metadata is immutable for a given pair:
   changed geometry at the same ID currently throws. There is no replacement or
   scoped-retirement event. That API must be extended explicitly, not bypassed.
-- `src/capabilities.mjs` and `extensions/index.ts`: current public policy,
+- `src/capabilities.mjs` and `extensions/tmux-image/index.ts`: current public policy,
   read-only bounded tmux detection, pre/post preparation checks, synchronous
   ready-row gates and unified refresh generation must remain the common authority.
   `images.blockImages` is **not** a viewer-display gate.
@@ -609,6 +609,6 @@ runtime tests and captured/protocol-semantic streams, not observed pixels.
   2545–2582; scoped lowercase ID deletion 2687–2788 and example 2820–2841.
   These protocol rules do not by themselves prove Ghostty pixels.
 - Repository `src/native.mjs`, `presentation.mjs`, `identity.mjs`, `metrics.mjs`,
-  `capabilities.mjs`, `extensions/index.ts` and
+  `capabilities.mjs`, `extensions/tmux-image/index.ts` and
   [renderer-seam.md](renderer-seam.md), [kitty-protocol.md](kitty-protocol.md),
   [graphics-memory.md](graphics-memory.md).

@@ -2,7 +2,7 @@
 
 `src/capabilities.mjs` provides a conservative, bounded, cached **authorization
 check**, not a terminal graphics transport. Phase 3 integrates it in
-`extensions/index.ts` after the committed Phase 1/2 renderer work. No Pi
+`extensions/tmux-image/index.ts` after the committed Phase 1/2 renderer work. No Pi
 capabilities, settings, tmux configuration or parent process environment are
 mutated. This is implementation/reference documentation; installation/usage
 belongs in README when integrated.

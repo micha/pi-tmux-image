@@ -6,7 +6,7 @@
 `210d524`; pure viewport/protocol phase is committed at
 `dd13569`, shared native/presentation/metrics at `5898185`, following automated
 feasibility gate `e92b1cd` and plan `d324d87`. The UI/controller is now implemented
-in `src/viewer.mjs` and `extensions/index.ts`: ready-cell fullscreen clicks,
+in `src/viewer.mjs` and `extensions/tmux-image/index.ts`: ready-cell fullscreen clicks,
 `/tmux-image-view`, newest-first same-overlay picker, one pending/latest prepare,
 shared PNG reuse and scoped ephemeral retirement. Accepted defaults are 1.25×
 fit-relative zoom, 25% minimum, dynamic **297×297** canvas maximum, four-cell pan,

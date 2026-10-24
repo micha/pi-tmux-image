@@ -58,6 +58,9 @@ pi install https://github.com/micha/pi-tmux-image
 ```
 
 Run `/reload` in Pi after installation. Local installs load from the checkout without copying it.
+The entrypoint is `extensions/tmux-image/index.ts`, so Pi displays the extension
+as **`tmux-image`**. If you load the entrypoint directly rather than installing
+this package, use that path.
 
 **If you used the original spike:** remove `.pi/extensions/tmux-images-spike.ts` from that project before loading this package. Both versions register the same command and tool names.
 

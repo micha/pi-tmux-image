@@ -151,7 +151,7 @@ hostTest("actual SDK package loading: reload/new/resume/quit lifecycle and non-T
         resourceLoaderOptions: {
           noExtensions: true, noSkills: true, noPromptTemplates: true,
           noThemes: true, noContextFiles: true,
-          additionalExtensionPaths: [new URL("../extensions/index.ts", import.meta.url).pathname],
+          additionalExtensionPaths: [new URL("../extensions/tmux-image/index.ts", import.meta.url).pathname],
           extensionFactories: [(pi) => {
             pi.on("session_start", (event) => { events.push([event.type, event.reason]); });
             pi.on("session_shutdown", (event) => { events.push([event.type, event.reason]); });
@@ -195,6 +195,41 @@ hostTest("actual SDK package loading: reload/new/resume/quit lifecycle and non-T
     await runtime?.dispose();
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+hostTest("actual Pi startup names the explicit index entrypoint tmux-image", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-image-name-host-"));
+  const terminal = new CaptureTerminal(); terminal.columns = 100; terminal.rows = 50;
+  let runtime, app;
+  try {
+    const modelRuntime = await host.ModelRuntime.create({
+      authPath: join(directory, "auth.json"), modelsPath: null,
+      modelsStorePath: join(directory, "models-cache.json"), refreshOnCreate: false, allowModelNetwork: false,
+    });
+    const createRuntime = async ({ cwd, agentDir, sessionManager, sessionStartEvent }) => {
+      const services = await host.createAgentSessionServices({ cwd, agentDir, modelRuntime,
+        settingsManager: host.SettingsManager.inMemory({ quietStartup: false, theme: "dark", cacheWarming: "off", enableInstallTelemetry: false, enableAnalytics: false }),
+        resourceLoaderOptions: { noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+          additionalExtensionPaths: [new URL("../extensions/tmux-image/index.ts", import.meta.url).pathname] },
+      });
+      const created = await host.createAgentSessionFromServices({ services, sessionManager, sessionStartEvent, model: modelRuntime.getModels()[0], noTools: "all" });
+      assert.deepEqual(created.extensionsResult.errors, []);
+      const loaded = services.resourceLoader.getExtensions().extensions;
+      assert.equal(loaded.length, 1, "rename must not discover duplicate entrypoints");
+      assert.ok(loaded[0].commands.has("tmux-image-view"));
+      assert.ok(loaded[0].path.endsWith("/extensions/tmux-image/index.ts"));
+      return { ...created, services, diagnostics: services.diagnostics };
+    };
+    runtime = await host.createAgentSessionRuntime(createRuntime, {
+      cwd: directory, agentDir: join(directory, "agent"), sessionManager: host.SessionManager.inMemory(directory),
+    });
+    app = new host.InteractiveMode(runtime, { terminal, tuiMode: "regular", initialThemeSetting: "dark" });
+    await app.init();
+    const output = tuiModule.stripTerminalSequences(terminal.output);
+    assert.match(output, /\[Extensions\]\s+tmux-image(?:\s|$)/, "actual compact startup label must use the named parent directory");
+    assert.equal(terminal.output.includes("\x1b_G"), false, "name/discovery check must not send terminal graphics");
+    assert.equal(runtime.session.messages.length, 0);
+  } finally { app?.stop(); await runtime?.dispose(); await rm(directory, { recursive: true, force: true }); }
 });
 
 hostTest("actual-host seam never touches terminal in print/JSON/RPC or outside tmux", () => {

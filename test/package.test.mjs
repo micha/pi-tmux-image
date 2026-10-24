@@ -7,8 +7,9 @@ const manifest = JSON.parse(readFileSync(new URL("package.json", root), "utf8"))
 
 test("declares its Pi extension explicitly", () => {
   assert.ok(manifest.keywords.includes("pi-package"));
-  assert.deepEqual(manifest.pi.extensions, ["./extensions/index.ts"]);
+  assert.deepEqual(manifest.pi.extensions, ["./extensions/tmux-image/index.ts"]);
   for (const file of manifest.pi.extensions) assert.ok(existsSync(new URL(file, root)));
+  assert.equal(existsSync(new URL("extensions/index.ts", root)), false, "no generic index entrypoint may be discovered alongside tmux-image");
 });
 
 test("uses host-provided Pi modules only as peer dependencies", () => {
@@ -24,7 +25,7 @@ test("separates human and robot documentation", () => {
 });
 
 test("contains no machine-specific Nix-store executable paths or image context filter", () => {
-  const extension = readFileSync(new URL("extensions/index.ts", root), "utf8");
+  const extension = readFileSync(new URL("extensions/tmux-image/index.ts", root), "utf8");
   const pdf = readFileSync(new URL("src/pdf.mjs", root), "utf8");
   assert.ok(!extension.includes("/nix/store/"));
   assert.ok(!pdf.includes("/nix/store/"));

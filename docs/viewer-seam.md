@@ -3,7 +3,7 @@
 ## 0.3.0 implementation status
 
 `src/viewer.mjs` now implements the public policy proved below and
-`extensions/index.ts` wires it to immutable active-branch snapshot indexing,
+`extensions/tmux-image/index.ts` wires it to immutable active-branch snapshot indexing,
 ready-cell-only fullscreen `MouseRegion` clicks and `/tmux-image-view`. A
 newest-first keyboard picker shares the same owned overlay; one snapshot opens
 automatically. No viewer history/session fields, source rereads, new attachments,

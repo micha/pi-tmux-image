@@ -188,7 +188,7 @@ Repository: `/work/repos/micha/pi-tmux-image`.
 
 Current code:
 
-- `extensions/index.ts` registers `/tmux-image`, `/tmux-pdf`,
+- `extensions/tmux-image/index.ts` registers `/tmux-image`, `/tmux-pdf`,
   `/tmux-image-refresh`, `/tmux-image-stats`, `tmux_show_image`, `tmux_show_pdf`,
   and the `pi-tmux-image` message renderer.
 - `src/native.mjs` prepares native PNG uploads/virtual placements from immutable

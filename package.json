@@ -14,6 +14,6 @@
     "@earendil-works/pi-tui": "*"
   },
   "pi": {
-    "extensions": ["./extensions/index.ts"]
+    "extensions": ["./extensions/tmux-image/index.ts"]
   }
 }
