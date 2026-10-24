@@ -4,14 +4,14 @@ import { Type } from "@earendil-works/pi-ai";
 import { getCapabilities, getCellDimensions, MouseRegion, matchesKey, parseKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { convertToPng, createReadTool, defineTool, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { captureLayout, createNativeRenderer, NATIVE_SCHEMA, readLegacyDetails, readNativeDetails, sanitizeDisplayText } from "../../src/native.mjs";
-import { withPdfPages } from "../../src/pdf.mjs";
+import { createPdfDocumentService, PDF_SCHEMA, readPdfDetails, readPdfPreviewDetails } from "../../src/pdf-document.mjs";
 import { createPresentation } from "../../src/presentation.mjs";
 import { createViewerController, indexSnapshots } from "../../src/viewer.mjs";
 import { checkDisplayPolicy, resolvePiDisplayPolicy, TmuxCapabilityDetector } from "../../src/capabilities.mjs";
 
 const MESSAGE_TYPE = "pi-tmux-image";
 
-export default function (pi: ExtensionAPI) {
+export default function (pi: ExtensionAPI, { createDocumentService = createPdfDocumentService } = {}) {
   const presentation = createPresentation();
   const native = createNativeRenderer({ convertToPng });
   const legacyOccurrences = new WeakMap<object, string>();
@@ -21,9 +21,33 @@ export default function (pi: ExtensionAPI) {
   let generation = 0;
   let capabilityFailure: string | undefined;
   const capabilityWarnings = new Set<string>();
+  type PdfRuntime = { context: ExtensionContext; service: ReturnType<typeof createPdfDocumentService>; closed: boolean;
+    importing?: { controller: AbortController; done: Promise<void> };
+    submissions: Map<string, { sha256: string; retention: string }> };
+  let pdfRuntime: PdfRuntime | undefined;
+  const documentOwners = new WeakMap<object, PdfRuntime>();
   const viewer = createViewerController({ native, presentation,
     getContext: () => liveContext, getSnapshots: storedSnapshots, requireCapability,
     readyPolicy: (ctx: ExtensionContext) => checkDisplayPolicy(capabilityContext(ctx))?.message || capabilityFailure,
+    openDocument: async (descriptor: any, options: { signal: AbortSignal }) => {
+      const runtime = pdfRuntime;
+      if (!runtime || runtime.closed) throw new Error("PDF session runtime is unavailable");
+      const handle = await runtime.service.openDocument(descriptor, options);
+      documentOwners.set(handle, runtime);
+      return handle;
+    },
+    pageAttachment: (handle: object, page: number, options: { signal: AbortSignal }) => {
+      const owner = documentOwners.get(handle);
+      if (!owner || owner !== pdfRuntime || owner.closed) throw new Error("PDF session runtime was replaced");
+      return owner.service.pageAttachment(handle, page, options);
+    },
+    releaseDocument: async (handle: object) => {
+      const owner = documentOwners.get(handle);
+      if (owner) {
+        documentOwners.delete(handle);
+        await owner.service.releaseDocument(handle);
+      }
+    },
     getCells: getCellDimensions, matchesKey, parseKey, truncateToWidth, visibleWidth, sanitizeText: sanitizeDisplayText,
     style: (kind: string, text: string) => liveContext?.ui.theme.fg(kind as any, text) || text,
     notify: (message: string, level: "info" | "warning" | "error") => liveContext?.ui.notify(message, level),
@@ -40,9 +64,10 @@ export default function (pi: ExtensionAPI) {
       if (entry.type !== "custom_message" || entry.customType !== MESSAGE_TYPE || !Array.isArray(entry.content)) return;
       const attachment = entry.content.find((block: any) => block.type === "image");
       if (!attachment || typeof attachment.data !== "string" || typeof attachment.mimeType !== "string") return;
-      const details = readNativeDetails(entry.details) || readLegacyDetails(entry.details, legacyEntryOccurrence(entry.id));
+      const pdf = readPdfDetails(entry.details);
+      const details = readNativeDetails(entry.details) || readPdfPreviewDetails(entry.details) || readLegacyDetails(entry.details, legacyEntryOccurrence(entry.id));
       if (!details) return;
-      return { occurrence: details.occurrence, label: details.label, attachment };
+      return { occurrence: details.occurrence, label: details.label, attachment, ...(pdf ? { document: pdf.document } : {}) };
     });
   }
 
@@ -101,32 +126,69 @@ export default function (pi: ExtensionAPI) {
     capabilityFailure = undefined;
     capabilityWarnings.clear();
     liveContext = ctx;
+    const runtime: PdfRuntime = { context: ctx, closed: false, submissions: new Map(), service: createDocumentService({
+      acquireImage: (path: string, { signal }: { signal: AbortSignal }) => acquireImage(path, ctx, signal).then(({ attachment }) => attachment),
+    }) };
+    pdfRuntime = runtime;
     presentation.attach(ctx, Boolean(process.env.TMUX));
   });
   pi.on("session_shutdown", async () => {
-    // Revoke/hide/retire the private viewer while its captured TUI and policy
-    // context still exist; inline scrollback resources remain retained.
-    await viewer.close("session-shutdown");
-    generation++;
-    detector.invalidate();
-    capabilityFailure = undefined;
-    capabilityWarnings.clear();
-    liveContext = undefined;
-    presentation.disconnect();
+    const runtime = pdfRuntime;
+    if (runtime) { runtime.closed = true; runtime.importing?.controller.abort(); }
+    // Revoke/hide/retire while the old public context still exists, then drain
+    // source/page users before deleting runtime-only document snapshots.
+    const importDone = runtime?.importing?.done;
+    try { await Promise.all([viewer.close("session-shutdown"), importDone]); }
+    finally {
+      try {
+        await importDone;
+        await runtime?.service.dispose();
+      } finally {
+        if (pdfRuntime === runtime) pdfRuntime = undefined;
+        generation++;
+        detector.invalidate();
+        capabilityFailure = undefined;
+        capabilityWarnings.clear();
+        liveContext = undefined;
+        presentation.disconnect();
+      }
+    }
   });
-  pi.on("session_tree", async () => { await viewer.close("branch-change"); });
+  pi.on("session_tree", async () => { pdfRuntime?.importing?.controller.abort(); await viewer.close("branch-change"); });
+  pi.on("agent_settled", async () => { if (pdfRuntime) await reconcileSubmissions(pdfRuntime); });
+
+  async function reconcileSubmissions(runtime: PdfRuntime) {
+    if (runtime.closed || pdfRuntime !== runtime) return;
+    // ALL entries, not only active branch: abandoned branches still own originals.
+    // Capture the final-boundary candidates before any cleanup await. Live Map
+    // iteration would admit later submissions against an older history snapshot.
+    const submissions = [...runtime.submissions];
+    const entries = runtime.context.sessionManager.getEntries();
+    for (const [occurrence, submission] of submissions) {
+      if (runtime.closed || pdfRuntime !== runtime) return;
+      if (runtime.submissions.get(occurrence) !== submission) continue;
+      const present = entries.some((entry: any) => entry.type === "custom_message" && entry.customType === MESSAGE_TYPE &&
+        entry.details?.schema === PDF_SCHEMA && entry.details?.occurrence === occurrence &&
+        entry.details?.document?.sha256 === submission.sha256);
+      if (!present && submission.retention === "temporary") await runtime.service.discardTemporary(occurrence, submission.sha256);
+      if (!runtime.closed && pdfRuntime === runtime && runtime.submissions.get(occurrence) === submission) {
+        runtime.submissions.delete(occurrence);
+      }
+    }
+  }
 
   // Normal Pi image content, with no context filter. Pi's images.blockImages
   // controls model access independently of this local terminal renderer.
   pi.registerMessageRenderer(MESSAGE_TYPE, (message, _options, theme) => {
-    let details = readNativeDetails(message.details);
+    const pdf = readPdfDetails(message.details);
+    let details = readNativeDetails(message.details) || readPdfPreviewDetails(message.details);
     const attachment = Array.isArray(message.content) ? message.content.find((block) => block.type === "image") : undefined;
     if (!details && message.details && typeof message.details === "object" && !("schema" in message.details)) {
       details = readLegacyDetails(message.details, legacyMessageOccurrence(message));
     }
     if (!details || !attachment) {
       const reason = message.details && typeof message.details === "object" && "schema" in message.details &&
-        message.details.schema !== NATIVE_SCHEMA ? "unsupported display schema" : "missing or invalid image snapshot/display";
+        message.details.schema !== NATIVE_SCHEMA && message.details.schema !== PDF_SCHEMA ? "unsupported display schema" : "missing or invalid image snapshot/display";
       return { render: (width: number) => [truncateToWidth(`[Image: ${reason}]`, width)], invalidate() {} };
     }
     const image = presentation.component({
@@ -161,7 +223,9 @@ export default function (pi: ExtensionAPI) {
         if (rows.length && rows.every((row: string) => row.includes("\u{10eeee}"))) {
           hit = { columns: Math.min(width, Math.max(...rows.map(visibleWidth))), rows: rows.length };
         }
-        return [truncateToWidth(theme.fg("muted", details.label), width), ...rows];
+        const pageLabel = pdf ? ` — Page 1 of ${pdf.document.pageCount}` : "";
+        const label = pageLabel ? truncateToWidth(details.label, Math.max(0, width - visibleWidth(pageLabel))) + pageLabel : details.label;
+        return [truncateToWidth(theme.fg("muted", label), width), ...rows];
       },
       invalidate() { hit = undefined; },
     };
@@ -169,7 +233,7 @@ export default function (pi: ExtensionAPI) {
       if (event.type !== "click" || event.button !== "left" || !hit || event.x < 0 || event.x >= hit.columns ||
           event.y < 1 || event.y >= 1 + hit.rows) return;
       // Handle only host-arbitrated click, never press/drag/wheel or label/padding.
-      void viewer.open(details.occurrence).catch((error: unknown) => { if (liveContext) notifyFailure(liveContext, error); });
+      void openViewer(details.occurrence).catch((error: unknown) => { if (liveContext) notifyFailure(liveContext, error); });
       return { handled: true, render: false };
     });
   });
@@ -179,44 +243,119 @@ export default function (pi: ExtensionAPI) {
     return resolve(ctx.cwd, args.trim());
   }
 
+  async function acquireImage(path: string, ctx: ExtensionContext, signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    const imageResult = await createReadTool(ctx.cwd).execute("tmux-image", { path }, signal);
+    const attachment = imageResult.content.find((block) => block.type === "image");
+    if (!attachment) throw new Error("Pi could not read this file as an image attachment");
+    return { content: imageResult.content, attachment };
+  }
+
+  async function describeImage(attachment: any, signal?: AbortSignal) {
+    const dimensions = presentation.dimensions;
+    const columns = Math.min(60, Math.max(1, (dimensions?.columns || 80) - 4));
+    const rows = Math.min(24, Math.max(1, (dimensions?.rows || 40) - 8));
+    return native.describe(attachment, { columns, rows }, getCellDimensions(), signal);
+  }
+
   async function showImage(args: string, ctx: ExtensionContext, signal?: AbortSignal, label?: string) {
     await requireCapability(ctx, signal);
     signal?.throwIfAborted();
     const path = inputPath(args, ctx);
-    const dimensions = presentation.dimensions;
-    const columns = Math.min(60, Math.max(1, (dimensions?.columns || 80) - 4));
-    const rows = Math.min(24, Math.max(1, (dimensions?.rows || 40) - 8));
-    const imageResult = await createReadTool(ctx.cwd).execute("tmux-image", { path }, signal);
-    const attachment = imageResult.content.find((block) => block.type === "image");
-    if (!attachment) {
-      throw new Error("Pi could not read this file as an image attachment");
-    }
+    const { content, attachment } = await acquireImage(path, ctx, signal);
     // Validate conversion before adding the viewer message: tool failures remain
     // failed results, never successful attachments with only a rendering error.
-    const { geometry, pngBytes, uploadChunks } = await native.describe(attachment, { columns, rows }, getCellDimensions(), signal);
+    const { geometry, pngBytes, uploadChunks } = await describeImage(attachment, signal);
     await requireCapability(ctx, signal);
     ctx.ui.notify(`Native PNG: ${(pngBytes / 1024).toFixed(1)} KiB, ${uploadChunks} upload chunk(s) when first resident`, "info");
     pi.sendMessage({
       customType: MESSAGE_TYPE,
-      content: imageResult.content,
+      content,
       display: true,
       details: { schema: NATIVE_SCHEMA, occurrence: randomUUID(), geometry, label: sanitizeDisplayText(label || path) },
-    }, {
-      // Preserve provider tool-call/result ordering. During an agent turn Pi
-      // appends these attachments after the tool results without steering.
-      triggerTurn: false,
-    });
+    }, { triggerTurn: false });
     return { pngBytes, uploadChunks, columns: geometry.columns, rows: geometry.rows };
   }
 
-  async function showPdf(args: string, ctx: ExtensionContext, signal?: AbortSignal) {
-    await requireCapability(ctx, signal);
-    const path = inputPath(args, ctx);
-    const pages = await withPdfPages(path, async (imagePath, page) => ({
-      page,
-      ...await showImage(imagePath, ctx, signal, `${path} — page ${page}`),
-    }), { signal });
-    return { path, pages };
+  function importAdmission(runtime: PdfRuntime, signal: AbortSignal) {
+    signal.throwIfAborted();
+    if (pdfRuntime !== runtime || runtime.closed) throw new Error("PDF session runtime was replaced");
+    if (viewer.isOpen || presentation.connection?.tui.hasOverlay()) {
+      throw new Error("Close the image viewer or current dialog/search before importing a PDF");
+    }
+  }
+
+  async function openViewer(occurrence?: string) {
+    if (pdfRuntime?.importing) throw new Error("A PDF import is in progress; finish or cancel it before opening the viewer");
+    return viewer.open(occurrence);
+  }
+
+  async function showPdf(args: string, ctx: ExtensionContext, toolSignal?: AbortSignal) {
+    const runtime = pdfRuntime;
+    if (!runtime || runtime.closed) throw new Error("PDF session runtime is unavailable");
+    if (runtime.importing) throw new Error("A PDF import is already in progress");
+    const controller = new AbortController();
+    const signal = toolSignal ? AbortSignal.any([controller.signal, toolSignal]) : controller.signal;
+    let finish!: () => void;
+    const reservation = { controller, done: new Promise<void>((resolve) => { finish = resolve; }) };
+    runtime.importing = reservation; // Reserve before the first capability/source/UI await.
+    let transaction: any;
+    let staged = false;
+    let occurrence: string | undefined;
+    try {
+      importAdmission(runtime, signal);
+      await requireCapability(ctx, signal); // Reject before stat/open/read or Poppler.
+      importAdmission(runtime, signal);
+      const path = inputPath(args, ctx);
+      occurrence = randomUUID();
+      transaction = await runtime.service.prepareImport(path, { occurrence, label: sanitizeDisplayText(path), signal,
+        chooseRetention: async ({ byteLength, base64Length }: { byteLength: number; base64Length: number }) => {
+          importAdmission(runtime, signal);
+          const choice = await ctx.ui.select(
+            `PDF: ${(byteLength / 1048576).toFixed(2)} MiB; base64 about ${(base64Length / 1048576).toFixed(2)} MiB plus preview/metadata.\n` +
+            "Keep embeds the full original in session copies/exports; synchronous save/load can be costly.\n" +
+            "Temporary keeps only the preview in history; full browsing lasts this runtime. Cancel imports nothing.",
+            ["Keep", "Temporary", "Cancel"], { signal });
+          importAdmission(runtime, signal);
+          if (choice === "Keep") return "keep";
+          if (choice === "Temporary") return "temporary";
+          return "cancel"; // Undefined, unavailable and invalid results NEVER imply Keep.
+        },
+      });
+      const { geometry } = await describeImage(transaction.previewAttachment, signal);
+      const details = transaction.details({ geometry });
+      await requireCapability(ctx, signal);
+      importAdmission(runtime, signal);
+      const submission = { sha256: transaction.document.sha256, retention: transaction.document.retention };
+      transaction.commit();
+      staged = true;
+      // Pi's void send is submission, not a display/disk ACK. During tools it
+      // queues until after results; accepted sends cannot be retracted on abort.
+      // No await between final guards, ownership staging, send and submission.
+      try {
+        pi.sendMessage({ customType: MESSAGE_TYPE, content: [
+          { type: "text", text: `${details.label} — Page 1 of ${transaction.document.pageCount}` },
+          transaction.previewAttachment,
+        ], display: true, details }, { triggerTurn: false });
+      } finally {
+        // A synchronous throw can follow irreversible append/queue acceptance.
+        runtime.submissions.set(occurrence, submission);
+      }
+      return { path, pageCount: transaction.document.pageCount, previewPage: 1,
+        byteLength: transaction.document.byteLength, retention: transaction.document.retention, submitted: true };
+    } finally {
+      try {
+        // Idle sends append synchronously even though their wrapper returns void.
+        // A synchronous throw may follow an append or queue acceptance. Preserve
+        // queued ownership until settlement; a tree occurrence proves ownership,
+        // never durable storage. Generic rollback preserves committed Temporary.
+        try { if (staged && ctx.isIdle()) await reconcileSubmissions(runtime); }
+        finally { await transaction?.rollback(); }
+      } finally {
+        if (runtime.importing === reservation) runtime.importing = undefined;
+        finish();
+      }
+    }
   }
 
   pi.registerCommand("tmux-image-stats", {
@@ -247,6 +386,7 @@ export default function (pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       try {
         requireInteractive(ctx);
+        pdfRuntime?.importing?.controller.abort();
         await viewer.close("refresh");
         generation++;
         detector.invalidate();
@@ -263,9 +403,9 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand("tmux-image-view", {
-    description: "Open an existing stored image/PDF-page snapshot; newest-first keyboard picker",
+    description: "Open an existing stored image/PDF document; newest-first keyboard picker",
     handler: async (_args, ctx) => {
-      try { requireInteractive(ctx); await viewer.open(); }
+      try { requireInteractive(ctx); await openViewer(); }
       catch (error) { notifyFailure(ctx, error); }
     },
   });
@@ -278,10 +418,12 @@ export default function (pi: ExtensionAPI) {
     },
   });
   pi.registerCommand("tmux-pdf", {
-    description: "Display the first two PDF pages through tmux",
+    description: "Submit one page-one PDF preview; retain the original or choose Temporary for large files",
     handler: async (args, ctx) => {
-      try { await showPdf(args, ctx); }
-      catch (error) { notifyFailure(ctx, error); }
+      try {
+        const result = await showPdf(args, ctx);
+        ctx.ui.notify(`PDF preview submitted: Page 1 of ${result.pageCount}; ${result.retention}; ${result.byteLength} original bytes`, "info");
+      } catch (error) { notifyFailure(ctx, error); }
     },
   });
 
@@ -302,14 +444,14 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool(defineTool({
     name: "tmux_show_pdf",
     label: "Display PDF",
-    description: "Render and display the first two pages of a PDF in Pi's tmux transcript using Unicode placeholders. Page-image attachments follow Pi's blockImages setting; local display does not require model vision. Requires interactive Pi inside tmux with passthrough and Unicode-placeholder support, and pdftoppm on PATH.",
+    description: "Submit one page-one PDF preview for local viewing and later pagination. Original PDF bytes are stored only in session details for Keep; above 32 MiB the user chooses Keep, Temporary, or Cancel. Temporary browsing lasts this session runtime. Submission is not a display/disk acknowledgement; Pi owns persistence and deferred errors. Preview attachments follow Pi's blockImages setting. Requires interactive Pi inside tmux with passthrough/Unicode-placeholder support, pdfinfo and pdftoppm on PATH.",
     parameters,
     executionMode: "sequential",
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     async execute(_id, params, signal, _onUpdate, ctx) {
       const details = await showPdf(params.path, ctx, signal);
       return {
-        content: [{ type: "text", text: `Displayed ${details.pages.length} page(s) of PDF: ${details.path}` }],
+        content: [{ type: "text", text: `Submitted PDF preview (Page 1 of ${details.pageCount}, ${details.retention}, ${details.byteLength} original bytes): ${sanitizeDisplayText(details.path)}` }],
         details,
       };
     },
