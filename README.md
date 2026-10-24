@@ -2,7 +2,7 @@
 
 Display images and the first two pages of PDFs in [Pi](https://pi.dev) inside tmux. Images stay anchored to the transcript as you scroll; an in-pane viewer adds zoom and pan.
 
-Uses native Kitty Unicode placeholders: pixels pass through tmux, while text cells keep them positioned in the pane. No Chafa dependency.
+Uses native Kitty Unicode placeholders: pixels pass through tmux, while text cells keep them positioned in the pane.
 
 ## Requirements
 
@@ -34,8 +34,6 @@ pi install .
 ```
 
 Run `/reload` in Pi. Local installs load directly from the checkout. The extension appears as **`tmux-image`**; its entrypoint is `extensions/tmux-image/index.ts`.
-
-If you used the original spike, remove `.pi/extensions/tmux-images-spike.ts` before loading this package to avoid duplicate commands/tools.
 
 ## Use
 
@@ -70,7 +68,7 @@ In Pi's **fullscreen mode**, click ready image cells (including a specific PDF p
 
 Mouse input requires a ready image: wheel zoom uses its display area, while dragging starts on occupied image cells. Regular mode is keyboard-only. Close existing Pi dialogs/search before opening. A new host dialog/search, refresh, reload or session/branch change closes the viewer. Viewing and controls add **no messages, attachments or model turns**.
 
-Updates present the latest desired viewport rather than queuing every input event. Slow terminal output can still lag; there is no terminal display acknowledgment. See [viewer pacing](docs/viewer-pacing.md) for the timing policy and performance evidence.
+Updates present the latest desired viewport rather than queuing every input event. Slow terminal output can still lag; there is no terminal display acknowledgment. See [viewer pacing](docs/viewer-pacing.md) for timing details.
 
 ## Images and model access
 
@@ -95,10 +93,10 @@ With blocking enabled, you see images while the model receives a text placeholde
 - PDFs are rasterized to PNG at up to 1200 pixels on the longest side. Zoom does not rerasterize them, and the original PDF is not sent to the model. Temporary raster files are cleaned up.
 - Inline images aspect-fit within 60×24 cells, with an eight-row reserve for Pi's UI. This is a bound, not an exact transcript-viewport measurement.
 - Image normalization is bounded to 16 MiB input, 64 MiB PNG output, 8192 pixels per dimension and 16,777,216 pixels total. These are not PDF file-size limits. See [normalization](docs/pixel-normalization.md).
-- Stored snapshots support replay without source files, including legacy messages. After a terminal reset, arbitrary previous-process scrollback cannot be reconstructed.
+- Stored snapshots support replay without source files. After a terminal reset, arbitrary previous-process scrollback cannot be reconstructed.
 - **No graphics-memory budget or eviction.** Terminal resources are deliberately retained across reload/shutdown to preserve scrollback, and may remain until terminal reset. `/tmux-image-stats` tracks successful local writes and residency estimates, not terminal acknowledgments or measured RAM/GPU usage. See [graphics measurements](docs/graphics-memory.md).
 
-Core image/PDF display, scrolling, tmux zoom/window switching and refresh/reload recovery were human-observed on **Ghostty 1.3.1 / tmux 3.6a / Pi 1.0.3**. The owner also generally accepted viewer controls and 0.4.2 performance. This is not a complete manual test matrix or measured latency guarantee; other terminals, formats and narrower resize/edge/reconnect cases remain human-unverified. Details: [native verification](docs/verification.md), [viewer verification](docs/viewer-verification.md), [mouse verification](docs/viewer-mouse.md) and [pacing acceptance](docs/viewer-pacing.md).
+Visually tested with **Ghostty 1.3.1 / tmux 3.6a / Pi 1.0.3**. Other terminals, formats and narrower resize/edge/reconnect cases are not fully visually verified; this is not a measured latency guarantee. See [verification](docs/verification.md) and [viewer verification](docs/viewer-verification.md) for coverage.
 
 ## Remove
 
@@ -114,4 +112,4 @@ pi remove /absolute/path/to/pi-tmux-image
 
 Run `npm test` with Node.js; no host Pi modules need installing. See [verification](docs/verification.md) for optional offline installed-host tests and [AGENTS.md](AGENTS.md) for contribution contracts and task-specific docs.
 
-Coordinate live reloads and visual checks after renderer changes: automated stream/component tests cannot prove terminal pixels. The protocol follows the public Kitty specification; no OMP implementation was copied, and no project license has been selected.
+Coordinate live reloads and visual checks after renderer changes: automated stream/component tests cannot prove terminal pixels.
