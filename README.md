@@ -179,14 +179,17 @@ The owner subsequently reported slow/janky zoom and pan. **0.4.1** removes
 avoidable pan preparation and placeholder width scans, retains valid zoom frames,
 and keeps one latest busy-phase wheel event. Upload capability checks are
 unchanged. See `docs/viewer-performance.md` for measurements and verification.
-The owner reports improvement but remaining lag/catch-up; performance is not fully
-accepted. **0.4.2** adds owner-approved latest-state presentation pacing with
-150 ms idle headroom and no wheel expiry. `docs/viewer-pacing.md` records
-implementation and verification; `docs/viewer-pacing-profile.md` contains the
-repeatable benchmark and conditional slow-output evidence. Active reload and
-human responsiveness acceptance remain coordinated follow-up. Already emitted
-terminal bytes cannot be dropped or retracted, and slow output can still build a
-backlog; the package has no public drain/display acknowledgment.
+The owner reported improvement but remaining lag/catch-up with 0.4.1; that
+version's performance was not fully accepted. **0.4.2** adds owner-approved
+latest-state presentation pacing with 150 ms idle headroom and no wheel expiry.
+The owner subsequently confirmed: **“it's much, much better! i'm satisfied with
+the performance!”** This is general human performance acceptance, not a measured
+latency/FPS result or case-by-case manual matrix pass. `docs/viewer-pacing.md`
+records implementation, verification and the scope of that confirmation;
+`docs/viewer-pacing-profile.md` contains the repeatable benchmark and conditional
+slow-output evidence. Already emitted terminal bytes cannot be dropped or
+retracted, and slow output can still build a backlog; the package has no public
+drain/display acknowledgment.
 
 ## Images and model access
 

@@ -8,6 +8,12 @@ Neither pass is the full Phase A/D matrix or owner-path attribution. The useful
 result is reproducible CPU/byte evidence and a catch-up-like local/simulated
 reproduction with a measured, conditional comparison.
 
+After delivery, the owner generally accepted 0.4.2's performance: “it's much,
+much better! i'm satisfied with the performance!” See the separate scoped human
+acceptance record in [viewer-pacing.md](viewer-pacing.md). This does not turn the
+capture/FIFO figures below into owner-path latency measurements or a full manual
+matrix pass; the profiling-period evidence and limitations remain unchanged.
+
 Standalone harness:
 
 - `scripts/viewer-pacing-profile.mjs`

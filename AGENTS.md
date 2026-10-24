@@ -49,9 +49,14 @@ render passive. First own component receipt unlocks deferred cooldown, not a
 screen ACK. Lost native proof cancels the dead receipt generation; canonical
 final targets survive benign rejection and observed layout changes. See
 `docs/viewer-pacing-design.md`, `docs/viewer-pacing-profile.md` and
-`docs/viewer-pacing.md` before hot-path changes. No active reload or human latency
-acceptance is inferred from implementation, stream tests or synthetic FIFO drain.
-No new settings, placement slots, budget/eviction or force path.
+`docs/viewer-pacing.md` before hot-path changes. The owner subsequently generally
+accepted 0.4.2's performance after the reload/live-check handoff: “it's much, much
+better! i'm satisfied with the performance!” This is owner-reported satisfaction,
+not a measured latency/FPS result or case-by-case edge/resize/trackpad pass. No
+reload steps, image/device/pane details or new setup were separately reported;
+see the scoped acceptance record in `docs/viewer-pacing.md`. No active reload or
+human acceptance is inferred from implementation, stream tests or synthetic FIFO
+drain. No new settings, placement slots, budget/eviction or force path.
 
 ## Worker delegation
 

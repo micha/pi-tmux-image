@@ -9,14 +9,14 @@ own component receipt**, with **wheel expiry disabled**, as the initial producti
 candidate. The helper/design checkpoint is `253ebe9`; production implementation
 is **`ab1301d` / 0.4.2**. Baseline production is `1f00268` / 0.4.1.
 
-This is an implementation and automated-verification record, not human latency
-acceptance or authorization to reload the active package. The earlier functional
-viewer/mouse acceptance and partial 0.4.1 improvement remain separate. No owner
-output trace, real terminal graphics or settings/tmux changes were used. Test
-harnesses made no real model/provider requests. Coordinator semantic/stream
-verification is recorded below;
-matched performance evidence and its remaining limits are maintained in the
-separate profile report.
+Implementation and automated verification are recorded separately from the
+owner's subsequent general performance acceptance below. The earlier functional
+viewer/mouse acceptance and partial 0.4.1 improvement remain separate. During
+implementation/testing, no owner output trace, real terminal graphics or
+settings/tmux changes were used; test harnesses made no real model/provider
+requests. Coordinator semantic/stream verification is recorded below; matched
+performance evidence and its remaining limits are maintained in the separate
+profile report. No agent-initiated active reload was performed.
 
 ## Implementation
 
@@ -192,12 +192,29 @@ FIFO feasibility is conditional on declared workload and capacity; impossible
 capacities must remain explicit overload failures. One-slot pixel atomicity is
 still unproven. Lower local production/encoding is not guaranteed human smoothness.
 
-After isolated verification, coordinate reload and ask the owner to try the same
-problematic pane/image: sustained drag, wheel/trackpad start-stop and reversal,
-release/idle tail, immediate Escape, fit/reopen, resize and ordinary transcript
-selection/scroll when closed. Record whether bogging down/racing remains, device,
-pane size and approximate settling time. No such human result has been obtained
-for 0.4.2. Do not reinterpret a general “better” as a latency measurement or full
-manual matrix pass. Roll back only the pacing commits if needed, retain useful
-profile/design evidence, rerun tests and coordinate reload; do not reset unrelated
-work or reclaim arbitrary old terminal resources.
+## General owner performance acceptance
+
+After the 0.4.2 handoff (`ab1301d`, evidence checkpoint `22a8a0d`) and the request
+to reload and try the problematic image/pane with sustained dragging, wheel
+start/stop/reversal, release and immediate Escape, the owner confirmed:
+
+> it's much, much better! i'm satisfied with the performance!
+
+This records **general human acceptance of 0.4.2's performance**, superseding the
+pending responsiveness status for this release. It is stronger than the partial
+0.4.1 improvement report and separate from the earlier functional mouse acceptance.
+No further tuning is requested by this confirmation.
+
+The owner did not separately report reload steps/loaded version, image or PDF
+page, input device, pane dimensions, settings, individual controls/corner cases,
+measured latency/FPS or settling time. Do not infer a case-by-case manual matrix,
+a new verified setup, universal output bound or terminal ACK. The previously
+recorded Ghostty/tmux/Pi setup remains historical context, not a newly verified
+configuration. Narrower unreported resize, modal, trackpad, edge and other-terminal
+cases retain their existing automated-only or human-pending status. The benchmark
+numbers above remain local capture/model evidence, not measured owner latency.
+
+Future implementation changes still require coordinated reload and appropriately
+scoped verification. If a regression appears, roll back only the relevant pacing
+commits, retain useful profile/design evidence, rerun tests and coordinate reload;
+do not reset unrelated work or reclaim arbitrary old terminal resources.
