@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createViewerController, indexSnapshots, viewerArea, viewerTitle } from '../src/viewer.mjs';
 import { encodePlaceholderRows, PLACEHOLDER } from '../src/kitty.mjs';
+import { computeViewport } from '../src/viewport.mjs';
 
 const strip = (text) => text.replace(/\x1b\[[0-9:;]*m/g, '').replace(/\p{Mark}/gu, '');
 const width = (text) => [...strip(text)].length;
@@ -15,7 +16,7 @@ function harness(options = {}) {
   const overlays = [], preparations = [], events = [];
   let focused, connection, observer, policy, hold, cleanupHold, normalize = 0, reserve = 0, pending = 0, maxPending = 0, retirement = false;
   const retirementEpochs = [];
-  let frameFailure = false;
+  let frameFailure = false, cells = { widthPx: 8, heightPx: 16 };
   const tui = {
     terminal, requestRender() {}, renderNow() { if (frameFailure) throw new Error('mock host removal frame failed'); events.push('repaint'); }, hasOverlay: () => overlays.length > 0,
     showOverlay(component) {
@@ -62,7 +63,7 @@ function harness(options = {}) {
       signal?.throwIfAborted(); if (cleanupHold && events.includes('hide')) await new Promise((resolve) => { cleanupHold.finish = resolve; });
       if (policy) throw new Error(policy);
     },
-    readyPolicy: () => policy, getCells: () => ({ widthPx: 8, heightPx: 16 }),
+    readyPolicy: () => policy, getCells: () => cells,
     // Match the real Pi '+' syntax boundary: literal '+' is not a matcher key.
     matchesKey: (data, name) => name !== '+' && data === name, truncateToWidth: cut, visibleWidth: width,
     notify: (message) => events.push(message), sanitizeText: (text) => String(text).replace(/[\x00-\x1f\x7f-\x9f]/g, '') });
@@ -71,12 +72,14 @@ function harness(options = {}) {
     get normalize() { return normalize; }, get reserve() { return reserve; }, get maxPending() { return maxPending; },
     render() { return overlays[0]?.component.render(terminal.columns) || []; },
     key(data) { focused?.handleInput?.(data); },
+    mouse(event) { return focused?.handleMouse?.({ x: 20, y: 8, button: 'none', ...event }); },
     hold() { hold = {}; return hold; }, unhold() { const previous = hold; hold = undefined; previous?.finish?.(); },
     holdCleanup() { cleanupHold = {}; return cleanupHold; },
     unholdCleanup() { const previous = cleanupHold; cleanupHold = undefined; previous?.finish?.(); },
     refresh() { observer?.onDisconnect(connection); connection = { tui, epoch: Symbol('refreshed') }; },
     get epoch() { return connection?.epoch; }, retirementEpochs,
     setPolicy(reason) { policy = reason; }, setFrameFailure(value) { frameFailure = value; },
+    setCells(value) { cells = value; },
     get retirementPending() { return retirement; },
     disconnect() { observer?.onDisconnect(connection); connection = undefined; },
   };
@@ -130,6 +133,157 @@ test('single snapshot auto-opens fit, controls/pointer barrier, new open resets 
   assert.equal(h.controller.isOpen, false);
   const next = await openReady(h); assert.deepEqual(h.preparations.at(-1).canvas, first);
   await h.controller.close(); await next.done;
+});
+
+const mouseReady = async (h) => until(() => h.render().some((row) => row.includes(PLACEHOLDER)));
+const lastPrepare = (h) => h.preparations.at(-1);
+
+// Terminal-cell centers reconstructed independently from the prepared subset.
+function pointerSource(h, x, y) {
+  const job = lastPrepare(h), frame = viewerArea(h.terminal.columns, h.terminal.rows);
+  const scale = Math.min(job.canvas.columns * 8 / 640, job.canvas.rows * 16 / 480);
+  const origin = { x: Math.floor((frame.area.columns - job.window.columns) / 2),
+    y: Math.floor((frame.area.rows - job.window.rows) / 2) };
+  return { x: ((job.window.columnOffset + x - frame.left - 1 + 0.5 - origin.x) * 8 -
+    (job.canvas.columns * 8 - 640 * scale) / 2) / scale,
+  y: ((job.window.rowOffset + y - frame.top - 1 + 0.5 - origin.y) * 16 -
+    (job.canvas.rows * 16 - 480 * scale) / 2) / scale, scale };
+}
+
+test('wheel uses pointer anchor, sign not accelerated lines, and one latest synchronous burst', async () => {
+  const h = harness(); const { done } = await openReady(h);
+  for (let n = 0; n < 5; n++) { h.key('+'); await mouseReady(h); }
+  const x = 14, y = 7, before = pointerSource(h, x, y), old = lastPrepare(h).canvas.columns;
+  const count = h.preparations.length;
+  for (let n = 0; n < 10000; n++) h.mouse({ type: 'wheel', wheelDelta: n === 9999 ? -1000 : 1000, x, y });
+  await until(() => h.preparations.length > count); await mouseReady(h);
+  assert.equal(h.preparations.length, count + 1, 'a synchronous burst spawned more than one intent');
+  const after = pointerSource(h, x, y);
+  assert.ok(Math.abs(after.x - before.x) <= 8 / after.scale / 2 + 1e-9);
+  assert.ok(Math.abs(after.y - before.y) <= 16 / after.scale / 2 + 1e-9);
+  assert.ok(lastPrepare(h).canvas.columns > old);
+  assert.ok(lastPrepare(h).canvas.columns <= Math.ceil(old * 1.25), 'accelerated lines multiplied zoom steps');
+  h.mouse({ type: 'wheel', wheelDelta: 1000, x, y }); await turn(); await mouseReady(h);
+  assert.equal(lastPrepare(h).canvas.columns, old, 'positive wheel did not zoom out by one step');
+  assert.equal(h.maxPending, 1); assert.equal(h.normalize, 1); assert.equal(h.reserve, 1);
+  h.key('escape'); await done;
+});
+
+test('left grab follows pointer in both axes, clamps, reverses immediately and ends on release', async () => {
+  const h = harness(); const { done } = await openReady(h);
+  for (let n = 0; n < 5; n++) { h.key('+'); await mouseReady(h); }
+  const start = { ...lastPrepare(h).window }, canvas = { ...lastPrepare(h).canvas };
+  assert.equal(h.mouse({ type: 'press', button: 'left', x: 20, y: 8 }).capture, true);
+  h.mouse({ type: 'drag', button: 'left', x: 23, y: 10 }); await mouseReady(h);
+  assert.equal(lastPrepare(h).window.columnOffset, start.columnOffset - 3);
+  assert.equal(lastPrepare(h).window.rowOffset, start.rowOffset - 2);
+  assert.deepEqual(lastPrepare(h).canvas, canvas);
+  // Capture continues outside the usable area, without piling up edge motion.
+  h.mouse({ type: 'drag', button: 'left', x: 200, y: 100 }); await mouseReady(h);
+  assert.equal(lastPrepare(h).window.columnOffset, 0); assert.equal(lastPrepare(h).window.rowOffset, 0);
+  h.mouse({ type: 'drag', button: 'left', x: 199, y: 99 }); await mouseReady(h);
+  assert.equal(lastPrepare(h).window.columnOffset, 1); assert.equal(lastPrepare(h).window.rowOffset, 1);
+  h.mouse({ type: 'release', button: 'none', x: 198, y: 98 }); await mouseReady(h);
+  assert.equal(lastPrepare(h).window.columnOffset, 2); assert.equal(lastPrepare(h).window.rowOffset, 2);
+  const released = h.preparations.length;
+  h.mouse({ type: 'drag', button: 'left', x: 190, y: 90 }); await turn();
+  assert.equal(h.preparations.length, released);
+  h.key('escape'); await done;
+});
+
+test('mouse chrome/picker/invalid/loading/tiny input is consumed without gestures', async () => {
+  const h = harness(); const { done } = await openReady(h), count = h.preparations.length;
+  for (const event of [
+    { type: 'wheel', wheelDelta: -1, y: 0 }, { type: 'wheel', wheelDelta: -1, x: 0 },
+    { type: 'wheel', wheelDelta: NaN }, { type: 'wheel', wheelDelta: Infinity },
+    { type: 'wheel', wheelDelta: 0 }, { type: 'wheel', wheelDelta: -1, x: Infinity },
+    { type: 'press', button: 'right' }, { type: 'press', button: 'middle' },
+    { type: 'press', button: 'left', y: 0 }, { type: 'press', button: 'left', x: 2 },
+  ]) assert.equal(h.mouse(event).handled, true);
+  h.mouse({ type: 'drag', button: 'left', x: 10, y: 5 }); await turn();
+  assert.equal(h.preparations.length, count);
+  h.hold(); h.key('+'); await until(() => h.preparations.length > count);
+  const preparing = h.preparations.length;
+  h.render(); h.mouse({ type: 'wheel', wheelDelta: -1 }); h.mouse({ type: 'press', button: 'left' });
+  h.mouse({ type: 'drag', button: 'left', x: 25, y: 10 }); await turn();
+  assert.equal(h.preparations.length, preparing);
+  h.unhold(); await mouseReady(h);
+  h.terminal.columns = 12; h.terminal.rows = 6; h.render();
+  h.mouse({ type: 'wheel', wheelDelta: -1 }); h.mouse({ type: 'press', button: 'left' }); await turn();
+  assert.equal(h.preparations.length, preparing); h.key('escape'); await done;
+  const picker = harness({ snapshots }); const picked = picker.controller.open(); await until(() => picker.component);
+  picker.render(); picker.mouse({ type: 'wheel', wheelDelta: -1 });
+  picker.mouse({ type: 'press', button: 'left' }); await turn(); assert.equal(picker.reserve, 0);
+  picker.key('return'); await mouseReady(picker);
+  assert.equal(picker.reserve, 1);
+  picker.key('escape'); await picked;
+});
+
+test('resize, keyboard, wheel and close invalidate drag and queued mouse work', async () => {
+  const h = harness(); const { done } = await openReady(h);
+  for (let n = 0; n < 5; n++) { h.key('+'); await mouseReady(h); }
+  h.mouse({ type: 'press', button: 'left' }); h.key('l'); await mouseReady(h);
+  let count = h.preparations.length;
+  h.mouse({ type: 'drag', button: 'left', x: 25 }); await turn(); assert.equal(h.preparations.length, count);
+  h.mouse({ type: 'press', button: 'left' });
+  h.terminal.columns = 38; h.render(); await mouseReady(h); count = h.preparations.length;
+  h.mouse({ type: 'drag', button: 'left', x: 25 }); await turn(); assert.equal(h.preparations.length, count);
+  h.mouse({ type: 'press', button: 'left' });
+  h.setCells({ widthPx: 9, heightPx: 18 }); h.render(); await mouseReady(h); count = h.preparations.length;
+  h.mouse({ type: 'drag', button: 'left', x: 25 }); await turn(); assert.equal(h.preparations.length, count);
+  h.setCells({ widthPx: 8, heightPx: 16 }); h.render(); await mouseReady(h);
+  h.mouse({ type: 'press', button: 'left' }); h.mouse({ type: 'wheel', wheelDelta: -1 });
+  await turn(); await mouseReady(h); count = h.preparations.length;
+  h.mouse({ type: 'drag', button: 'left', x: 25 }); await turn(); assert.equal(h.preparations.length, count);
+  const obsolete = h.component;
+  h.mouse({ type: 'wheel', wheelDelta: -1 }); h.key('escape'); await done;
+  assert.equal(h.preparations.length, count, 'close allowed queued wheel work');
+  await openReady(h); const freshCount = h.preparations.length;
+  obsolete.handleMouse({ type: 'drag', button: 'left', x: 25, y: 8 }); await turn();
+  assert.equal(h.preparations.length, freshCount);
+  assert.deepEqual(lastPrepare(h).canvas, { ...computeViewport({ image: { width: 640, height: 480 },
+    area: viewerArea(38, 16).area, cells: { widthPx: 8, heightPx: 16 } }).canvas, cellWidthPx: 8, cellHeightPx: 16 });
+  await h.controller.close();
+});
+
+test('mouse admission requires a rendered frame, not merely a committed surface', async () => {
+  const h = harness(); const { done } = await openReady(h);
+  const count = h.preparations.length; h.key('+');
+  await until(() => h.events.filter((event) => event === 'uploaded').length === 2);
+  const writes = h.terminal.writes.length;
+  assert.notEqual(h.mouse({ type: 'press', button: 'left' }).capture, true);
+  h.mouse({ type: 'wheel', wheelDelta: -1 }); await turn();
+  assert.equal(h.preparations.length, count + 1); assert.equal(h.terminal.writes.length, writes);
+  h.render(); assert.equal(h.mouse({ type: 'press', button: 'left' }).capture, true);
+  await h.controller.close(); await done;
+});
+
+test('queued wheel is cancelled by live cells, focus loss and disconnect before its microtask', async () => {
+  for (const cancel of [
+    (h) => h.setCells({ widthPx: 10, heightPx: 20 }),
+    (h) => h.tui.showOverlay({ focused: false }),
+    (h) => h.refresh(),
+  ]) {
+    const h = harness(); const { done } = await openReady(h), count = h.preparations.length;
+    h.mouse({ type: 'wheel', wheelDelta: -1 }); cancel(h); await turn();
+    assert.equal(h.preparations.length, count);
+    await h.controller.close(); await done;
+  }
+});
+
+test('10000 captured moves during held prepare stay bounded and cannot publish after close', async () => {
+  const h = harness(); const { done } = await openReady(h);
+  for (let n = 0; n < 5; n++) { h.key('+'); await mouseReady(h); }
+  assert.equal(h.mouse({ type: 'press', button: 'left' }).capture, true);
+  const gate = h.hold(); h.mouse({ type: 'drag', button: 'left', x: 21, y: 9 });
+  await until(() => gate.finish);
+  const count = h.preparations.length, writes = h.terminal.writes.length;
+  for (let n = 0; n < 10000; n++) h.mouse({ type: 'drag', button: 'left', x: 20 + n % 3, y: 8 + n % 3 });
+  h.mouse({ type: 'release', button: 'none', x: 22, y: 10 });
+  assert.equal(h.maxPending, 1); assert.equal(h.preparations.length, count);
+  const closed = h.controller.close(); await turn(); h.unhold(); await closed; await done;
+  assert.equal(h.terminal.writes.length, writes + 1, 'cancelled pan published transport after close');
+  assert.equal(h.terminal.writes.at(-1), 'RETIRE');
 });
 
 test('newest-first picker uses same owned overlay and prepares only selected immutable page', async () => {

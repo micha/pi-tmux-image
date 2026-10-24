@@ -94,6 +94,45 @@ export function zoomViewport(input, direction) {
   return state(computeViewport({ ...input, zoomFactor, center: current.center }));
 }
 
+/** Zoom around continuous image-area cell coordinates (mouse cell centers).
+ * Reconstruct the anchor from the actual addressed window, not requested center.
+ * The new window can only move by whole cells; full-visible axes recenter and
+ * clipped axes clamp at their edges. Area letterbox points use the same affine
+ * mapping, with those bounds deciding how much anchoring is possible.
+ */
+export function zoomViewportAt(input, direction, point) {
+  if (direction !== 'in' && direction !== 'out') throw new RangeError("direction must be 'in' or 'out'");
+  const current = computeViewport(input);
+  if (!point || !Number.isFinite(point.column) || !Number.isFinite(point.row) ||
+      point.column < 0 || point.column >= input.area.columns ||
+      point.row < 0 || point.row >= input.area.rows) {
+    throw new RangeError('zoom point must be finite and inside the usable image area');
+  }
+  const zoomFactor = direction === 'in' ? current.zoomFactor * ZOOM_STEP : current.zoomFactor / ZOOM_STEP;
+  const next = computeViewport({ ...input, zoomFactor, center: current.center });
+  // Do not turn quantized-center reconstruction into artificial pan at a limit.
+  if (next.zoomFactor === current.zoomFactor) return state(current);
+
+  function anchoredCenter(position, pixels, cellPixels, offset, oldOrigin, oldPadding,
+    newOrigin, newPadding, visibleCells) {
+    const source = ((offset + position - oldOrigin) * cellPixels - oldPadding) /
+      current.effectiveScale / pixels;
+    const desiredOffset = (source * pixels * next.effectiveScale + newPadding) / cellPixels -
+      (position - newOrigin);
+    return clamp(((desiredOffset + visibleCells / 2) * cellPixels - newPadding) /
+      next.effectiveScale / pixels, 0, 1);
+  }
+  const center = {
+    x: anchoredCenter(point.column, input.image.width, input.cells.widthPx,
+      current.window.columnOffset, current.origin.column, current.padding.x,
+      next.origin.column, next.padding.x, next.window.columns),
+    y: anchoredCenter(point.row, input.image.height, input.cells.heightPx,
+      current.window.rowOffset, current.origin.row, current.padding.y,
+      next.origin.row, next.padding.y, next.window.rows),
+  };
+  return state(computeViewport({ ...input, zoomFactor: next.zoomFactor, center }));
+}
+
 /** Signed displayed-cell motion; positive x is right, positive y is down. */
 export function panViewport(input, { xCells = 0, yCells = 0 }) {
   for (const value of [xCells, yCells]) {

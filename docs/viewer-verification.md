@@ -2,6 +2,11 @@
 
 ## Scope and current status
 
+The **0.4.0 wheel zoom / grab-to-pan enhancement** has separate results and manual
+acceptance scope in [viewer-mouse.md](viewer-mouse.md). The original results and
+0.3.0 owner observations below are preserved historical evidence; they do not
+establish human acceptance of the new gestures.
+
 The owner-authorized implementation starts at feasibility gate `e92b1cd`.
 `test/host-viewer-integration.mjs` is a **standalone optional production acceptance
 harness**, separate from the portable `npm test` discovery and from the earlier

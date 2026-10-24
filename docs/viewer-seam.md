@@ -2,6 +2,12 @@
 
 ## 0.3.0 implementation status
 
+**0.4.0 addition:** fullscreen wheel zoom and captured left-drag pan now use this
+same public raw-overlay seam. [viewer-mouse.md](viewer-mouse.md) records the new
+rendered-ready admission, burst policy, layout/cell cancellation and separate
+verification. Earlier wheel-ignore examples below are historical gate evidence,
+not current gesture policy. Core ownership/focus/search boundaries are unchanged.
+
 `src/viewer.mjs` now implements the public policy proved below and
 `extensions/tmux-image/index.ts` wires it to immutable active-branch snapshot indexing,
 ready-cell-only fullscreen `MouseRegion` clicks and `/tmux-image-view`. A

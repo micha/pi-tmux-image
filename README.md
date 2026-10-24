@@ -102,11 +102,13 @@ Labels, padding and loading/error rows are not click targets. With the viewer
 closed, transcript drag selection, wheel scrolling and link precedence remain
 Pi-owned. Regular mode supports the keyboard path, not image mouse opening.
 
-| Viewer key | Action |
+| Viewer control | Action |
 | --- | --- |
 | `+` / `-` | Zoom by 1.25×, preserving the source center until edge clamping |
 | `0` | Fit and recenter |
 | `h` / `j` / `k` / `l` | Pan left/down/up/right by four displayed cells |
+| Wheel up/down (fullscreen) | Zoom in/out around the pointer, subject to cell rounding and edge clamping |
+| Left-button drag (fullscreen) | Grab the image and pan; pixels follow the pointer |
 | Escape | Close; preserve inline image size and editor draft |
 
 **100% Fit** means the initial fitted size, not one terminal pixel per source
@@ -118,8 +120,17 @@ rasters. Every new open starts fit/recentered. Resize retains the fit-relative
 zoom factor and source center, clamped to the new bounds. Very small panes (less than **20 columns × 7 rows**) show a
 keyboard-owned text fallback until enlarged.
 
-The overlay fills the current pane and ignores pointer/wheel input. Unknown
-keys do not reach the hidden editor. Close any existing Pi dialog/search before
+The overlay fills the current pane. In **fullscreen mode**, wheel zoom works
+inside the ready image area, and left-drag starts on occupied image cells.
+Dragging can continue outside the image area within the pane until release. Motion is
+terminal-cell-stepped, not pixel-smooth. Wheel zoom uses 1.25× steps,
+ignoring Pi's transcript-scroll acceleration; synchronous bursts coalesce to the
+latest direction/position. Wheel reports during viewport preparation are ignored.
+Picker, chrome, loading/error rows and tiny-pane fallback consume mouse input
+without changing the viewport. Resize/cell changes, keyboard or wheel input cancel
+an active grab. Regular mode remains keyboard-only; the terminal owns its mouse
+and scrollback. Unknown keys do not reach the hidden editor. Close any existing
+Pi dialog/search before
 opening; if a new host dialog or fullscreen search takes focus, the viewer closes
 and exposes that host UI. Reserved host global keys are not trapped. Refresh,
 reload, widget replacement and session/branch changes also close the viewer.
@@ -134,7 +145,7 @@ never deleting shared PNG pixels or inline history. If capability denial prevent
 retirement, one bounded pending obligation blocks unsafe reuse; a later supported
 open or `/tmux-image-refresh` retries it.
 
-Viewer controls and lifecycle pass the production public SDK matrix (**15/15**),
+The original 0.3.0 viewer controls and lifecycle passed the production public SDK matrix (**15/15**),
 host-enabled suite (**181/181**) and existing offline SDK suite (**12/12**).
 These are automated stream/component checks, not terminal pixel observations.
 **The owner generally accepted package 0.3.0 (`210d524`)** on Ghostty 1.3.1 /
@@ -143,6 +154,8 @@ tmux 3.6a / Pi 1.0.3 with `terminal.images: auto` and `images.blockImages: true`
 This was not a case-by-case report; narrower unreported checks remain
 automated-only or human-pending. See `docs/viewer-verification.md` for detailed
 remaining cases and `docs/viewer-seam.md` for the public UI evidence boundary.
+The **0.4.0 wheel/grab enhancement** has separate automated verification in
+`docs/viewer-mouse.md`; human gesture/trackpad/appearance checks remain pending.
 
 ## Images and model access
 

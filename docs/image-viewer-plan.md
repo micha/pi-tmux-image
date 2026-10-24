@@ -2,6 +2,14 @@
 
 ## Status, baseline and authority
 
+**0.4.0 mouse enhancement:** the owner approved wheel zoom plus click-drag pan
+following the feasibility discussion. Fullscreen pointer-anchored wheel zoom and
+primary-button grab-to-pan now supersede the prior ignore/undecided wheel policy.
+Keyboard controls, regular-mode fallback and all native/lifetime contracts remain.
+See [viewer-mouse.md](viewer-mouse.md) for exact behavior, verification and pending
+human gesture acceptance. Prior 0.3.0 acceptance below is unchanged historical
+evidence, not acceptance of the new gestures.
+
 **0.3.0 implementation / general owner acceptance:** final package is committed at
 `210d524`; pure viewport/protocol phase is committed at
 `dd13569`, shared native/presentation/metrics at `5898185`, following automated

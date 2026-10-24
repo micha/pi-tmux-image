@@ -1,4 +1,4 @@
-import { computeViewport, zoomViewport, panViewport, resetViewport, PAN_CELLS } from './viewport.mjs';
+import { computeViewport, zoomViewport, zoomViewportAt, panViewport, resetViewport, PAN_CELLS } from './viewport.mjs';
 
 /** The raw overlay fills the pane; only its inner image area addresses Kitty cells. */
 export function viewerArea(columns, rows) {
@@ -136,8 +136,81 @@ export function createViewerController({ native, presentation, getContext, getSn
     repaint(token);
   }
 
+  // Captured mouse targets retain last-frame bounds. Cancel gestures on live
+  // layout/cell/scale changes rather than interpreting motion in stale geometry.
+  function mouseLayout(token, geometry) {
+    return JSON.stringify([token.tui.terminal.columns, token.tui.terminal.rows,
+      geometry.frame, geometry.input.cells, computeViewport(geometry.input).canvas]);
+  }
+
+  function applyState(token, state) {
+    token.zoomFactor = state.zoomFactor; token.center = state.center;
+    intent(token); repaint(token);
+  }
+
+  function mouse(token, event) {
+    const consumed = { handled: true, render: false };
+    if (!current(token) || !policy(token)) return consumed;
+    const geometry = viewInput(token);
+    if (token.picker || !geometry) { token.drag = undefined; token.wheel = undefined; return consumed; }
+    const layout = mouseLayout(token, geometry);
+    if (token.drag?.layout !== layout) token.drag = undefined;
+    if (!Number.isSafeInteger(event.x) || !Number.isSafeInteger(event.y)) return consumed;
+    const point = { column: event.x - geometry.frame.left - 1 + 0.5,
+      row: event.y - geometry.frame.top - 1 + 0.5 };
+    const inside = point.column >= 0 && point.column < geometry.frame.area.columns &&
+      point.row >= 0 && point.row < geometry.frame.area.rows;
+    const ready = token.ready && token.drawn?.key === token.ready.key &&
+      token.desiredKey === token.ready.key && token.drawn.layout === layout;
+
+    if (event.type === 'wheel') {
+      token.drag = undefined;
+      if (!ready || !inside || !Number.isFinite(event.wheelDelta) || !event.wheelDelta) return consumed;
+      // Pi's delta is accelerated transcript lines, not physical wheel notches.
+      // Use only its sign and one latest event per synchronous input burst; there
+      // is at most one microtask and no timer or promise chain per wheel report.
+      token.wheel = { direction: event.wheelDelta < 0 ? 'in' : 'out', point,
+        layout, key: token.ready.key };
+      if (!token.wheelQueued) {
+        token.wheelQueued = true;
+        queueMicrotask(() => {
+          token.wheelQueued = false;
+          const job = token.wheel; token.wheel = undefined;
+          if (!job || !current(token) || !policy(token)) return;
+          const live = viewInput(token);
+          if (!live || mouseLayout(token, live) !== job.layout ||
+              token.ready?.key !== job.key || token.drawn?.key !== job.key) return;
+          applyState(token, zoomViewportAt(live.input, job.direction, job.point));
+        });
+      }
+      return consumed;
+    }
+    if (event.type === 'press') {
+      token.drag = undefined; token.wheel = undefined;
+      if (event.button !== 'left' || !ready || !inside) return consumed;
+      const view = token.ready.view;
+      // Grab occupied image cells, not the surrounding centered blank margins.
+      if (point.column < view.origin.column || point.column >= view.origin.column + view.window.columns ||
+          point.row < view.origin.row || point.row >= view.origin.row + view.window.rows) return consumed;
+      token.drag = { x: event.x, y: event.y, layout };
+      return { ...consumed, capture: true }; // Do not refocus: public focus loss closes the viewer.
+    }
+    if (event.type === 'drag' || event.type === 'release') {
+      const drag = token.drag;
+      if (!drag) return consumed;
+      // Some terminals report release with button 'none'. It still ends our grab.
+      if (event.type === 'drag' && event.button !== 'left') { token.drag = undefined; return consumed; }
+      const xCells = drag.x - event.x, yCells = drag.y - event.y;
+      drag.x = event.x; drag.y = event.y;
+      if (event.type === 'release') token.drag = undefined;
+      if (xCells || yCells) applyState(token, panViewport(geometry.input, { xCells, yCells }));
+    }
+    return consumed; // Entire pane remains a barrier to hidden transcript input.
+  }
+
   function input(token, data) {
     if (!current(token) || !policy(token)) return;
+    token.drag = undefined; token.wheel = undefined;
     if (key(data, 'escape')) { close('escape'); return; }
     if (token.picker) {
       if (key(data, 'up') || key(data, 'k')) token.selected = Math.max(0, token.selected - 1);
@@ -156,12 +229,12 @@ export function createViewerController({ native, presentation, getContext, getSn
     else if (key(data, 'k')) state = panViewport(geometry.input, { yCells: -PAN_CELLS });
     else if (key(data, 'l')) state = panViewport(geometry.input, { xCells: PAN_CELLS });
     if (!state) return; // Never forward unknown keys to the hidden editor.
-    token.zoomFactor = state.zoomFactor; token.center = state.center;
-    intent(token); repaint(token);
+    applyState(token, state);
   }
 
   function render(token, width) {
     if (!current(token) || !policy(token)) return [];
+    token.drawn = undefined;
     const height = Math.max(1, token.tui.terminal.rows);
     const lines = Array.from({ length: height }, () => ' '.repeat(width));
     const put = (row, text) => { if (row >= 0 && row < height) lines[row] = fitText(text, width); };
@@ -180,11 +253,15 @@ export function createViewerController({ native, presentation, getContext, getSn
       return lines;
     }
     const geometry = intent(token, width);
+    if (!geometry || token.drag?.layout !== mouseLayout(token, geometry)) token.drag = undefined;
     const label = sanitizeText(token.snapshot?.label || 'Stored image');
     const title = viewerTitle(label, geometry?.view, width, { truncateToWidth, visibleWidth });
     put(0, style('accent', title.title));
-    if (title.pageHint) put(1, style('muted', title.pageHint));
-    put(height - 1, style('muted', '+/- zoom • 0 fit • hjkl pan • Esc close'));
+    // PDF page identity retains its dedicated row; keyboard hints take width
+    // precedence, with mouse hints appended when that row is occupied.
+    put(height - 1, style('muted', '+/- zoom • 0 fit • hjkl pan • Esc close' +
+      (title.pageHint ? ' • wheel zoom/drag pan (fullscreen)' : '')));
+    if (height > 2) put(1, style('muted', title.pageHint || 'Fullscreen: wheel zoom • drag pan'));
     if (!geometry) {
       put(Math.min(2, height - 1), style('muted', token.payload ? 'Pane too small' : token.error ? `Viewer: ${token.error}` : 'Preparing stored image…'));
       if (token.payload && height > 4) put(3, style('muted', 'Need 20×7; Esc close'));
@@ -207,6 +284,7 @@ export function createViewerController({ native, presentation, getContext, getSn
       put(frame.top + 1 + row, prefix + border('│') + body + border('│'));
     }
     put(frame.top + frame.area.rows + 1, prefix + border('└' + '─'.repeat(frame.area.columns) + '┘'));
+    if (token.ready) token.drawn = { key: token.ready.key, layout: mouseLayout(token, geometry) };
     return lines;
   }
 
@@ -230,6 +308,7 @@ export function createViewerController({ native, presentation, getContext, getSn
     if (!token) return Promise.resolve();
     if (token.closing) return token.done;
     token.closing = true; token.ready = undefined; token.latest = undefined;
+    token.drag = undefined; token.wheel = undefined; token.drawn = undefined;
     token.controller.abort(); token.request?.abort();
     if (token.lease) native.releaseViewer(token.lease); // Revoke replay BEFORE deferred text removal.
     queueMicrotask(async () => {
@@ -274,7 +353,7 @@ export function createViewerController({ native, presentation, getContext, getSn
         set focused(value) { focused = value; if (value) hadFocus = true; else if (hadFocus && active === token && !token.closing) close('focus-lost'); },
         render: (width) => render(token, width), invalidate() {},
         handleInput: (data) => input(token, data),
-        handleMouse: () => ({ handled: true, render: false }),
+        handleMouse: (event) => mouse(token, event),
         dispose() { if (token.disposed) return; token.disposed = true; },
       };
       token.handle = token.tui.showOverlay(token.component, { row: 0, col: 0, width: '100%', maxHeight: '100%' });

@@ -10,6 +10,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { deflateSync } from "node:zlib";
+import { DIACRITICS } from "../src/kitty-diacritics.mjs";
 
 const run = promisify(execFile);
 const root = process.env.PI_TEST_HOST_ROOT && resolve(process.env.PI_TEST_HOST_ROOT);
@@ -117,6 +118,42 @@ const screen = (h) => h.tui.getScreenLines(); // Exported concrete TuiAltScreen 
 const placementColor = (id) => `58:2::${(id >>> 16) & 255}:${(id >>> 8) & 255}:${id & 255}`;
 const imageColor = (id) => `38;2;${(id >>> 16) & 255};${(id >>> 8) & 255};${id & 255}`;
 const privateCells = (lines, id) => lines.some((line) => line.includes(PH) && line.includes(placementColor(id)));
+// Decode the actual composed private cells, not production viewport/controller
+// internals. Kitty row/column marks expose the realized, cell-quantized mapping.
+function mouseView(h) {
+  const lines = screen(h), canvas = placements(graphics(h.terminal)).findLast((placement) =>
+    placement.imageId === h.viewerPair.imageId && placement.placementId === h.viewerPair.placementId);
+  assert.ok(canvas, "no prototype for the selected private surface");
+  const cells = [];
+  lines.forEach((line, y) => {
+    if (!line.includes(placementColor(h.viewerPair.placementId))) return;
+    const text = ui.stripTerminalSequences(line);
+    for (const match of text.matchAll(/\u{10eeee}(.)(.)/gu)) {
+      const row = DIACRITICS.indexOf(match[1]), column = DIACRITICS.indexOf(match[2]);
+      assert.ok(row >= 0 && column >= 0, "compositor lost independently addressed cell marks");
+      cells.push({ x: ui.visibleWidth(text.slice(0, match.index)), y, column, row });
+    }
+  });
+  assert.ok(cells.length, "no ready private cells in mouse acceptance frame");
+  const percent = Number(/(\d+)% Fit/.exec(plain(lines).join("\n"))?.[1]);
+  assert.ok(Number.isFinite(percent), "missing mouse zoom title");
+  return { canvas, first: cells[0], last: cells.at(-1), percent };
+}
+async function mouseReady(h) {
+  await Promise.resolve(); h.tui.renderNow();
+  await until(() => { h.tui.renderNow(); return privateCells(screen(h), h.viewerPair.placementId); }, "mouse viewport ready");
+  return mouseView(h);
+}
+function sourceAt(view, point, cells = { widthPx: 8, heightPx: 16 }) {
+  // Fixture PNG dimensions and the Kitty full-image aspect-fit rule. Keep this
+  // oracle independent of computeViewport/zoomViewportAt.
+  const scale = Math.min(view.canvas.columns * cells.widthPx / 320, view.canvas.rows * cells.heightPx / 160);
+  const padX = (view.canvas.columns * cells.widthPx - 320 * scale) / 2;
+  const padY = (view.canvas.rows * cells.heightPx - 160 * scale) / 2;
+  return { x: ((view.first.column + point.x - view.first.x + 0.5) * cells.widthPx - padX) / scale / 320,
+    y: ((view.first.row + point.y - view.first.y + 0.5) * cells.heightPx - padY) / scale / 160,
+    cellX: cells.widthPx / scale / 320, cellY: cells.heightPx / scale / 160 };
+}
 async function invariant(h) {
   return { messages: JSON.stringify(h.runtime.session.messages), entries: JSON.stringify(h.ctx.sessionManager.getEntries()),
     conversion: structuredClone(await h.runtime.session.agent.convertToLlm(h.runtime.session.messages)), requests: h.offline.requests.length };
@@ -325,6 +362,15 @@ test("production viewer: isolated installed public SDK + InteractiveMode accepta
           assert.ok(inline.some((p) => p.imageId === privatePair.imageId && p.placementId !== privatePair.placementId));
           const body = mode === "fullscreen" ? screen(h).join("") : h.terminal.output;
           assert.match(ui.stripTerminalSequences(body), /100%/);
+          if (mode === "regular") {
+            const graphicsBeforeMouse = graphics(h.terminal).length;
+            for (const report of [64, 65, 72, 73]) h.terminal.mouse(report, 30, 12);
+            h.terminal.mouse(0, 30, 12); h.terminal.mouse(32, 35, 15); h.terminal.mouse(0, 35, 15, true);
+            await sleep(30); h.tui.renderNow();
+            assert.equal(graphics(h.terminal).length, graphicsBeforeMouse, "regular mouse reports changed the keyboard-only viewport");
+            assert.equal(h.ctx.ui.getEditorText(), "untouched draft");
+            await unchanged(h, before);
+          }
           const startWrites = graphics(h.terminal).length;
           await key(h, "+");
           await until(() => { h.tui.renderNow(); return graphics(h.terminal).length > startWrites; }, "zoom prototype replacement");
@@ -370,6 +416,173 @@ test("production viewer: isolated installed public SDK + InteractiveMode accepta
         } finally { await h.cleanup(); }
       });
     }
+    await t.test("fullscreen production mouse: anchored one-step wheel, bounded bursts, captured pan and gesture cancellation", async () => {
+      await fixture(scratch); const h = await interactive(scratch, false);
+      try {
+        const seeded = await seed(h, scratch), before = await invariant(h);
+        h.ctx.ui.setEditorText("mouse draft"); h.tui.renderNow(); const top = h.tui.viewportTop;
+        const protectedState = async () => {
+          assert.equal(h.ctx.ui.getEditorText(), "mouse draft", "mouse gesture reached hidden editor");
+          assert.equal(h.tui.viewportTop, top, "mouse gesture scrolled hidden transcript");
+          await unchanged(h, before);
+          assert.equal(await readFile(join(scratch, "pdf-queries.log"), "utf8"), seeded.pdfLog, "mouse viewer reread/rasterized a deleted source");
+        };
+        h.viewerStart = h.terminal.writes.length;
+        h.command = h.runtime.session.prompt("/tmux-image-view");
+        await until(() => { h.tui.renderNow(); return h.tui.hasOverlay(); }, "mouse picker");
+        const pickerGraphics = graphics(h.terminal).length;
+        for (const button of [64, 65, 72, 73]) h.terminal.mouse(button, 30, 12);
+        h.terminal.mouse(0, 30, 12); h.terminal.mouse(32, 34, 15); h.terminal.mouse(0, 34, 15, true);
+        await sleep(20); h.tui.renderNow();
+        assert.equal(graphics(h.terminal).length, pickerGraphics, "picker mouse prepared an image");
+        assert.match(plain(screen(h)).join("\n"), /› 1\./, "picker mouse changed the selected snapshot");
+        h.terminal.input("\x1b[B"); h.terminal.input("\x1b[B"); h.terminal.input("\r");
+        // The production selection is asynchronous. Input before its first
+        // ready rendered frame must be consumed rather than retained for later.
+        h.terminal.mouse(64, 30, 16); h.terminal.mouse(0, 30, 16);
+        h.terminal.mouse(32, 35, 19); h.terminal.mouse(0, 35, 19, true);
+        await viewerReady(h); assert.equal(h.viewerPair.imageId, seeded.imageIds[0]);
+        const initial = mouseView(h), privateId = h.viewerPair.placementId;
+        assert.equal(initial.percent, 100, "not-ready input was applied after first frame");
+        const noOp = async (reports, label) => {
+          const oldView = mouseView(h), count = graphics(h.terminal).length;
+          reports(); await Promise.resolve(); h.tui.renderNow(); await sleep(20);
+          assert.deepEqual(mouseView(h), oldView, label);
+          assert.equal(graphics(h.terminal).length, count, `${label}: unexpected transport`);
+        };
+        assert.ok(initial.first.y > 4, "fixture needs a centered blank margin");
+        await noOp(() => {
+          h.terminal.mouse(0, 30, 4); h.terminal.mouse(32, 35, 15); h.terminal.mouse(0, 35, 15, true);
+        }, "centered blank margin started a grab");
+        h.terminal.mouse(64, 30, 4);
+        assert.equal((await mouseReady(h)).percent, 125, "wheel in inner blank margin did not zoom");
+        await key(h, "0");
+        const point = { x: 30, y: 16 };
+        h.terminal.mouse(64, point.x, point.y);
+        let view = await mouseReady(h);
+        assert.equal(view.percent, 125, "negative host wheelDelta must zoom in exactly one 1.25x step");
+        assert.ok(view.canvas.columns > initial.canvas.columns);
+        h.terminal.mouse(65, point.x, point.y); view = await mouseReady(h);
+        assert.equal(view.percent, 100, "positive host wheelDelta must zoom out exactly one step");
+        assert.deepEqual(view.canvas, initial.canvas);
+        await key(h, "0");
+        // Alt is a positive control for a different normalized host delta: Pi
+        // multiplies it beyond its ordinary time-based transcript acceleration.
+        h.terminal.mouse(72, point.x, point.y); view = await mouseReady(h);
+        assert.equal(view.percent, 125, "accelerated/Alt wheel magnitude became multiple zoom steps");
+        const accelerated = view.canvas;
+        await key(h, "0"); h.terminal.mouse(64, point.x, point.y); view = await mouseReady(h);
+        assert.deepEqual(view.canvas, accelerated, "same wheel sign depends on transcript acceleration magnitude");
+        await key(h, "0");
+        const burstStart = placements(graphics(h.terminal)).length;
+        const burstPoint = { x: 47, y: 18 }, expectedAnchor = sourceAt(mouseView(h), burstPoint);
+        for (let n = 0; n < 10000; n++) h.terminal.mouse(n % 2 ? 73 : 72, 25 + n % 20, 15);
+        h.terminal.mouse(64, burstPoint.x, burstPoint.y);
+        view = await mouseReady(h);
+        assert.equal(view.percent, 125, "synchronous wheel burst did not use only its latest direction");
+        assert.equal(placements(graphics(h.terminal)).length - burstStart, 1, "wheel burst queued unbounded prototype work");
+        let anchor = sourceAt(view, burstPoint);
+        // Horizontal fit fills the area, and this point's ideal new offset is
+        // interior (no clamp). The vertical axis remains fully visible here.
+        assert.ok(view.first.column > 0 && view.last.column < view.canvas.columns - 1, "burst anchor fixture unexpectedly clamped horizontally");
+        assert.ok(Math.abs(anchor.x - expectedAnchor.x) <= anchor.cellX / 2 + 1e-10, "burst ignored latest pointer anchor");
+        await key(h, "0");
+        for (let n = 0; n < 4; n++) await key(h, "+");
+        view = mouseView(h); assert.ok(view.canvas.columns > 76 && view.canvas.rows > 34);
+        const anchorPoint = { x: 44, y: 22 }, oldAnchor = sourceAt(view, anchorPoint);
+        h.terminal.mouse(64, anchorPoint.x, anchorPoint.y); const anchored = await mouseReady(h);
+        anchor = sourceAt(anchored, anchorPoint);
+        assert.equal(anchored.percent, 305, "separate event-loop turn must apply one further wheel step");
+        assert.ok(anchored.first.column > 0 && anchored.last.column < anchored.canvas.columns - 1 &&
+          anchored.first.row > 0 && anchored.last.row < anchored.canvas.rows - 1, "two-axis anchor fixture unexpectedly reached a clamp");
+        const toleranceX = anchor.cellX / 2 + 1e-10, toleranceY = anchor.cellY / 2 + 1e-10;
+        assert.ok(Math.abs(anchor.x - oldAnchor.x) <= toleranceX, "wheel source x anchor exceeded half a new displayed cell");
+        assert.ok(Math.abs(anchor.y - oldAnchor.y) <= toleranceY, "wheel source y anchor exceeded half a new displayed cell");
+        // Negative control: the old state is centered by reset + keyboard zoom.
+        // A center-preserving replacement at the same new canvas MUST fail both
+        // pointer assertions, rather than accidentally passing a loose tolerance.
+        const centerBased = sourceAt({ ...anchored, first: { ...anchored.first,
+          column: Math.round((anchored.canvas.columns - (anchored.last.x - anchored.first.x + 1)) / 2),
+          row: Math.round((anchored.canvas.rows - (anchored.last.y - anchored.first.y + 1)) / 2) } }, anchorPoint);
+        assert.ok(Math.abs(centerBased.x - oldAnchor.x) > toleranceX, "x anchor fixture cannot distinguish center-based zoom");
+        assert.ok(Math.abs(centerBased.y - oldAnchor.y) > toleranceY, "y anchor fixture cannot distinguish center-based zoom");
+        await noOp(() => {
+          h.terminal.mouse(64, 0, 0); h.terminal.mouse(65, 1, 2);
+          h.terminal.mouse(0, 2, 0); h.terminal.mouse(32, 8, 4); h.terminal.mouse(0, 8, 4, true);
+          for (const button of [1, 2]) {
+            h.terminal.mouse(button, 40, 20); h.terminal.mouse(32 + button, 45, 23); h.terminal.mouse(button, 45, 23, true);
+          }
+        }, "chrome/outside/other buttons changed viewport");
+        const panStart = graphics(h.terminal).length, grabbed = mouseView(h);
+        h.terminal.mouse(0, 40, 20); h.terminal.mouse(32, 43, 22);
+        view = await mouseReady(h);
+        assert.equal(view.first.column, grabbed.first.column - 3, "grab did not move image with horizontal pointer motion");
+        assert.equal(view.first.row, grabbed.first.row - 2, "grab did not move image with vertical pointer motion");
+        h.terminal.mouse(0, 43, 22, true); await mouseReady(h);
+        await noOp(() => h.terminal.mouse(32, 46, 25), "motion after release continued pan");
+        h.terminal.mouse(0, 40, 20); h.terminal.mouse(32, 0, 0);
+        view = await mouseReady(h);
+        assert.ok(view.first.column > grabbed.first.column && view.first.row > grabbed.first.row, "captured two-axis drag stopped outside inner image area");
+        assert.ok(view.last.column < view.canvas.columns && view.last.row < view.canvas.rows, "outside drag escaped canvas bounds");
+        for (let n = 0; n < 2; n++) {
+          h.terminal.mouse(0, 0, 0, true); h.terminal.mouse(0, 40, 20); h.terminal.mouse(32, 0, 0);
+          await mouseReady(h);
+        }
+        h.terminal.mouse(32, 0, 0); await mouseReady(h); // advance pointer at the clamped edge
+        const clamped = mouseView(h);
+        assert.equal(clamped.last.column, clamped.canvas.columns - 1, "drag did not reach horizontal canvas edge");
+        assert.equal(clamped.last.row, clamped.canvas.rows - 1, "drag did not reach vertical canvas edge");
+        h.terminal.mouse(32, 1, 1); view = await mouseReady(h);
+        assert.equal(view.first.column, clamped.first.column - 1, "edge reversal accumulated hidden horizontal movement");
+        assert.equal(view.first.row, clamped.first.row - 1, "edge reversal accumulated hidden vertical movement");
+        h.terminal.mouse(0, 3, 3, true); view = await mouseReady(h);
+        assert.equal(view.first.column, clamped.first.column - 3, "release dropped final horizontal displacement");
+        assert.equal(view.first.row, clamped.first.row - 3, "release dropped final vertical displacement");
+        await noOp(() => h.terminal.mouse(32, 20, 10), "outside release did not end capture");
+        for (let n = 0; n < 100; n++) {
+          h.terminal.mouse(0, 40, 20);
+          for (let m = 0; m < 100; m++) h.terminal.mouse(32, 40 + m % 2, 20 + m % 2);
+          h.terminal.mouse(0, 40, 20, true);
+        }
+        await mouseReady(h);
+        assert.equal(graphics(h.terminal).length, panStart, "pure captured pan/bursts emitted PNG or prototype transport");
+        assert.equal(uploads(h.terminal.writes.slice(h.viewerStart)), 0, "mouse zoom/pan retransmitted resident PNG");
+        assert.deepEqual(new Set(placements(h.terminal.writes.slice(h.viewerStart)).map((p) => p.placementId)), new Set([privateId]), "mouse history allocated additional private placements");
+        await protectedState();
+        // Keyboard zoom/pan and live geometry changes invalidate old capture.
+        h.terminal.mouse(0, 40, 20); await key(h, "h");
+        await noOp(() => { h.terminal.mouse(32, 45, 23); h.terminal.mouse(0, 45, 23, true); }, "keyboard control left a stale drag");
+        for (const kind of ["resize", "cells", "tiny"]) {
+          h.terminal.mouse(0, 40, 20);
+          if (kind === "cells") ui.setCellDimensions({ widthPx: 10, heightPx: 20 });
+          else { h.terminal.columns = kind === "tiny" ? 12 : 30; h.terminal.rows = kind === "tiny" ? 6 : 16; h.terminal.resize(); }
+          h.tui.renderNow(); await sleep(40); h.tui.renderNow();
+          if (kind === "tiny") {
+            assert.equal(privateCells(screen(h), privateId), false, "tiny fallback retained graphical cells");
+            const count = graphics(h.terminal).length;
+            h.terminal.mouse(64, 5, 3); h.terminal.mouse(32, 8, 4); h.terminal.mouse(0, 8, 4, true);
+            await Promise.resolve(); h.tui.renderNow();
+            assert.equal(graphics(h.terminal).length, count, "tiny fallback mouse changed graphical view");
+          }
+          h.terminal.columns = 80; h.terminal.rows = 40; ui.setCellDimensions({ widthPx: 8, heightPx: 16 }); h.terminal.resize();
+          await mouseReady(h);
+          await noOp(() => { h.terminal.mouse(32, 45, 23); h.terminal.mouse(0, 45, 23, true); }, `${kind} failed to cancel capture`);
+        }
+        await protectedState();
+        h.terminal.mouse(0, 40, 20); await close(h); await open(h, 2);
+        assert.equal(mouseView(h).percent, 100, "close mid-drag did not reopen fit/fresh");
+        await noOp(() => { h.terminal.mouse(32, 45, 23); h.terminal.mouse(0, 45, 23, true); }, "close/reopen inherited old capture");
+        h.terminal.mouse(0, 40, 20); h.terminal.input("\x1b[102;6u");
+        await h.command; h.tui.renderNow();
+        assert.match(plain(screen(h)).join("\n"), /Find in transcript/);
+        assert.equal(privateCells(screen(h), privateId), false, "modal focus loss retained dragging viewer");
+        h.terminal.input("\x1b"); h.tui.renderNow(); await open(h, 2);
+        assert.equal(mouseView(h).percent, 100, "focus-loss reopen retained mouse state");
+        await noOp(() => { h.terminal.mouse(32, 45, 23); h.terminal.mouse(0, 45, 23, true); }, "modal/reopen inherited capture");
+        await close(h); await protectedState();
+        for (const component of seeded.components) assert.ok(component.render(80).some((line) => line.includes(PH)), "mouse retirement broke inline history");
+      } finally { ui.setCellDimensions({ widthPx: 8, heightPx: 16 }); await h.cleanup(); }
+    });
     await t.test("fullscreen actual mouse cells open the exact PDF page; label/padding/drag/wheel do not open", async () => {
       await fixture(scratch); const h = await interactive(scratch, true);
       try {

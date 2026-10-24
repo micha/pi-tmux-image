@@ -10,6 +10,15 @@ Viewer Step 1 was owner-authorized and automated-gate-passed at `e92b1cd` (131/1
 
 The viewer UI/controller is now implemented in `src/viewer.mjs` and wired by `extensions/tmux-image/index.ts`: ready-cell-only fullscreen clicks and `/tmux-image-view` use active-branch immutable snapshots, newest-first same-overlay picker, public raw overlay admission/focus-loss policy, one pending/latest prepare runner and shared native surface APIs. Controls use 1.25× fit-relative zoom (25% minimum, dynamic 297-canvas maximum), four-cell pan, fit/reset on open, and resize-center preservation; panes below 20×7 remain keyboard-owned text fallback. `+` uses literal/public `parseKey` recognition (Pi 1.0.3 `matchesKey('+','+')` is false). Zoom/limit chrome is width-reserved and PDF page identity has a separate hint. Core viewer general human acceptance is recorded; narrower unreported pixel/manual cases remain automated-only or pending. Do not activate/reload the owner's package without coordination.
 
+The 0.4.0 mouse enhancement is owner-authorized: fullscreen pointer-anchored wheel
+zoom and primary-button grab-to-pan are implemented in `src/viewer.mjs`, with pure
+`zoomViewportAt` in `src/viewport.mjs`. Read `docs/viewer-mouse.md` for sign-only
+burst coalescing, rendered-ready admission, public capture, layout/cell-change
+cancellation and verification. Keyboard zoom remains center-based; regular mode
+remains keyboard-only. New gesture pixels/responsiveness are human-pending;
+prior 0.3.0 general acceptance does not cover them. No native ownership,
+configuration, model-policy or budgeting changes.
+
 ## Worker delegation
 
 Use Pi model `us.openai.gpt-6.1-sol`: planning and review workers use `--thinking xhigh`; implementation workers use `--thinking medium`. This owner-updated role policy supersedes the earlier all-workers-medium baseline, not historical tested-worker records. Coordinate through workmux using stable named tabs in the current workspace, never window indexes; say **thank you** when a worker is safe to close.
