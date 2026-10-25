@@ -19,8 +19,11 @@ changed native behavior**: page 2/3 first visits uploaded PNGs, while page 3→2
 page 2→1 and close/reopen still emitted only placements. A fresh process emitted
 the required exact cached PNG retransmission on those revisits and reopenings.
 This establishes an activation failure in the installed Pi 1.0.3 reload workflow,
-not physical acceptance of the repair or proof of the owner's exact loaded module.
-The owner's symptom remains unresolved until checked with a fresh process.
+not proof of the owner's exact loaded module. After being asked to observe the
+fresh isolated Pi and navigate the paper 1→2→3→2→1, the owner confirmed
+**“pixels confirmed!”**. This records general human visual confirmation of the
+activated recovery on Ghostty 1.3.1 / tmux 3.6a / Pi 1.0.3, not a separate report
+for each page, close/reopen, identical-payload case or the full PDF matrix.
 The installed jiti 2.6.1 async `.mjs` path uses native ESM import even with
 `moduleCache: false` / `tryNative: false`. A disposable cache probe, with filesystem
 cache disabled, returned old child-module code from a new jiti instance in the
@@ -32,7 +35,9 @@ PDF and a public fifteen-page paper under the owner's display settings. The
 worker verified exact PNGs for the paper's 1→2→3→2→1 and close/reopen sequence;
 it could not see physical pixels. No Kitty ACK observer was introduced because
 activation, rather than a fresh-upload rendering failure, was the first unresolved
-branch. A human fresh-process check should precede more transport interventions.
+branch. The subsequent owner confirmation supplies the physical visual evidence;
+there is no need to infer it from capture streams or introduce another transport
+intervention on the strength of those streams alone.
 
 A read-only worker exercised a fresh real fullscreen Pi in a named workmux tab,
 with a generated labelled six-page PDF and a public fifteen-page paper. It tested
@@ -158,9 +163,10 @@ coordinator reruns after that assertion hardening passed portable 252/286
 (34 optional-host skips, 3.565 s) and host-enabled 299/299 (11.841 s), with zero
 failures/cancellations. Production native bytes were unchanged throughout.
 
-Human acceptance has failed in the reported workflow, rather than merely remaining
-untested. After verifying the active code/transport and reviewing the next action,
-repeat next/previous/jump, identical-payload page transitions and close/reopen,
-preserving page-one inline previews and ordinary image gestures. Distinguish any blank despite a fresh PNG
-batch from a reused-target failure. No passing simulator/capture test substitutes
-for these pixel checks.
+The earlier reload/test workflow failed; the subsequent fresh-process visual
+check received general owner confirmation as recorded above. Remaining narrower
+checks include identical-payload transitions, close/reopen, regular-mode behavior,
+retention lifecycle and inline history/ordinary image gestures across the wider
+matrix. Distinguish any future blank despite a fresh PNG batch from a reused-target
+failure. No passing simulator/capture test substitutes for human pixel evidence,
+and no latency/FPS or exact Ghostty-loss mechanism was established.

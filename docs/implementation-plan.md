@@ -19,7 +19,9 @@ trust. Cached payloads and all inline prototypes remain; the next actual native
 preparation can retransmit that image within the same connection epoch. Historical
 once-per-epoch/placement-only reopen assumptions below are superseded only at
 that boundary. Same-lease resident geometry/pan reuse, gates, pacing and disabled
-budgeting remain unchanged; human validation of the repair is pending.
+budgeting remain unchanged. The owner confirmed the repair's pixels in a fresh
+Pi process; the existing-process `/reload` workflow did not activate the changed
+native module. This is general visual recovery acceptance, not a full matrix pass.
 
 **Viewer 0.3.0 implementation / general owner acceptance:** UI/controller is
 committed at `210d524` after plan `d324d87`, feasibility gate `e92b1cd`, pure

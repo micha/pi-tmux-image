@@ -5,11 +5,13 @@
 **Implemented and automated-verified in 0.5.0**, following owner implementation
 and coordinator final documentation authorization. Independent production review,
 full stable offline suites and isolated installation/loading gates passed; their
-exact scope is below. **New PDF human visuals/regular scrollback/responsiveness
-remain pending.** No active package installation/reload is implied.
+exact scope is below. **The broader new-PDF human visual/regular scrollback/
+responsiveness matrix remains pending.** No active package installation/reload is implied.
 The subsequent [blank-page recovery change](pdf-blank-recovery.md) records the
-owner's refresh-recovery/recurrence report and the conservative private-retirement
-upload-trust repair separately from the original 0.5.0 gates below.
+conservative private-retirement upload-trust repair separately from the original
+0.5.0 gates below. The owner confirmed its pixels in a fresh Pi process after the
+existing-process `/reload` workflow failed to activate changed native code; that
+is general recovery acceptance, not completion of the broader PDF matrix.
 
 The [historical PDF handoff](pdf-document-viewer-plan.md) records agreed intent
 and planning-checkpoint evidence. The owner explicitly approved the publication
