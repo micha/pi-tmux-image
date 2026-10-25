@@ -8,6 +8,32 @@ subsequent navigation produced blanks again. This is human-observed recovery and
 recurrence on the existing Ghostty 1.3.1 / tmux 3.6a / Pi 1.0.3 setup, **not
 acceptance of this repair** or proof of a specific terminal eviction bug.
 
+**Subsequent owner check did not pass:** after being asked to reload and test the
+repair, navigating through several pages and then backward reliably produced
+blank pages; page 1 was never blank. The tested workflow is not human-accepted.
+
+A follow-up worker then compared a long-running isolated Pi, started before the
+repair, with a fresh process loading the same checkout and display settings.
+`/reload` reset the old process's runtime/image IDs but **did not activate the
+changed native behavior**: page 2/3 first visits uploaded PNGs, while page 3→2,
+page 2→1 and close/reopen still emitted only placements. A fresh process emitted
+the required exact cached PNG retransmission on those revisits and reopenings.
+This establishes an activation failure in the installed Pi 1.0.3 reload workflow,
+not physical acceptance of the repair or proof of the owner's exact loaded module.
+The owner's symptom remains unresolved until checked with a fresh process.
+The installed jiti 2.6.1 async `.mjs` path uses native ESM import even with
+`moduleCache: false` / `tryNative: false`. A disposable cache probe, with filesystem
+cache disabled, returned old child-module code from a new jiti instance in the
+same process and new code from a fresh process. No production cache-busting or
+loader patch was made. Runtime recreation/new IDs alone do not verify new code.
+
+For a non-disruptive visual check, the fresh isolated Pi used a generated six-page
+PDF and a public fifteen-page paper under the owner's display settings. The
+worker verified exact PNGs for the paper's 1→2→3→2→1 and close/reopen sequence;
+it could not see physical pixels. No Kitty ACK observer was introduced because
+activation, rather than a fresh-upload rendering failure, was the first unresolved
+branch. A human fresh-process check should precede more transport interventions.
+
 A read-only worker exercised a fresh real fullscreen Pi in a named workmux tab,
 with a generated labelled six-page PDF and a public fifteen-page paper. It tested
 next/previous, jumps, rapid reversals and close/reopen. Correct page labels, exact
@@ -71,8 +97,18 @@ explicit refresh remains the recovery path for other unobservable losses/resets.
 
 No graphics-memory bound, freed-GPU-byte claim, application eviction or terminal
 configuration change follows from this repair. It does not retroactively identify
-all stale IDs in a pre-fix runtime. Active package activation/reload remains an
-owner-coordinated step.
+all stale IDs in a pre-fix runtime. Active package activation remains an
+owner-coordinated step. For updates to an already-loaded version on the tested
+Pi 1.0.3, restart the Pi process and resume the session; `/reload` can retain
+transitive native ESM code. No module-cache patch, query-string workaround or
+configuration change is introduced here. First installation can still use
+`/reload` when those modules have never been loaded.
+
+The follow-up reproduction used only isolated in-memory sessions and public
+write logging: one fresh process and one existing-process `/reload`, with the
+same generated/public PDFs and no model requests. No owner's process was restarted.
+Its before/after wire distinguishes newly uploaded pages from reused targets;
+physical pixels remain unavailable.
 
 ## Verification
 
@@ -122,8 +158,9 @@ coordinator reruns after that assertion hardening passed portable 252/286
 (34 optional-host skips, 3.565 s) and host-enabled 299/299 (11.841 s), with zero
 failures/cancellations. Production native bytes were unchanged throughout.
 
-Human checks pending after coordinated activation: repeat next/previous/jump,
-identical-payload page transitions and close/reopen, preserving page-one inline
-previews and ordinary image gestures. Distinguish any blank despite a fresh PNG
+Human acceptance has failed in the reported workflow, rather than merely remaining
+untested. After verifying the active code/transport and reviewing the next action,
+repeat next/previous/jump, identical-payload page transitions and close/reopen,
+preserving page-one inline previews and ordinary image gestures. Distinguish any blank despite a fresh PNG
 batch from a reused-target failure. No passing simulator/capture test substitutes
 for these pixel checks.

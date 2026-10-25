@@ -17,7 +17,8 @@ pi install git:github.com/micha/pi-tmux-image
 ```
 
 For future sessions, add `set -g allow-passthrough on` to `~/.tmux.conf`.
-Then run `/reload` inside Pi.
+For a first install, run `/reload` inside Pi. When updating an already-loaded
+version on Pi 1.0.3, restart Pi and resume the session: `/reload` can retain old module code.
 
 ## Use
 
