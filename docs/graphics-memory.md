@@ -245,6 +245,16 @@ removes the private metadata and increments complete wrapped wire totals once,
 prototype `placementCommands` remain zero for that delete. Shared image metadata
 and PNG/RGBA totals are not removed: private retirement is not pixel eviction.
 
+Successful private retirement now also conservatively invalidates the native
+owner's permission to skip that image's next PNG upload. The `resident` fields
+remain current-epoch **successful-write inventory estimates**, not that upload-
+reuse permission or a terminal ACK. Cached pixels/identities and all retained
+inline prototypes survive; the next actual preparation can retransmit the same
+PNG and restore every retained inline prototype plus only the live private one.
+This increases post-retirement transfer, not image inventory, and makes no
+freed-memory claim. Same-lease resident pan/zoom reuse is unchanged. See
+[PDF blank-page recovery](pdf-blank-recovery.md) for the evidence and limits.
+
 An epoch reset may have cleared all local image/placement trust while a pending
 owned tuple still exists in the terminal. A successful retirement in that new
 epoch therefore accepts absence of resident metadata and counts only actual delete

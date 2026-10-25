@@ -640,7 +640,13 @@ test("production viewer: isolated installed public SDK + InteractiveMode accepta
             h.terminal.writes.length = 0; await open(h, n);
             assert.equal(h.viewerPair.imageId, seeded.imageIds[2 - n], "picker selected different page bytes than its newest-first snapshot index");
             await close(h);
-            assert.equal(uploads(graphics(h.terminal)), 0); assert.ok(placements(graphics(h.terminal)).every((p) => p.placementId === privatePair.placementId));
+            assert.equal(uploads(graphics(h.terminal)), n === 2 ? 1 : 0,
+              "only previously retired PNG is retransmitted; never-retired PDF first binds reuse inline pixels");
+            const reopenedPlacements = placements(graphics(h.terminal));
+            assert.deepEqual(reopenedPlacements.filter((p) => p.placementId === privatePair.placementId), [h.viewerPair]);
+            assert.deepEqual(reopenedPlacements.filter((p) => p.placementId !== privatePair.placementId),
+              n === 2 ? inline.filter((p) => p.imageId === h.viewerPair.imageId) : [],
+              "post-retirement reupload restores exact inline prototypes separately from the live slot");
           }
           assert.equal(await readFile(join(scratch, "pdf-queries.log"), "utf8"), seeded.pdfLog, "viewer rerasterized PDF sources");
           for (const component of seeded.components) assert.ok(component.render(80).some((line) => line.includes(PH)), "viewer retirement broke inline cells");
@@ -1168,7 +1174,13 @@ test("production viewer: isolated installed public SDK + InteractiveMode accepta
           const shape = geometry(20 + n % 277, 20 + n % 70);
           const prepared = await native.prepareViewer({ lease, canvas: shape,
             window: { columns: 10, rows: 5, columnOffset: n % (shape.columns - 9), rowOffset: n % (shape.rows - 4) } }, { epoch });
-          assert.equal(prepared.metrics.uploadChunks, 0); commit(prepared);
+          assert.equal(prepared.metrics.uploadChunks, 1, "each bind follows successful retirement");
+          assert.equal(prepared.metrics.placementCommands, retained.length + 1);
+          commit(prepared);
+          const batch = placements([prepared.uploads]);
+          assert.deepEqual(batch.filter((p) => p.placementId !== privateId), retained);
+          assert.deepEqual(batch.filter((p) => p.placementId === privateId), [{ imageId: payload.imageId,
+            placementId: privateId, columns: shape.columns, rows: shape.rows }]);
           native.releaseViewer(lease); commit(await native.prepareViewerRetirement({ epoch }));
           if (n % 100 === 0) h.terminal.writes.length = 0; // Bound the harness capture, not production state.
         }

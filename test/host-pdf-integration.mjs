@@ -30,15 +30,30 @@ const placements = (writes) => [...writes.join("").matchAll(/a=p,U=1,i=(\d+),p=(
   .map((m) => ({ imageId: +m[1], placementId: +m[2], columns: +m[3], rows: +m[4] }));
 const deletions = (writes) => [...writes.join("").matchAll(/a=d,d=i,i=(\d+),p=(\d+),q=2/g)].map((m) => ({ imageId: +m[1], placementId: +m[2] }));
 const color = (id, underline = false) => underline ? `58:2::${id >>> 16 & 255}:${id >>> 8 & 255}:${id & 255}` : `38;2;${id >>> 16 & 255};${id >>> 8 & 255};${id & 255}`;
-function payloads(writes) {
-  const map = new Map(); let id, chunks = [];
+function pngTransmissions(writes) {
+  const result = []; let id, chunks = [];
   for (const m of writes.join("").replaceAll("\x1b\x1b", "\x1b").matchAll(/\x1b_G([^;\x1b]+);([A-Za-z0-9+/=]*)\x1b\\/g)) {
     const fields = Object.fromEntries(m[1].split(",").map((f) => f.split("=")));
     if (fields.a === "t") { id = +fields.i; chunks = []; }
     assert.ok(id, "orphan PNG continuation"); chunks.push(m[2]);
-    if (fields.m === "0") { map.set(hash(Buffer.from(chunks.join(""), "base64")), id); id = undefined; }
+    if (fields.m === "0") { result.push({ imageId: id, bytes: Buffer.from(chunks.join(""), "base64") }); id = undefined; }
   }
-  return map;
+  return result;
+}
+function payloads(writes) { return new Map(pngTransmissions(writes).map(({ imageId, bytes }) => [hash(bytes), imageId])); }
+function assertReuploadSlice(h, start, expectedHash, inline = []) {
+  const writes = h.terminal.writes.slice(start), batch = pngTransmissions(writes);
+  const prior = pngTransmissions(h.terminal.writes.slice(0, start)).find(({ bytes }) => hash(bytes) === expectedHash);
+  assert.ok(prior, "slice oracle needs independently witnessed earlier exact PNG");
+  assert.equal(batch.length, 1, "post-retirement transition must emit exactly one complete target PNG");
+  assert.equal(batch[0].imageId, h.pair.imageId);
+  assert.equal(hash(batch[0].bytes), expectedHash);
+  assert.deepEqual(batch[0].bytes, prior.bytes, "cached retransmission changed exact PNG bytes");
+  const prototypes = placements(writes);
+  assert.deepEqual(prototypes.filter((p) => p.placementId !== h.pair.placementId), inline,
+    "reupload must restore complete inline prototypes, separately from the live private slot");
+  assert.deepEqual(prototypes.filter((p) => p.placementId === h.pair.placementId), [h.pair],
+    "reupload must include exactly the current private tuple");
 }
 class CaptureTerminal {
   columns = 80; rows = 40; kittyProtocolActive = false; writes = [];
@@ -354,6 +369,8 @@ if (process.env.PI_PDF_ACCEPTANCE_CHILD === "restore") {
         if (mode === "fullscreen") h.tui.scrollToBottom();
         h.ctx.ui.setEditorText("protected PDF draft"); h.tui.renderNow();
         const top = mode === "fullscreen" ? h.tui.viewportTop : undefined;
+        const retainedInline = placements(graphics(h));
+        assert.equal(retainedInline.length, 1, "settled canonical preview has one inline prototype");
         const before = await invariant(h);
         const conversionImages = imageBlocks(before.conversion);
         assert.equal(conversionImages.length, blocked ? 0 : 1, "public SDK image blocking was not applied");
@@ -377,7 +394,9 @@ if (process.env.PI_PDF_ACCEPTANCE_CHILD === "restore") {
         await inputPage(h, "\x1b[6~", 3, expected[2]);
         await inputPage(h, "\x1b[6;1~", 4, expected[3]);
         const atLast = await pdfLog(scratch); h.terminal.input("n"); await sleep(30); h.tui.renderNow(); assert.deepEqual(await pdfLog(scratch), atLast);
+        const page3ReturnStart = h.terminal.writes.length;
         await inputPage(h, "\x1b[5;1~", 3, expected[2]);
+        assertReuploadSlice(h, page3ReturnStart, expected[2]);
         // Jump errors stay editable, Escape cancels only the field; no hidden input.
         h.frameStart = h.terminal.writes.length; h.terminal.input("g"); h.terminal.input("0"); h.terminal.input("\r"); h.tui.renderNow();
         assert.match(plain(currentLines(h)).join("\n"), /Enter 1[–-]4/, "invalid jump needs an editable range error");
@@ -394,8 +413,10 @@ if (process.env.PI_PDF_ACCEPTANCE_CHILD === "restore") {
         h.terminal.input("\x7f"); h.terminal.input("3"); h.terminal.input("\r"); h.tui.renderNow();
         assert.deepEqual(await pdfLog(scratch), jumpLog, "same-page jump or n/p while editing rasterized");
         assert.equal(graphics(h).length, jumpWire);
+        const page1ReturnStart = h.terminal.writes.length;
         h.terminal.input("\x1b[103u"); h.terminal.input("\x1b[49u"); h.terminal.input("\x1b[127u"); h.terminal.input("1"); h.terminal.input("\r");
         h.frameStart = h.terminal.writes.length; await pageReady(h, 1); assert.equal(h.pair.imageId, payloads(graphics(h)).get(expected[0]));
+        assertReuploadSlice(h, page1ReturnStart, expected[0], retainedInline);
         const revisit = await pdfLog(scratch);
         const samePageGraphics = graphics(h).length;
         h.terminal.input("g"); h.terminal.input("1"); h.terminal.input("\r"); await sleep(30); h.tui.renderNow();
@@ -417,7 +438,20 @@ if (process.env.PI_PDF_ACCEPTANCE_CHILD === "restore") {
         h.terminal.columns = 80; h.terminal.rows = 40; h.frameStart = h.terminal.writes.length; h.terminal.resize(); await pageReady(h, 3);
         assert.equal(payloads(graphics(h)).get(expected[2]), h.pair.imageId, "tiny n,n,p lost latest requested target");
         assert.equal(h.ctx.ui.getEditorText(), "protected PDF draft"); if (mode === "fullscreen") assert.equal(h.tui.viewportTop, top);
-        await unchanged(h, before); await closeViewer(h); await unchanged(h, before);
+        await unchanged(h, before);
+        // Resize can make inline preparation the first successor to renew page1
+        // trust. Reopen protection is tested after retiring page1 itself again,
+        // not by unconditionally invalidating an unrelated incoming target.
+        h.frameStart = h.terminal.writes.length;
+        h.terminal.input("g"); h.terminal.input("1"); h.terminal.input("\r"); await pageReady(h, 1);
+        const allInline = [...new Map(placements(graphics(h)).filter((p) => p.imageId === h.pair.imageId && p.placementId !== slot)
+          .map((p) => [p.placementId, p])).values()];
+        for (const original of retainedInline) assert.deepEqual(allInline.find((p) => p.placementId === original.placementId), original);
+        await closeViewer(h); await unchanged(h, before);
+        const reopenStart = h.terminal.writes.length, reopenLog = await pdfLog(scratch);
+        await openViewer(h); assertReuploadSlice(h, reopenStart, expected[0], allInline);
+        assert.deepEqual(await pdfLog(scratch), reopenLog, "canonical reopen must not rasterize");
+        await closeViewer(h); await unchanged(h, before);
         assert.equal(/a=d,d=[A-Z]|a=d,d=a/.test(graphics(h).join("")), false);
       } finally { await h.cleanup(); }
     });
@@ -443,11 +477,19 @@ if (process.env.PI_PDF_ACCEPTANCE_CHILD === "restore") {
         await rm(gatePath); await inputPage(h, "p", 2, expected[1]);
         // Same PNG/layout page 2 -> page 4 still needs a new page lease and
         // scoped retirement, not acceptance of an old ready label/payload alone.
-        const duplicateStart = h.terminal.writes.length;
+        const duplicateStart = h.terminal.writes.length, duplicateLog = await pdfLog(scratch);
         h.frameStart = duplicateStart; h.terminal.input("g"); h.terminal.input("4"); h.terminal.input("\r"); await pageReady(h, 4);
         assert.equal(h.pair.imageId, payloads(graphics(h)).get(expected[1]));
         assert.equal(h.pair.placementId, slot);
         assert.equal(deletions(h.terminal.writes.slice(duplicateStart)).length, 1, "identical page payload bypassed page lease retirement");
+        assertReuploadSlice(h, duplicateStart, expected[1]);
+        const duplicateRasters = (await pdfLog(scratch)).slice(duplicateLog.length);
+        assert.equal(duplicateRasters.length, 1, "repair added PDF work beyond one baseline requested later-page raster");
+        assert.equal(duplicateRasters[0].name, "pdftoppm");
+        assert.equal(duplicateRasters[0].args[duplicateRasters[0].args.indexOf("-f") + 1], "4");
+        const duplicateWrites = h.terminal.writes.slice(duplicateStart);
+        assert.ok(duplicateWrites.findIndex((s) => s.includes("a=t")) > duplicateWrites.findIndex((s) => s.includes("a=d,d=i")),
+          "equal-PNG target retransmitted before retiring old lease");
         // Uncertain delete failure is captured but NOT treated as success. It
         // blocks new-page placement; a deliberate jump retries with a new flush.
         const oldPair = h.pair, faultStart = h.terminal.writes.length;

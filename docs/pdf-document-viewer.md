@@ -7,6 +7,9 @@ and coordinator final documentation authorization. Independent production review
 full stable offline suites and isolated installation/loading gates passed; their
 exact scope is below. **New PDF human visuals/regular scrollback/responsiveness
 remain pending.** No active package installation/reload is implied.
+The subsequent [blank-page recovery change](pdf-blank-recovery.md) records the
+owner's refresh-recovery/recurrence report and the conservative private-retirement
+upload-trust repair separately from the original 0.5.0 gates below.
 
 The [historical PDF handoff](pdf-document-viewer-plan.md) records agreed intent
 and planning-checkpoint evidence. The owner explicitly approved the publication
@@ -211,6 +214,12 @@ graphics directly; initial viewport preparation uses the existing pacer.
 [successful-write metrics](graphics-memory.md) are unchanged. Same-ID PNG replay
 restores all retained inline prototypes and only the live private prototype.
 No shared pixel/global deletion, second private slot or eviction is introduced.
+Successful private retirement conservatively ends PNG upload-reuse trust for that
+image ID, including payloads shared with inline previews. The next actual native
+preparation can retransmit its cached exact PNG and restore all retained inline
+prototypes plus only the live private prototype. This does not add PDF raster work,
+change current-page pan/zoom reuse, acknowledge terminal residency or free pixels;
+see the [blank-page recovery record](pdf-blank-recovery.md).
 **150 ms idle after deferred first-own component receipt, wheel expiry disabled**
 remains approved; receipt is not terminal display completion.
 

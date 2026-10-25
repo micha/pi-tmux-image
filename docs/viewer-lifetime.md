@@ -564,6 +564,13 @@ caching failed/stale rows. Inline history retains all committed geometries.
 
 Retirement failure leaves one obligation across epoch resets. The UI must retry
 it through fresh pre/post capability checks **before** safe payload rebinding.
+Successful retirement now conservatively ends PNG upload-reuse trust for the
+retired image ID, including inline-shared payloads. Cached PNGs, identities and
+all retained inline prototypes remain; the next actual preparation restores the
+complete inline batch and only the live private prototype after retransmission.
+Earlier placement-only reopen recommendations in this historical review are
+superseded by this recovery boundary, not by pixel eviction or new slots.
+Same-lease pan/zoom reuse is unchanged. See [PDF blank-page recovery](pdf-blank-recovery.md).
 `stats().viewer` reports lease/prototype/work/retirement flags, constant-slot
 allocation totals and one sanitized retirement failure. A successful deletion
 when the current epoch has no resident image metadata records only delete wire;

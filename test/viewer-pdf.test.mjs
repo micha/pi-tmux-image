@@ -39,6 +39,28 @@ const strip = text => text.replace(/\x1b\[[0-9:;]*m/g, '').replace(/\p{Mark}/gu,
 const width = text => [...strip(text)].length;
 const cut = (text, n) => width(text) <= n ? text : [...strip(text)].slice(0, n).join('');
 
+// Quiet protocol storage, not Ghostty pixels: independent loss never notifies native.
+function lossTerminal() {
+  const images = new Map(), ignored = [];
+  let imageId, chunks;
+  return { images, ignored, lose(id) { images.delete(id); }, write(wire) {
+    for (const m of wire.matchAll(/\x1b\x1b_G([^;\x1b]+)(?:;([^\x1b]*))?\x1b\x1b\\/g)) {
+      const f = Object.fromEntries(m[1].split(',').map(part => part.split('=')));
+      if (f.a === 't') { imageId = +f.i; chunks = []; images.delete(imageId); }
+      if (f.a === 't' || !f.a && f.m !== undefined) {
+        assert.ok(imageId); chunks.push(m[2]);
+        if (f.m === '0') { images.set(imageId, { png: Buffer.from(chunks.join(''), 'base64'), placements: new Map() }); imageId = undefined; }
+      } else if (f.a === 'p') {
+        const image = images.get(+f.i);
+        if (!image) { ignored.push(f); continue; }
+        assert.equal(f.U, '1'); image.placements.set(+f.p, { columns: +f.c, rows: +f.r });
+      } else if (f.a === 'd') {
+        assert.equal(f.d, 'i'); assert.ok(+f.p > 0); images.get(+f.i)?.placements.delete(+f.p);
+      }
+    }
+  } };
+}
+
 function harness(options = {}) {
   let now = 0, sequence = 0, focused, component, requestCount = 0;
   const timers = new Map(), deferred = [], events = [], pages = [], samples = [], notifications = [];
@@ -51,11 +73,12 @@ function harness(options = {}) {
   };
   let frameFailure = false, deleteFailure = false, capabilityGate, pageGate, openGate, releaseGate, normalizeGate, pageFailure = false;
   let cells = { widthPx: 8, heightPx: 16 }, released = 0, activeChildren = 0, maxChildren = 0;
-  const overlays = [];
+  const overlays = [], terminal = lossTerminal();
   const tui = {
     terminal: { columns: 40, rows: 16, write(wire) {
       events.push({ kind: wire.includes('a=d') ? 'delete' : 'graphics', wire });
       if (deleteFailure && wire.includes('a=d')) throw new Error('delete write failed');
+      terminal.write(wire);
     } },
     requestRender() { requestCount++; }, hasOverlay: () => overlays.length > 0,
     renderNow() {
@@ -126,7 +149,7 @@ function harness(options = {}) {
       events.push({ kind: 'document-released' });
     },
   });
-  const h = { controller, native, presentation, tui, events, pages, samples, notifications, clock, overlays,
+  const h = { controller, native, presentation, tui, terminal, events, pages, samples, notifications, clock, overlays,
     get component() { return component; }, get released() { return released; }, get maxChildren() { return maxChildren; },
     get timerCount() { return timers.size; }, get deferredCount() { return deferred.length; },
     get timerCallbacks() { return [...timers.values()].map(timer => timer.callback); },
@@ -174,6 +197,55 @@ test('PDF page burst/reversal uses requested scalar, one overlay/child and fixed
   const graphics = h.graphics().length; h.key('p'); await turn(); h.clock.advance(); assert.equal(h.graphics().length, graphics);
   assert.equal(h.native.stats().viewer.slotAllocated, true);
   await closed(h);
+});
+
+test('PDF retirement recovery navigation/equal PNG/repeated loss/reopen restores inline history and only current private tuple', async () => {
+  const h = harness();
+  for (const [occurrence, columns] of [['history', 2], ['history', 3], ['other-history', 1]]) {
+    const p = await h.native.prepare({ attachment: preview, occurrence, geometry: { columns, rows: 1 } }, { epoch: h.presentation.epoch });
+    assert.equal(h.presentation.commit(p, { epoch: h.presentation.epoch }), true);
+  }
+  const previewPayload = await h.native.resolvePayload(preview), laterPayload = await h.native.resolvePayload(landscape);
+  const retained = new Map(h.terminal.images.get(previewPayload.imageId).placements);
+  h.done = h.controller.open(); await until(() => h.component); await ready(h);
+  const component = h.component, initial = h.samples.at(-1).lease;
+  assert.equal(h.graphics().at(-1).wire.includes('a=t'), false, 'never-retired inline-first bind stays placement-only');
+  for (const page of [2, 3, 2, 1, 2, 1]) {
+    const start = h.events.length, oldLease = h.samples.at(-1).lease;
+    h.key('g'); h.key(String(page)); h.key('\r');
+    await until(() => h.events.slice(start).some(event => event.kind === 'delete'));
+    h.terminal.lose(oldLease.imageId);
+    await ready(h, page);
+    const events = h.events.slice(start), deletion = events.findIndex(event => event.kind === 'delete');
+    const graphics = events.filter(event => event.kind === 'graphics');
+    assert.equal(graphics.length, 1, 'one admitted target write per actual page transition');
+    assert.ok(events.slice(0, deletion).some(event => event.kind === 'frame' && !event.lines.some(line => line.includes(PLACEHOLDER))));
+    assert.ok(events.findIndex(event => event.kind === 'graphics') > deletion);
+    assert.ok(graphics[0].wire.includes('a=t'), 'transition slice must reupload retired target exact PNG');
+    const lease = h.samples.at(-1).lease, payload = page === 1 ? previewPayload : laterPayload;
+    assert.equal(lease.imageId, payload.imageId); assert.equal(lease.placementId, initial.placementId);
+    assert.notEqual(lease.generation, oldLease.generation); assert.equal(h.component, component);
+    const stored = h.terminal.images.get(payload.imageId);
+    assert.deepEqual(stored.png, Buffer.from((page === 1 ? preview : landscape).data, 'base64'));
+    const inline = page === 1 ? retained : new Map();
+    const sample = h.samples.at(-1);
+    assert.deepEqual(stored.placements, new Map([...inline, [lease.placementId, { columns: sample.canvas.columns, rows: sample.canvas.rows }]]));
+    assert.match(h.render()[0], /100% Fit/);
+  }
+  assert.deepEqual(h.pages, [1, 2, 3, 2, 1, 2, 1], 'reupload adds no provider work beyond requested navigation');
+  const start = h.graphics().length, pages = h.pages.length;
+  h.key('g'); h.key('1'); h.key('\r'); h.clock.advance(); await turn();
+  assert.equal(h.graphics().length, start); assert.equal(h.pages.length, pages, 'same-ready page is no-op');
+  await closed(h); h.terminal.lose(previewPayload.imageId);
+  const reopenStart = h.events.length;
+  h.done = h.controller.open(); await until(() => h.component); await ready(h);
+  assert.equal(h.events.slice(reopenStart).filter(event => event.kind === 'graphics').length, 1);
+  assert.ok(h.events.slice(reopenStart).find(event => event.kind === 'graphics').wire.includes('a=t'));
+  assert.deepEqual(h.terminal.images.get(previewPayload.imageId).png, Buffer.from(preview.data, 'base64'));
+  assert.equal(h.terminal.images.get(previewPayload.imageId).placements.size, retained.size + 1);
+  assert.equal(h.terminal.ignored.length, 0); assert.equal(h.native.stats().accounting.errors, 0);
+  assert.deepEqual(h.pages, [1, 2, 3, 2, 1, 2, 1, 1]);
+  await h.controller.close(); await h.done; assert.equal(h.released, 2);
 });
 
 test('PDF public raw/Kitty jump digits are bounded/editable; Escape cancels field and unsupported/mouse input stays owned', async () => {
@@ -235,6 +307,12 @@ test('PDF superseded identical PNG/layout page native postguard cannot publish s
   h.releaseCapability(); await turn(); assert.equal(h.graphics().length, writes);
   for (const callback of oldCallbacks) callback(); h.clock.flush();
   await ready(h, 2); assert.notEqual(h.samples.at(-1).lease, staleLease);
+  const freshWrites = h.graphics().slice(writes);
+  assert.equal(freshWrites.length, 1); assert.ok(freshWrites[0].wire.includes('a=t'), 'only latest equal-byte page generation may reupload');
+  const live = h.samples.at(-1);
+  assert.deepEqual(h.terminal.images.get(live.lease.imageId), { png: Buffer.from(preview.data, 'base64'),
+    placements: new Map([[live.lease.placementId, { columns: live.canvas.columns, rows: live.canvas.rows }]]) });
+  assert.equal(h.terminal.ignored.length, 0);
   assert.deepEqual(h.pages, [1, 2, 2]); assert.equal(h.maxChildren, 1);
   assert.match(h.render()[0], /100% Fit/); await closed(h);
 });

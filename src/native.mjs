@@ -359,6 +359,8 @@ export function createNativeRenderer({ convertToPng, identity = new GraphicsIden
           if (callbackSettled) return;
           callbackSettled = true;
           reserved.finish(true, state => {
+            // Lose upload-reuse trust, not cached PNGs, inline history or terminal pixels.
+            state.images.delete(owned.imageId);
             state.placements.delete(owned.placementKey); retirement = undefined; retirementFailure = undefined;
             account(() => metrics.recordRetirement({ epoch, imageId: owned.imageId, placementId: owned.placementId, wireBytes }));
           });

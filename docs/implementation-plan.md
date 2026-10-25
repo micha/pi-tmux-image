@@ -13,6 +13,14 @@ install dependencies merely to reproduce a historical machine layout.
 
 ## Status and authorization
 
+**Follow-up recovery boundary:** [PDF blank-page recovery](pdf-blank-recovery.md)
+records the current successful-private-retirement invalidation of PNG upload-reuse
+trust. Cached payloads and all inline prototypes remain; the next actual native
+preparation can retransmit that image within the same connection epoch. Historical
+once-per-epoch/placement-only reopen assumptions below are superseded only at
+that boundary. Same-lease resident geometry/pan reuse, gates, pacing and disabled
+budgeting remain unchanged; human validation of the repair is pending.
+
 **Viewer 0.3.0 implementation / general owner acceptance:** UI/controller is
 committed at `210d524` after plan `d324d87`, feasibility gate `e92b1cd`, pure
 phase `dd13569` and shared runtime `5898185`. Final production public SDK matrix

@@ -693,8 +693,14 @@ for (const mode of ["fullscreen", "regular"]) {
       assert.ok(failures.some((message) => message.includes("cleanup")));
       denied = false; terminal.writes.length = 0; done = viewer.open();
       await until(() => terminal.output.includes(PLACEHOLDER));
-      assert.ok(terminal.output.indexOf("a=d,d=i") < terminal.output.indexOf(PLACEHOLDER), "supported reopen retires tombstone before rebind/cells");
-      assert.equal(terminal.output.includes("a=t"), false, "reopen uses resident shared PNG");
+      const deleteIndex = terminal.output.indexOf("a=d,d=i"), uploadIndex = terminal.output.indexOf("a=t");
+      assert.ok(deleteIndex >= 0 && uploadIndex > deleteIndex, "successful tombstone retirement precedes cached PNG reupload");
+      assert.deepEqual([...terminal.output.matchAll(/a=d,d=i,i=(\d+),p=(\d+),q=2/g)].map((m) => m.slice(1)),
+        [pair.slice(1)], "recovery retires exactly the old owned private tuple");
+      assert.ok(uploadIndex < terminal.output.indexOf(PLACEHOLDER), "post-retirement reupload precedes new ready cells");
+      assert.equal([...terminal.output.matchAll(/a=t,f=100/g)].length, 1, "reopen uploads the retired payload exactly once");
+      const reopenedPair = /a=p,U=1,i=(\d+),p=(\d+)/.exec(terminal.output);
+      assert.deepEqual(reopenedPair?.slice(1), pair.slice(1), "recovery preserves exact image ID and fixed private slot");
       terminal.input("\x1b"); await done; tui.renderNow();
       assert.equal(viewer.isOpen, false); assert.equal(tui.hasOverlay(), false); assert.equal(native.stats(presentation.epoch).viewer.retirementPending, false);
       assert.equal(JSON.stringify(snapshot), before); assert.equal(draft, "editor draft");

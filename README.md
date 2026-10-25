@@ -38,6 +38,7 @@ Paths are relative to Pi's working directory; spaces need no quotes.
 In **fullscreen mode**, click an image to open, wheel to zoom, drag to pan.
 Regular mode is keyboard-only. If images disappear, run `/tmux-image-refresh`.
 Viewing uses stored copies, not live files. PDF zoom adds no extra detail.
+Closing or changing pages can require a fresh upload of the cached image; pan and zoom reuse the current upload.
 
 ## PDFs and privacy
 

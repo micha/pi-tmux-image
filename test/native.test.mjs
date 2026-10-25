@@ -132,21 +132,30 @@ test("live height/cell geometry creates new placements without decoding or PNG r
 // Tiny protocol-semantic terminal: a=t replaces image data AND erases all of
 // that image's virtual prototypes, per Kitty spec. Quiet writes are simulated,
 // never sent to a terminal. This checks lifecycle semantics, not just strings.
-function virtualTerminal() {
-  const images = new Map();
-  let transmissions = 0;
+function virtualTerminal({ quietMissing = false } = {}) {
+  const images = new Map(), pngs = new Map(), ignoredPlacements = [];
+  let transmissions = 0, uploadId, chunks = [];
   return {
-    images,
+    images, pngs, ignoredPlacements,
+    // Independent terminal storage loss: deliberately never informs native.
+    lose(imageId) { images.delete(imageId); pngs.delete(imageId); },
     get transmissions() { return transmissions; },
     write(wire) {
-      for (const match of wire.matchAll(/\x1b\x1b_G([^;\x1b]*)(?:;[^\x1b]*)?\x1b\x1b\\/g)) {
+      for (const match of wire.matchAll(/\x1b\x1b_G([^;\x1b]*)(?:;([^\x1b]*))?\x1b\x1b\\/g)) {
         const controls = Object.fromEntries(match[1].split(",").map((part) => part.split("=")));
         if (controls.a === "t") {
           transmissions++;
-          images.set(Number(controls.i), new Map()); // destroys old prototypes
+          uploadId = Number(controls.i); chunks = [];
+          images.set(uploadId, new Map()); // destroys old prototypes
+          pngs.delete(uploadId);
+        }
+        if (controls.a === "t" || !controls.a && controls.m !== undefined) {
+          assert.ok(uploadId, "orphan PNG continuation"); chunks.push(match[2]);
+          if (controls.m === "0") { pngs.set(uploadId, Buffer.from(chunks.join(""), "base64")); uploadId = undefined; }
         } else if (controls.a === "p") {
           const imageId = Number(controls.i);
-          assert.ok(images.has(imageId), "placement preceded image data");
+          if (quietMissing && !pngs.has(imageId)) { ignoredPlacements.push(controls); continue; }
+          assert.ok(pngs.has(imageId), "placement preceded complete image data");
           assert.equal(controls.U, "1");
           images.get(imageId).set(Number(controls.p), { columns: Number(controls.c), rows: Number(controls.r) });
         } else if (controls.a === "d") {
@@ -363,7 +372,10 @@ test("production 10,000 pan/zoom/open cycles bound allocator, viewer prototypes 
   const baseline = native.stats().viewer.allocatedIds;
   for (let n = 0; n < 10000; n++) {
     const next = await native.prepareViewer(viewerJob(lease, { canvas: { ...canvas, columns: 4 + n % 2 },
-      window: { ...window, columnOffset: n % 2 } }), { epoch }); next.onUploaded();
+      window: { ...window, columnOffset: n % 2 } }), { epoch });
+    assert.equal(next.metrics.uploadChunks, n % 10 === 1 ? 1 : 0,
+      "only first preparation after retirement retransmits; same-lease zoom/pan does not");
+    next.onUploaded();
     if (n % 10 === 0) {
       native.releaseViewer(lease);
       const retire = await native.prepareViewerRetirement({ epoch }); retire.onUploaded();
@@ -373,7 +385,7 @@ test("production 10,000 pan/zoom/open cycles bound allocator, viewer prototypes 
   const stats = native.stats();
   assert.equal(stats.viewer.allocatedIds, baseline);
   assert.equal(stats.placements.geometryVersions, 2); assert.equal(stats.surfaces.viewer, 1);
-  assert.equal(stats.surfaces.liveViewer, 1); assert.equal(stats.transfer.uploadChunks, 1);
+  assert.equal(stats.surfaces.liveViewer, 1); assert.equal(stats.transfer.uploadChunks, 1 + 1000);
   assert.equal(stats.accounting.errors, 0);
   native.releaseViewer(lease); (await native.prepareViewerRetirement({ epoch })).onUploaded();
   assert.equal(native.stats().placements.geometryVersions, 1);
@@ -506,10 +518,12 @@ function secondSnapshot() {
 test("10,000 repeated opens across payloads reuse private allocator and delete only its proven tuple", async () => {
   const native = fresh(), epoch = Symbol(), terminal = virtualTerminal();
   const a = await native.resolvePayload(attachment), b = await native.resolvePayload(secondSnapshot());
+  const retainedInline = new Map();
   for (const [payload, snapshot] of [[a, attachment], [b, secondSnapshot()]]) {
     const inline = await native.prepare({ attachment: snapshot, occurrence: "inline", geometry }, { epoch });
     terminal.write(inline.uploads); inline.onUploaded();
     assert.equal(terminal.images.get(payload.imageId).size, 1);
+    retainedInline.set(payload.imageId, new Map(terminal.images.get(payload.imageId)));
   }
   let fixed;
   for (let n = 0; n < 10000; n++) {
@@ -517,15 +531,21 @@ test("10,000 repeated opens across payloads reuse private allocator and delete o
     const lease = native.reserveViewerPlacement({ payload, occurrence: `open:${n}` });
     fixed ??= lease.placementId; assert.equal(lease.placementId, fixed);
     const next = await native.prepareViewer(viewerJob(lease), { epoch });
-    assert.equal(next.metrics.uploadChunks, 0); terminal.write(next.uploads); next.onUploaded();
+    assert.equal(next.metrics.uploadChunks, n < 2 ? 0 : 1,
+      "never-retired inline-resident first binds reuse; subsequent retired binds reupload");
+    assert.equal(next.metrics.placementCommands, n < 2 ? 1 : 2);
+    terminal.write(next.uploads); next.onUploaded();
     native.releaseViewer(lease);
     const retired = await native.prepareViewerRetirement({ epoch }); terminal.write(retired.uploads); retired.onUploaded();
-    assert.equal(terminal.images.get(payload.imageId).size, 1);
+    assert.deepEqual(terminal.images.get(payload.imageId), retainedInline.get(payload.imageId),
+      "every retirement leaves exact original inline IDs/geometries, not just one arbitrary prototype");
+    assert.deepEqual(terminal.pngs.get(payload.imageId), payload.pngBytes);
   }
   const stats = native.stats();
   assert.equal(stats.viewer.allocatedIds, 5, "two payload+two inline IDs+one constant private slot");
   assert.equal(stats.surfaces.viewer, 0); assert.equal(stats.placements.geometryVersions, 2);
-  assert.equal(stats.surfaceTransfer.retirementCommands, 10000); assert.equal(stats.transfer.uploadChunks, 2);
+  assert.equal(stats.surfaceTransfer.retirementCommands, 10000);
+  assert.equal(stats.transfer.uploadChunks, 2 + (10000 - 2), "two initial inline uploads plus all post-retirement binds");
   assert.equal(stats.accounting.errors, 0);
   assert.equal(terminal.images.size, 2, "shared pixels survive every scoped retirement");
 });
@@ -904,6 +924,221 @@ test("stale attempt notifications cannot alter later successes, epochs or manufa
   const baseline = native.stats();
   obsolete.onUploadStarted(); obsolete.onUploadFailed(); first.onUploadStarted(); later.onUploadStarted();
   assert.deepEqual(native.stats(), baseline); assert.equal(ready.isResident(), true);
+});
+
+test("retirement recovery restores exact cached PNGs after independent viewer-only/shared terminal loss", async () => {
+  for (const shared of [false, true]) {
+    const native = fresh(), terminal = virtualTerminal({ quietMissing: true }), presentation = createPresentation();
+    const writes = [], tui = { terminal: { write(wire) { writes.push(wire); terminal.write(wire); } }, requestRender() {} };
+    presentation.attach({ mode: "tui", ui: { setWidget(_key, factory) { factory(tui); } } }, true);
+    const context = { epoch: presentation.epoch }, payload = await native.resolvePayload(attachment);
+    const cached = await native.normalize(attachment), other = await native.resolvePayload(secondSnapshot());
+    const commit = p => assert.equal(presentation.commit(p, context), true);
+    if (shared) {
+      for (const [occurrence, columns] of [["old-inline", 4], ["old-inline", 2], ["another-inline", 1]]) {
+        commit(await native.prepare(job(occurrence, { ...geometry, columns }), context));
+      }
+      const failed = await native.prepare(job("never-committed", { ...geometry, columns: 3 }), context);
+      failed.onUploadFailed();
+    }
+    const inlineHistory = new Map(terminal.images.get(payload.imageId) || []);
+    let previousLease, previousReady, fixed;
+    for (let visit = 0; visit < 5; visit++) {
+      const lease = native.reserveViewerPlacement({ payload, occurrence: `equal-png-page:${visit}` });
+      fixed ??= lease.placementId;
+      assert.equal(lease.placementId, fixed);
+      if (previousLease) {
+        assert.notEqual(lease.generation, previousLease.generation);
+        assert.equal(previousReady.isResident(), false);
+      }
+      const ready = await native.prepareViewer(viewerJob(lease), context);
+      assert.equal(ready.metrics.uploadChunks, shared && visit === 0 ? 0 : 1);
+      assert.equal(ready.metrics.placementCommands, shared && visit === 0 ? 1 : inlineHistory.size + 1);
+      const before = native.stats(), writeStart = writes.length;
+      commit(ready);
+      assert.equal(writes.length, writeStart + 1);
+      assert.deepEqual(terminal.pngs.get(payload.imageId), cached.pngBytes);
+      assert.equal(await native.normalize(attachment), cached, "recovery uses immutable native cache");
+      assert.deepEqual(terminal.images.get(payload.imageId), new Map([...inlineHistory, [fixed, { columns: canvas.columns, rows: canvas.rows }]]));
+      assert.equal(terminal.ignoredPlacements.length, 0);
+      const after = native.stats();
+      assert.equal(after.transfer.wireBytes - before.transfer.wireBytes, Buffer.byteLength(ready.uploads));
+      assert.equal(after.transfer.uploadChunks - before.transfer.uploadChunks, ready.metrics.uploadChunks);
+      assert.equal(after.transfer.placementCommands - before.transfer.placementCommands, ready.metrics.placementCommands);
+      assert.equal(after.resident.imageIds, visit > 1 ? 2 : 1);
+      const totals = after.transfer;
+      commit(await native.prepareViewer(viewerJob(lease, { window: { ...window, columnOffset: 2 } }), context));
+      assert.deepEqual(native.stats().transfer, totals, "same-lease pan stays zero-byte");
+      native.releaseViewer(lease);
+      const released = native.stats(), retirement = await native.prepareViewerRetirement(context);
+      assert.equal(native.stats().transfer.wireBytes, released.transfer.wireBytes, "preparation not transport");
+      commit(retirement);
+      const retired = native.stats();
+      assert.deepEqual(retired.normalization, released.normalization);
+      assert.deepEqual(retired.resident, released.resident, "trust invalidation does not claim freed pixels");
+      assert.equal(retired.surfaces.viewer, 0);
+      assert.equal(retired.transfer.wireBytes - released.transfer.wireBytes, Buffer.byteLength(retirement.uploads));
+      assert.equal(retired.surfaceTransfer.retirementCommands - released.surfaceTransfer.retirementCommands, 1);
+      assert.deepEqual(terminal.images.get(payload.imageId), inlineHistory);
+      // Both no-loss identical-payload transition and repeated external loss/reopen.
+      if (visit !== 0) terminal.lose(payload.imageId);
+      if (visit === 1) {
+        const b = native.reserveViewerPlacement({ payload: other, occurrence: "other-page" });
+        commit(await native.prepareViewer(viewerJob(b), context)); native.releaseViewer(b);
+        commit(await native.prepareViewerRetirement(context));
+      }
+      previousLease = lease; previousReady = ready;
+    }
+    assert.equal(native.stats().accounting.errors, 0);
+    presentation.disconnect();
+  }
+});
+
+test("retirement recovery inline-first successor observes queued successful invalidation and restores only history", async () => {
+  const native = fresh(), terminal = virtualTerminal({ quietMissing: true }), epoch = Symbol();
+  const commit = p => { p.onUploadStarted(); terminal.write(p.uploads); p.onUploaded(); };
+  const inline = await native.prepare(job(), { epoch }); commit(inline);
+  const lease = await openViewer(native), ready = await native.prepareViewer(viewerJob(lease), { epoch }); commit(ready);
+  native.releaseViewer(lease);
+  const predecessor = await native.prepare(job("predecessor"), { epoch });
+  const retirePromise = native.prepareViewerRetirement({ epoch });
+  let entered = false;
+  const successorPromise = native.prepare(job("successor"), { epoch }).then(p => { entered = true; return p; });
+  await settle(); assert.equal(entered, false);
+  assert.equal(predecessor.metrics.uploadChunks, 0); commit(predecessor);
+  const retirement = await retirePromise;
+  await settle(); assert.equal(entered, false, "retirement holds the common queue");
+  commit(retirement); terminal.lose(lease.imageId);
+  const successor = await successorPromise;
+  assert.equal(successor.metrics.uploadChunks, 1); assert.equal(successor.metrics.placementCommands, 3);
+  commit(successor);
+  assert.deepEqual(terminal.pngs.get(lease.imageId), Buffer.from(data, "base64"));
+  assert.equal(terminal.images.get(lease.imageId).size, 3);
+  assert.equal(terminal.images.get(lease.imageId).has(lease.placementId), false);
+  const cachedRows = await native.prepare(job(), { epoch });
+  assert.equal(cachedRows.uploads, ""); assert.deepEqual(cachedRows.lines, inline.lines); cachedRows.onUploaded();
+  const freshLease = await openViewer(native, "fresh-after-inline");
+  const freshReady = await native.prepareViewer(viewerJob(freshLease), { epoch });
+  assert.equal(freshReady.metrics.uploadChunks, 0, "inline successor already renewed upload trust"); commit(freshReady);
+  retirement.onUploaded(); retirement.onUploadFailed();
+  assert.equal(freshReady.isResident(), true);
+});
+
+test("retirement recovery success-only boundary protects later uploads from failed/aborted/stale/no-op callbacks", async () => {
+  const native = fresh(), epoch = Symbol(), payload = await native.resolvePayload(attachment);
+  const firstInline = await native.prepare(job(), { epoch }); firstInline.onUploaded();
+  const noOp = await native.prepareViewerRetirement({ epoch });
+  const lease = await openViewer(native), ready = await native.prepareViewer(viewerJob(lease), { epoch }); ready.onUploaded();
+  native.releaseViewer(lease);
+  const failed = await native.prepareViewerRetirement({ epoch }); failed.onUploadFailed(new Error("denied/partial"));
+  const stillTrusted = await native.prepare(job(), { epoch }); assert.equal(stillTrusted.uploads, ""); stillTrusted.onUploaded();
+  const abort = new AbortController(), blocker = await native.prepare(job("held"), { epoch });
+  const queued = native.prepareViewerRetirement({ epoch, signal: abort.signal });
+  await settle(); abort.abort(); blocker.onUploaded(); await assert.rejects(queued, /abort/i);
+  const controller = new AbortController();
+  const stale = await native.prepareViewerRetirement({ epoch, signal: controller.signal }); controller.abort();
+  const replacementEpoch = Symbol();
+  const newInline = await native.prepare(job(), { epoch: replacementEpoch }); newInline.onUploaded();
+  stale.onUploaded(); stale.onUploadFailed();
+  const retry = await native.prepareViewerRetirement({ epoch: replacementEpoch });
+  // Preparing or merely starting a scoped delete cannot end image reuse.
+  retry.onUploadStarted();
+  const totals = native.stats().transfer;
+  retry.onUploaded();
+  assert.equal(native.stats().transfer.uploadChunks, totals.uploadChunks);
+  const newLease = native.reserveViewerPlacement({ payload, occurrence: "new" });
+  const recovered = await native.prepareViewer(viewerJob(newLease), { epoch: replacementEpoch });
+  assert.equal(recovered.metrics.uploadChunks, 1); recovered.onUploaded();
+  for (const old of [failed, stale, retry, noOp]) { old.onUploadStarted?.(); old.onUploaded(); old.onUploadFailed(); }
+  assert.equal(recovered.isResident(), true);
+  const noPng = await native.prepareViewer(viewerJob(newLease, { canvas: { ...canvas, columns: 5 } }), { epoch: replacementEpoch });
+  assert.equal(noPng.metrics.uploadChunks, 0); noPng.onUploaded();
+  assert.equal(native.stats().accounting.errors, 0);
+});
+
+test("retirement recovery heals quietly rejected missing-pixel placement without claiming live-loss detection", async () => {
+  const native = fresh(), epoch = Symbol(), terminal = virtualTerminal({ quietMissing: true });
+  const commit = p => { p.onUploadStarted(); terminal.write(p.uploads); p.onUploaded(); };
+  const lease = await openViewer(native), first = await native.prepareViewer(viewerJob(lease), { epoch }); commit(first);
+  terminal.lose(lease.imageId);
+  // Loss during a live lease is deliberately unobservable under the approved
+  // same-lease policy. The independent q=2 model ignores the missing-pixel put.
+  const zoom = await native.prepareViewer(viewerJob(lease, { canvas: { ...canvas, columns: 5 } }), { epoch });
+  assert.equal(zoom.metrics.uploadChunks, 0); commit(zoom);
+  assert.equal(zoom.isResident(), true, "successful write is not terminal ACK");
+  assert.equal(terminal.ignoredPlacements.length, 1); assert.equal(terminal.images.has(lease.imageId), false);
+  native.releaseViewer(lease); commit(await native.prepareViewerRetirement({ epoch }));
+  const nextLease = await openViewer(native, "reopen-after-loss");
+  const recovery = await native.prepareViewer(viewerJob(nextLease), { epoch });
+  assert.equal(recovery.metrics.uploadChunks, 1); commit(recovery);
+  assert.deepEqual(terminal.pngs.get(nextLease.imageId), Buffer.from(data, "base64"));
+  assert.deepEqual(terminal.images.get(nextLease.imageId), new Map([[nextLease.placementId, { columns: canvas.columns, rows: canvas.rows }]]));
+  assert.equal(terminal.ignoredPlacements.length, 1, "recovery placement was accepted by the independent model");
+});
+
+test("retirement recovery failed/denied/partial/postguard-aborted writes preserve image trust until successful retry", async () => {
+  for (const mode of ["denied", "throw-before-effect", "throw-after-effect", "postguard-abort"]) {
+    const native = fresh(), presentation = createPresentation(), terminal = virtualTerminal();
+    let failure;
+    const tui = { terminal: { write(wire) {
+      if (failure === "throw-before-effect") throw new Error("write rejected");
+      terminal.write(wire);
+      if (failure === "throw-after-effect") throw new Error("partial scoped delete");
+    } }, requestRender() {} };
+    presentation.attach({ mode: "tui", ui: { setWidget(_key, factory) { factory(tui); } } }, true);
+    const context = { epoch: presentation.epoch };
+    const commit = p => assert.equal(presentation.commit(p, context), true);
+    commit(await native.prepare(job(), context));
+    const lease = await openViewer(native); commit(await native.prepareViewer(viewerJob(lease), context));
+    native.releaseViewer(lease);
+    const controller = new AbortController();
+    const refused = await native.prepareViewerRetirement({ ...context, signal: controller.signal });
+    const baseline = native.stats().transfer;
+    if (mode === "denied") refused.onUploadFailed(new Error("policy denied"));
+    else if (mode === "postguard-abort") {
+      controller.abort(); assert.equal(presentation.commit(refused, { ...context, signal: controller.signal }), false);
+    } else {
+      failure = mode; assert.throws(() => presentation.commit(refused, context), /write rejected|partial scoped/); failure = undefined;
+    }
+    assert.deepEqual(native.stats().transfer, baseline);
+    assert.equal(native.stats().viewer.retirementPending, true);
+    const payload = await native.resolvePayload(attachment);
+    assert.throws(() => native.reserveViewerPlacement({ payload, occurrence: "unsafe" }), /unresolved/);
+    const inline = await native.prepare(job(), context);
+    assert.equal(inline.uploads, "", `${mode} must not invalidate image trust on unsuccessful retirement`); commit(inline);
+    const retry = await native.prepareViewerRetirement(context); commit(retry);
+    const successorLease = await openViewer(native), ready = await native.prepareViewer(viewerJob(successorLease), context);
+    assert.equal(ready.metrics.uploadChunks, 1); assert.equal(ready.metrics.placementCommands, 2); commit(ready);
+    refused.onUploaded(); refused.onUploadFailed(); refused.onUploadStarted(); retry.onUploaded();
+    assert.equal(ready.isResident(), true);
+    const reuse = await native.prepare(job(), context); assert.equal(reuse.uploads, ""); commit(reuse);
+    assert.equal(native.stats().accounting.errors, 0);
+    presentation.disconnect();
+  }
+});
+
+test("retirement recovery accounting fault still invalidates and partial reupload restores exact complete history on retry", async () => {
+  class BadRetirement extends GraphicsMetrics { recordRetirement() { throw new Error("retirement accounting fault"); } }
+  const native = createNativeRenderer({ metrics: new BadRetirement() }), epoch = Symbol(), terminal = virtualTerminal({ quietMissing: true });
+  const commit = p => { p.onUploadStarted(); terminal.write(p.uploads); p.onUploaded(); };
+  for (const columns of [2, 3]) commit(await native.prepare(job("history", { ...geometry, columns }), { epoch }));
+  const payload = await native.resolvePayload(attachment), lease = await openViewer(native);
+  commit(await native.prepareViewer(viewerJob(lease), { epoch })); native.releaseViewer(lease);
+  const retirement = await native.prepareViewerRetirement({ epoch }); commit(retirement);
+  assert.equal(native.stats().viewer.retirementPending, false); assert.equal(native.stats().accounting.errors, 1);
+  terminal.lose(payload.imageId);
+  const nextLease = await openViewer(native, "reopen"), failed = await native.prepareViewer(viewerJob(nextLease), { epoch });
+  assert.equal(failed.metrics.uploadChunks, 1); assert.equal(failed.metrics.placementCommands, 3);
+  const totals = native.stats().transfer;
+  failed.onUploadStarted(); terminal.write(failed.uploads); failed.onUploadFailed(new Error("partial reupload"));
+  assert.equal(failed.isResident(), false); assert.deepEqual(native.stats().transfer, totals);
+  const retry = await native.prepareViewer(viewerJob(nextLease), { epoch });
+  assert.equal(retry.uploads, failed.uploads); commit(retry);
+  assert.deepEqual(terminal.pngs.get(payload.imageId), Buffer.from(data, "base64"));
+  assert.equal(terminal.images.get(payload.imageId).size, 3);
+  retirement.onUploaded(); retirement.onUploadFailed(); failed.onUploaded(); failed.onUploadFailed();
+  assert.equal(retry.isResident(), true);
+  const reuse = await native.prepareViewer(viewerJob(nextLease), { epoch }); assert.equal(reuse.uploads, ""); reuse.onUploaded();
 });
 
 test("failed attempts have zero success accounting while guarded successful recovery tolerates accounting faults", async () => {
