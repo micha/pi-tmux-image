@@ -4,9 +4,9 @@ View images and browse PDFs in [Pi](https://pi.dev) inside tmux. Open the viewer
 
 ## Demo
 
-Image display, zoom/pan and PDF viewing (1 min 42 sec).
+Image display, zoom/pan and PDF viewing (1 min 16 sec). View fullscreen for clearer text.
 
-https://github.com/user-attachments/assets/6f259bac-bb80-4667-a683-2983adeefbae
+https://github.com/user-attachments/assets/30a2393a-9f01-4958-9c75-bd5237e9594e
 
 ## Setup
 
