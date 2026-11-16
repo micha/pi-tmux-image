@@ -60,15 +60,40 @@ The transcript shows **only page 1**; browse other pages in the viewer.
 Local viewing is independent of `images.blockImages`: it blocks model access, **not storage**.
 Original PDF bytes and later pages are not sent to the model.
 
-## Remote clipboard
+## Experimental remote clipboard
 
-Image paste from a local Mac into Pi over SSH is not implemented yet;
-there is no `/tmux-image-paste` command. Even when staying in one focused pane,
-Pi 1.5.2's input buffering prevents safe handling of delayed clipboard reply
-fragments through the current public extension APIs. Separately, switching tmux windows while a read is pending can
-send clipboard data to the wrong pane. Normal text paste is unchanged. Transfer
-the image to the remote machine and use its path instead.
+With **Ghostty ≥1.4**, one focused tmux pane/client and interactive Pi:
 
-Details: [clipboard feasibility and remaining gates](docs/clipboard-paste-feasibility.md).
+```text
+/tmux-image-paste
+/tmux-image-paste clear
+/tmux-image-paste cancel
+```
+
+The first use asks for consent. Ghostty may separately request clipboard
+permission. A valid **still, noninterlaced PNG up to 8 MiB** is staged for your
+next interactive prompt; existing attachments are preserved. Nothing is
+submitted automatically. `clear` removes the pending image; `cancel` stops an
+import **locally only**. Cmd+V text paste and Pi's Ctrl+V are unchanged.
+
+**Stay in the same focused pane, client and Pi session until completion, including
+permission prompts.** Timeout/cancel does not cancel Ghostty's prompt/read.
+An **UNRESOLVED** widget blocks new reads until an owned terminal completion or
+error arrives. Resolve any terminal prompt before leaving; do not blindly retry,
+reload or disconnect.
+
+This is best effort: Pi 1.5.2 fragmented replies can put protocol/base64 text in
+your draft **before detection, potentially the whole payload**. Detected imports
+are rejected; inspect/edit the draft manually. Detection is not guaranteed and
+nothing is silently erased. Switching windows can send replies to another pane;
+there is no protection after pane/client/session/process changes.
+
+A pending image is consumed when handed to the next interactive input pipeline,
+**not** on a storage acknowledgement. Later input extensions or submission
+failure may discard it without automatic retry. Submitted images follow normal
+Pi model policy and session storage; `images.blockImages` does **not** prevent
+storage. If these risks are unsuitable, transfer a file and use `/tmux-image`.
+
+Details and automated versus human evidence: [clipboard import](docs/clipboard-paste.md).
 
 More: [PDF caveats](docs/pdf-document-viewer.md) · [terminal compatibility](docs/capabilities.md).

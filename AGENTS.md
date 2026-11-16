@@ -22,7 +22,7 @@ Human-facing setup, usage and limitations belong in `README.md`. Keep this file 
 | Wheel zoom or grab-to-pan | `docs/viewer-mouse.md` |
 | Viewer hot paths, input sampling or pacing | `docs/viewer-performance.md`, `docs/viewer-frame-pacing-plan.md` (handoff), `docs/viewer-pacing-design.md`, `docs/viewer-pacing-profile.md`, `docs/viewer-pacing.md` |
 | Transport/host integration | `docs/renderer-seam.md` |
-| Remote clipboard image paste | `docs/clipboard-paste-feasibility.md`; focused-pane-only workflow approved, implementation still gated on public Pi input framing; general focus-independent routing remains blocked; no real clipboard probe without coordination |
+| Remote clipboard image paste | `docs/clipboard-paste.md`, then `docs/clipboard-paste-feasibility.md`; experimental focused-pane/best-effort compromise accepts possible draft contamination, not solved framing/routing; no real clipboard probe or active-package operation without coordination |
 | Kitty protocol or image normalization | `docs/kitty-protocol.md`, `docs/pixel-normalization.md` |
 | Capability/settings policy | `docs/capabilities.md` |
 | Accounting or graphics memory | `docs/graphics-memory.md` |
@@ -32,7 +32,8 @@ For Pi API changes, read the installed Pi docs and extension examples, following
 
 ## Code map
 
-- `extensions/tmux-image/index.ts`: commands/tools, standard image attachments, local renderer and public settings/capability wiring.
+- `extensions/tmux-image.ts`: commands/tools, standard image attachments, local renderer and public settings/capability wiring.
+- `src/clipboard.mjs`, `src/clipboard-protocol.mjs`, `src/clipboard-capabilities.mjs`, `src/clipboard-png.mjs`: experimental explicit-command focused-pane PNG import, bounded exact-ID filtering/best-effort fragment observation, unresolved request quarantine and one pending interactive attachment handoff; no auto-submit or graphics/viewer policy coupling.
 - `src/viewer.mjs`: active-branch immutable snapshot/document picker, owned raw overlay, canonical desired viewport, admitted samples/ready frame and one latest native runner; injected PDF page access with exact page generations, one page-transition runner/latest target and serialized scoped retirement/rebind; no original-path reads, messages or model-policy changes.
 - `src/viewport.mjs`: pure viewport geometry, including pointer-anchored `zoomViewportAt`.
 - `src/viewer-pacing.mjs`: host-import-free scheduler with injected monotonic clock, one timer/ticket/demand bit, deferred cooldown and cancellation identities; no viewport/input queue, native reservations, terminal effects or chosen helper policy.
@@ -62,7 +63,7 @@ For Pi API changes, read the installed Pi docs and extension examples, following
 6. Gate tools before source access and every initial/replay/resize/refresh preparation before transport. Preserve pre/post checks and fresh visibility checks on `on` paths; release upload reservations after post-preparation denial. Synchronous ready-row/reuse/render policy gates remain subprocess-free.
 7. Refresh invalidates detector decisions, failed presentation records and residency together, not just TTL. It uses snapshots without file rereads, new messages or turns. Legacy migration is runtime-only; do not mutate stored content/details.
 8. Resolve executables through PATH, use argument arrays (never a shell), and retain timeouts/output limits. PDF children must actually close/drain before scratch removal or successor work. Private Temporary survives viewer close/branch/refresh in its owning runtime; replacement aborts/drains users before disposal. Page 1 is canonical stored content; later pages use captured originals, never the provenance path. Document orphan/non-secure-erasure limits. No machine-specific `/nix/store` paths, automatic installs, persistent environment overrides or stdout patches.
-9. Never mutate user Pi settings or tmux configuration. Installation tests use an isolated agent directory, not the active user's settings.
+9. Never mutate user Pi settings or tmux configuration. Installation tests use an isolated agent directory, not the active user's settings. Clipboard import is explicit-command-only with first-use consent; no shortcut override or automatic read/retry. Timeout/cancel drops image bytes but retains unresolved same-runtime request ownership until terminal DONE/error, not a claim that terminal permission is cancelled. Fragment observation must not hold/replay ambiguous typing or erase drafts; experimental prefix/payload contamination and cross-pane/late-runtime hazards remain documented. Pending image handoff is not a host persistence ACK; never restore/retry it silently after later input handlers discard it.
 
 ### Native ownership and viewer lifecycle
 

@@ -1,6 +1,15 @@
-# Remote clipboard image paste: focused-pane scope and remaining input gate
+# Remote clipboard image paste: routing/framing evidence
 
-## Current decision
+## Current implementation status
+
+Experimental `/tmux-image-paste` now implements the explicitly accepted
+focused-pane/best-effort compromise. See [clipboard-paste.md](clipboard-paste.md)
+for current interfaces, limits, consent, unresolved requests, draft contamination
+and validation. The observations below remain reproducible. They are **not**
+fixed by the feature; stronger guarantees remain blocked. No tmux/Pi host patch,
+focus lock, key replay, automatic draft repair or permission bypass is used.
+
+## Earlier conservative decision (superseded for experimental v1)
 
 The owner explicitly approved a **focused-pane-only** workflow: paste only into
 the focused pane and do not change panes before completion. General safe routing
@@ -13,8 +22,11 @@ input seam: delayed fragments of OSC 5522 are converted into legacy Alt-key and
 printable-text events before extensions receive them. No supported design was
 found that both bounds owned-response handling and preserves ordinary key
 semantics through the available public seams, even with no pane switch. See **Focused-pane host-input gate** below. `/tmux-image-paste` is
-therefore still **not implemented**; no read is emitted. Ghostty 1.4 protocol
-support and the focused-pane agreement do not fix this separate host-input gate.
+was not implemented at that investigation stage. Ghostty 1.4 protocol support
+and the focused-pane agreement do not fix this separate host-input gate. The
+owner subsequently accepted experimental detection **after possible draft
+contamination**, rather than requiring prevention through public seams; the
+current implementation therefore proceeds without claiming that gate solved.
 
 ## Original routing evidence (still applies outside the approved workflow)
 
@@ -27,9 +39,11 @@ interpret or log the clipboard payload as user input. Rechecking pane visibility
 before sending, allowing only one attached client, or checking an ID inside Pi
 cannot close this race.
 
-No production code, command, shortcut, image staging, clipboard read, paste mode,
-active configuration or package activation was changed. Existing text paste,
-image/viewer/PDF behavior, settings and model policy are unchanged.
+The original feasibility investigation changed no production code, command,
+shortcut, image staging, clipboard read, paste mode, active configuration or
+package activation. Its observations were synthetic. Current experimental
+implementation is documented separately; no real clipboard probe or active
+package operation is authorized by either record.
 
 ## Primary protocol evidence
 
@@ -96,7 +110,7 @@ password/name remembering, configuration changes, or permission bypass is needed
 Graphics support, truecolor, `terminal.showImages` and placeholder support do not
 establish clipboard capability.
 
-## Public Pi staging seam: possible, not implemented or integration-verified
+## Original public Pi staging assessment (current integration recorded separately)
 
 Inspected installed **Pi 1.5.2** complete `docs/extensions.md`,
 `docs/tui.md`, shipped `examples/extensions/input-transform.ts`, public extension
@@ -120,7 +134,7 @@ in `renderer-seam.md` covers **Pi 1.0.3**, not this new clipboard feature.
   routing is fixed: session changes/reload must not cause payloads to enter a
   replacement editor or a different pending request.
 
-No staging prototype was connected to the unsafe transport. Standard submitted
+At the original investigation stage no staging prototype was connected. Standard submitted
 images must retain Pi's normal `images.blockImages` behavior and session storage:
 blocking model access does **not** prevent submitted images from being stored.
 
@@ -227,7 +241,7 @@ not a universal feature detector.
 This is synthetic automated transport evidence, **not** human Ghostty/macOS/SSH
 round-trip acceptance. No real clipboard probe is authorized by this record.
 
-## Checkout validation
+## Historical evidence-only checkout validation
 
 For this documentation/diagnostic-only change:
 
@@ -259,9 +273,10 @@ of accepted baseline `0124bd6` was independently tested with `npm test` and
 reproduced **249 passed, 35 skipped, 2 failed**, with the same two entry-path
 failures. No unrelated manifest/test fix is included.
 
-## Unblocking and future acceptance
+## Requirements for stronger guarantees (not experimental v1 prerequisites)
 
-For **focused-pane-only** support, first resolve the Pi host-input framing gate.
+For **focused-pane-only** support without the accepted draft-contamination
+compromise, first resolve the Pi host-input framing gate.
 Then require explicit first-use consent to remain in the same focused pane,
 client and Pi session/process until completion, including terminal permission
 prompts. Timeout/cancel does **not** cancel that prompt or guarantee no late

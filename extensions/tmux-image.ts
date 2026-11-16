@@ -3,16 +3,18 @@ import { randomUUID } from "node:crypto";
 import { Type } from "@earendil-works/pi-ai";
 import { getCapabilities, getCellDimensions, MouseRegion, matchesKey, parseKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { convertToPng, createReadTool, defineTool, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { captureLayout, createNativeRenderer, NATIVE_SCHEMA, readLegacyDetails, readNativeDetails, sanitizeDisplayText } from "../../src/native.mjs";
-import { createPdfDocumentService, PDF_SCHEMA, readPdfDetails, readPdfPreviewDetails } from "../../src/pdf-document.mjs";
-import { createPresentation } from "../../src/presentation.mjs";
-import { createViewerController, indexSnapshots } from "../../src/viewer.mjs";
-import { checkDisplayPolicy, resolvePiDisplayPolicy, TmuxCapabilityDetector } from "../../src/capabilities.mjs";
+import { captureLayout, createNativeRenderer, NATIVE_SCHEMA, readLegacyDetails, readNativeDetails, sanitizeDisplayText } from "../src/native.mjs";
+import { createPdfDocumentService, PDF_SCHEMA, readPdfDetails, readPdfPreviewDetails } from "../src/pdf-document.mjs";
+import { createPresentation } from "../src/presentation.mjs";
+import { createViewerController, indexSnapshots } from "../src/viewer.mjs";
+import { checkDisplayPolicy, resolvePiDisplayPolicy, TmuxCapabilityDetector } from "../src/capabilities.mjs";
+import { registerClipboardPaste } from "../src/clipboard.mjs";
 
 const MESSAGE_TYPE = "pi-tmux-image";
 
 export default function (pi: ExtensionAPI, { createDocumentService = createPdfDocumentService } = {}) {
   const presentation = createPresentation();
+  registerClipboardPaste(pi, { presentation });
   const native = createNativeRenderer({ convertToPng });
   const legacyOccurrences = new WeakMap<object, string>();
   const legacyEntryOccurrences = new Map<string, string>();
