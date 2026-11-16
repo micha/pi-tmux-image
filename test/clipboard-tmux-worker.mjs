@@ -34,7 +34,7 @@ tui.addInputListener((data) => {
 });
 const widgets = new Map(), notices = [];
 const uiContext = {
-  confirm: async () => true, notify: (message) => notices.push(message),
+  confirm: async () => { throw new Error('Extension confirmation must not be called'); }, notify: (message) => notices.push(message),
   onTerminalInput: (handler) => tui.addInputListener(handler),
   setWidget(key, content) {
     const old = widgets.get(key); old?.dispose?.(); if (old) tui.removeChild(old);

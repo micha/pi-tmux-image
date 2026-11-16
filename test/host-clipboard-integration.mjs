@@ -62,12 +62,18 @@ else process.exitCode=1;
   if (config.tmuxEnv !== undefined) for (const key of ['TMUX', 'TMUX_PANE']) {
     if (config.tmuxEnv[key] === undefined) delete process.env[key]; else process.env[key] = config.tmuxEnv[key];
   }
-  let later = 'continue', consent = true, confirmations = 0, unsubscribeCount = 0, nativePastes = 0, reservedActions = 0, shortcutWork;
+  let later = 'continue', confirmations = 0, unsubscribeCount = 0, nativePastes = 0, reservedActions = 0, shortcutWork;
   const writes = [], keys = [], notices = [], requests = [], widgetMap = new Map();
   const input = new tuiModule.StdinBuffer();
   let terminalInput;
   const terminal = { columns: 80, rows: 24, kittyProtocolActive: false,
-    start(callback) { terminalInput = callback; }, stop() {}, write(data) { writes.push(data); },
+    start(callback) { terminalInput = callback; }, stop() {}, write(data) {
+      if (data.includes('5522;type=read')) {
+        assert.equal(tui.hasOverlay(), true, 'owned modal installed before read');
+        assert.ok(writes.some((frame) => frame.includes('Reading clipboard')), 'modal flushed before read');
+      }
+      writes.push(data);
+    },
     moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {}, clearFromCursor() {}, clearScreen() {}, setTitle() {}, setProgress() {}, async drainInput() {} };
   const tui = new (mode === 'fullscreen' ? tuiModule.TuiAltScreen : tuiModule.TuiMainScreen)(terminal);
   class ObservedEditor extends host.CustomEditor {
@@ -81,12 +87,7 @@ else process.exitCode=1;
   input.on('paste', (data) => terminalInput(`\x1b[200~${data}\x1b[201~`));
   tui.start();
   const uiContext = {
-    confirm: async (title, message) => {
-      if (!confirmations) assert.equal(reads(writes).length, 0, 'first consent before emission');
-      confirmations++; assert.equal(title, 'Paste clipboard image?');
-      assert.match(message, /Ctrl\+C cancels import, not Ghostty permission or the terminal read/);
-      assert.ok(message.length < 260); return consent;
-    },
+    confirm: async () => { confirmations++; throw new Error('Extension confirmation must not be called'); },
     notify: (message, level) => notices.push({ message, level }),
     onTerminalInput: (listener) => { const unsubscribe = tui.addInputListener(listener); return () => { unsubscribeCount++; unsubscribe(); }; },
     setWidget(key, content) {
@@ -133,7 +134,7 @@ else process.exitCode=1;
     assert.equal(reads(writes).length, 0); assert.equal(session.messages.length, 0); assert.equal(requests.length, 0);
     return { session, tui, writes, keys, notices, requests, input, widgetMap, editor, shortcuts,
       get shortcutWork() { return shortcutWork; }, get nativePastes() { return nativePastes; }, get reservedActions() { return reservedActions; },
-      set later(value) { later = value; }, set consent(value) { consent = value; },
+      set later(value) { later = value; },
       get confirmations() { return confirmations; }, get unsubscribeCount() { return unsubscribeCount; },
       async stage() {
         const count = reads(writes).length, command = session.prompt('/tmux-image-paste');
@@ -185,11 +186,8 @@ test('public SDK/actual CustomEditor: default/custom shortcuts, native conflict/
       const encoded = { 'ctrl+v': '\x16', 'ctrl+shift+v': '\x1b[118;6u', 'ctrl+alt+v': '\x1b[118;7u' }[shortcutKey];
       assert.equal(tuiModule.matchesKey(encoded, shortcutKey), true);
       h.editor.setText('existing unsent draft');
-      h.consent = false; h.input.process(encoded); await h.shortcutWork;
-      assert.equal(reads(h.writes).length, 0); assert.equal(h.nativePastes, 0); assert.equal(h.confirmations, 1);
       const diagnostics = h.session.extensionRunner.getShortcutDiagnostics();
       if (shortcutKey === 'ctrl+v' && !config.keybindings) assert.ok(diagnostics.some((d) => /app.clipboard.pasteImage.*Using/.test(d.message)));
-      h.consent = true;
       async function stageShortcut() {
         const count = reads(h.writes).length; h.input.process(encoded);
         await until(() => reads(h.writes).length > count);
@@ -199,6 +197,7 @@ test('public SDK/actual CustomEditor: default/custom shortcuts, native conflict/
         await h.shortcutWork;
       }
       await stageShortcut(); assert.equal(h.editor.getText(), 'existing unsent draft');
+      assert.equal(h.confirmations, 0); assert.equal(h.nativePastes, 0);
       h.input.process(encoded); await h.shortcutWork; assert.equal(reads(h.writes).length, 1, 'pending blocks repeated shortcut');
       await h.session.prompt('/tmux-image-paste clear'); assert.equal(h.widgetMap.has('pi-tmux-image-clipboard'), false);
       await stageShortcut();
@@ -228,7 +227,12 @@ test('public SDK/actual CustomEditor: invalid opt-in and user-reserved collision
       h.editor.setText('unchanged'); h.input.process('\x16'); assert.equal(reads(h.writes).length, 0);
       if (config.shortcut === 'ctrl+c') assert.ok(h.notices.some((n) => /Invalid PI_TMUX_IMAGE_PASTE_SHORTCUT/.test(n.message)));
       else { assert.equal(h.reservedActions, 1); assert.ok(h.session.extensionRunner.getShortcutDiagnostics().some((d) => /Skipping/.test(d.message))); }
-      await h.stage(); assert.equal(h.editor.getText(), 'unchanged');
+      await h.stage(); assert.equal(h.editor.getText(), 'unchanged'); assert.equal(h.confirmations, 0);
+      await h.session.prompt('/tmux-image-paste clear');
+      const count = reads(h.writes).length;
+      await writeFile(join(directory, 'bin/tmux'), '#!/usr/bin/env node\nprocess.exit(1);\n');
+      await h.session.prompt('/tmux-image-paste');
+      assert.equal(reads(h.writes).length, count, 'failed topology must not emit a read'); assert.equal(h.tui.hasOverlay(), false);
     } finally { await h?.cleanup(); await rm(directory, { recursive: true, force: true }); }
   }
 });
@@ -238,8 +242,7 @@ test('public SDK clipboard extension: intact request/staging/interactive submiss
     const directory = await mkdtemp(join(tmpdir(), 'pi-clipboard-host-')); let h;
     try {
       h = await setup(directory, blocked);
-      h.consent = false; await h.session.prompt('/tmux-image-paste'); assert.equal(reads(h.writes).length, 0);
-      h.consent = true; await h.stage(); assert.equal(h.confirmations, 2);
+      await h.stage(); assert.equal(h.confirmations, 0);
       assert.ok(h.widgetMap.get('pi-tmux-image-clipboard').render().join('').includes('1 PNG pending'));
       h.input.process('normal typing'); h.input.process('\x1b[200~plain text paste\x1b[201~');
       assert.ok(h.keys.join('').includes('normal typing')); assert.ok(h.keys.at(-1).includes('plain text paste'));

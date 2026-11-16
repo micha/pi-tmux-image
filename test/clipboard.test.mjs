@@ -201,19 +201,19 @@ test('clipboard topology bounds hung queries, malformed output and missing tmux'
   }
 });
 
-function extensionHarness({ consent = true, mode = 'tui', shortcut, tmuxEnv = env, probe = async () => ({ fingerprint: 'same' }), readerOptions = {}, renderFailure = () => false, hideFailure = () => false } = {}) {
-  const handlers = new Map(), commands = new Map(), shortcuts = new Map(), notices = [], prompts = [], writes = [], widgets = new Map();
+function extensionHarness({ mode = 'tui', shortcut, tmuxEnv = env, probe = async () => ({ fingerprint: 'same' }), readerOptions = {}, renderFailure = () => false, hideFailure = () => false } = {}) {
+  const handlers = new Map(), commands = new Map(), shortcuts = new Map(), notices = [], writes = [], widgets = new Map();
   let input, overlay, confirms = 0, unsubscribe = 0, frames = 0;
   const keys = [];
   const parseKey = (data) => ({ '\x1b]': 'alt+]', '\x1b\\': 'alt+\\', '\x03': 'ctrl+c', '\x11': 'ctrl+q', '\x1b[93;3u': 'alt+]', '\x1b[92;3u': 'alt+\\', '\x1b[27;3;93~': 'alt+]', '\x1b[27;3;92~': 'alt+\\' })[data];
   const tui = { hasOverlay: () => Boolean(overlay), requestRender() {}, renderNow() { frames++; if (renderFailure(frames)) throw new Error('Synthetic frame failure'); },
     showOverlay(component) { overlay = component; return { isFocused: () => overlay === component, isHidden: () => false, hide() { if (hideFailure()) throw new Error('Synthetic owned hide failure'); if (overlay === component) overlay = undefined; } }; } };
   const pi = { on(name, handler) { const list = handlers.get(name) || []; list.push(handler); handlers.set(name, list); }, registerCommand(name, command) { commands.set(name, command); }, registerShortcut(key, options) { shortcuts.set(key, options); } };
-  const ctx = { mode, ui: { confirm: async (title, message) => { prompts.push({ title, message }); confirms++; return consent; }, notify: (...args) => notices.push(args), setWidget: (key, lines) => widgets.set(key, lines), onTerminalInput: (listener) => { input = listener; return () => { unsubscribe++; }; } } };
+  const ctx = { mode, ui: { confirm: async () => { confirms++; throw new Error('Extension confirmation must not be called'); }, notify: (...args) => notices.push(args), setWidget: (key, lines) => widgets.set(key, lines), onTerminalInput: (listener) => { input = listener; return () => { unsubscribe++; }; } } };
   const presentation = { connection: { epoch: 1, tui }, write: (data) => { assert.ok(overlay && frames > 0, 'dialog rendered before emission'); writes.push(data); }, bind() {} };
   registerClipboardPaste(pi, { presentation, env: { ...tmuxEnv, PI_TMUX_IMAGE_PASTE_SHORTCUT: shortcut }, probe, parseKey, matchesKey: (data, key) => parseKey(data) === key, truncateToWidth: (text, width) => text.slice(0, width), createReader: (options) => createClipboardReader({ ...options, ...readerOptions }) });
   const emit = async (name, event = {}) => { let result; for (const handler of handlers.get(name) || []) result = await handler(event, ctx); return result; };
-  return { ctx, emit, notices, prompts, writes, widgets, keys, shortcuts, shortcut: (key = 'ctrl+v') => shortcuts.get(key).handler(ctx), get modal() { return overlay; }, input: (data) => { const result = input?.(data); if (!result?.consume) { if (overlay) overlay.handleInput(data); else keys.push(data); } return result; }, command: (args = '') => commands.get('tmux-image-paste').handler(args, ctx), get confirms() { return confirms; }, get unsubscribe() { return unsubscribe; } };
+  return { ctx, emit, notices, writes, widgets, keys, shortcuts, shortcut: (key = 'ctrl+v') => shortcuts.get(key).handler(ctx), get modal() { return overlay; }, input: (data) => { const result = input?.(data); if (!result?.consume) { if (overlay) overlay.handleInput(data); else keys.push(data); } return result; }, command: (args = '') => commands.get('tmux-image-paste').handler(args, ctx), get confirms() { return confirms; }, get unsubscribe() { return unsubscribe; } };
 }
 async function stage(h) {
   const command = h.command();
@@ -222,12 +222,10 @@ async function stage(h) {
   success(h.input, idOf(h.writes[0])); await command;
 }
 
-test('clipboard extension only reads after consent, visibly stages, preserves attachments and consumes at interactive handoff', async () => {
+test('clipboard extension reads only on invocation without extra confirmation and preserves attachment handoff', async () => {
   const h = extensionHarness(); await h.emit('session_start'); assert.equal(h.writes.length, 0);
   assert.equal(h.notices.length, 0, 'no valid shortcut startup toast');
-  await stage(h); assert.equal(h.confirms, 1);
-  assert.equal(h.prompts[0].title, 'Paste clipboard image?');
-  assert.match(h.prompts[0].message, /Ctrl\+C cancels import, not Ghostty permission or the terminal read/);
+  await stage(h); assert.equal(h.confirms, 0);
   assert.deepEqual(h.notices, [['PNG ready for your next prompt.', 'info']]);
   assert.ok([...h.widgets.values()].flat().some((text) => text?.includes('/tmux-image-paste clear')));
   assert.ok([...h.widgets.values()].flat().some((text) => text?.includes('1 PNG pending')));
@@ -262,12 +260,12 @@ test('clipboard shortcut defaults only in valid tmux; off/outside register none 
   }
 });
 
-test('clipboard default/custom shortcuts share consent, busy/pending/unresolved guards and attachment handoff', async () => {
+test('clipboard default/custom shortcuts skip extra confirmation and share busy/pending/unresolved guards and handoff', async () => {
   for (const shortcut of [undefined, 'ctrl+v', 'ctrl+shift+v', 'ctrl+alt+v']) {
     const h = extensionHarness({ shortcut }); await h.emit('session_start'); assert.equal(h.shortcuts.size, 1);
     const work = h.shortcut(shortcut); await h.shortcut(shortcut);
     for (let i = 0; i < 10 && !h.writes.length; i++) await Promise.resolve();
-    assert.equal(h.confirms, 1); assert.equal(h.writes.length, 1);
+    assert.equal(h.confirms, 0); assert.equal(h.writes.length, 1);
     success(h.input, idOf(h.writes[0])); await work;
     await h.shortcut(shortcut); assert.equal(h.writes.length, 1, 'pending blocks repeat');
     const existing = { type: 'image', data: 'existing', mimeType: 'image/png' };
@@ -353,8 +351,10 @@ test('clipboard owned hide failures retain usable retry controls, including fail
   }
 });
 
-test('clipboard extension clear, lifecycle, denied consent and non-TUI do not submit or emit', async () => {
-  const no = extensionHarness({ consent: false }); await no.emit('session_start'); await no.command(); assert.equal(no.writes.length, 0); await no.emit('session_shutdown');
+test('clipboard failed preflight, clear, lifecycle and non-TUI do not submit or emit', async () => {
+  const no = extensionHarness({ probe: async () => { throw new Error('Unsupported topology'); } });
+  await no.emit('session_start'); await no.command(); await no.shortcut();
+  assert.equal(no.writes.length, 0); assert.equal(no.modal, undefined); assert.equal(no.confirms, 0); await no.emit('session_shutdown');
   const rpc = extensionHarness({ mode: 'rpc' }); await rpc.emit('session_start'); await rpc.command(); assert.equal(rpc.writes.length, 0);
   for (const clear of ['clear', 'session_tree', 'session_shutdown']) {
     const h = extensionHarness(); await h.emit('session_start'); await stage(h);

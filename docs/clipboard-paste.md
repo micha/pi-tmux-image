@@ -49,13 +49,14 @@ of upstream limitations, not general-safe transport acceptance.
 
 ## Visible ownership and keys
 
-The first invocation per runtime asks for explicit consent before any read is sent.
-The short consent explains clipboard access, captured typing, staying in the pane,
-and that local cancellation does not cancel terminal permission/read. Normal success
-says **PNG ready for your next prompt.**; the pending widget retains the clear
-command. Unsafe-exit/failure warnings remain; handoff/storage details stay in this
-reference rather than routine UI. Ghostty's own `clipboard-read=ask` permission
-prompt remains intact; there is no password, automatic authorization or retry.
+Ctrl+V or `/tmux-image-paste` is the explicit request: there is **no extension-level
+first-use confirmation**. Capability preflight runs before the owned read dialog
+is installed/flushed and the single request is emitted. Startup/session events
+never initiate a read. Ghostty's own `clipboard-read=ask` permission prompt remains
+intact; there is no permission/settings change, automatic authorization or retry.
+Normal success says **PNG ready for your next prompt.**; the pending widget retains
+the clear command. Unsafe-exit/failure warnings and double-Ctrl+Q confirmation
+remain; handoff/storage details stay in this reference rather than routine UI.
 
 | Key/action | Meaning |
 | --- | --- |
@@ -128,7 +129,7 @@ default there, so an unresolved CLI flag cannot correctly select factory-time
 registration. Late `session_start` registration is not used. There is no always-
 registered disabled handler and no cross-extension dispatcher/global key listener.
 The shortcut directly invokes the **same command handler** with empty arguments;
-consent, topology, modal ownership, bounds, timeout/drain, exit, PNG validation,
+explicit invocation, topology, modal ownership, bounds, timeout/drain, exit, PNG validation,
 pending/clear and interactive handoff are unchanged. Existing draft text and
 attachments are neither erased nor submitted. The registered key is PNG-dialog-only:
 rejection/cancel never automatically falls back to native clipboard or text paste.
@@ -164,8 +165,9 @@ runtime with an unresolved terminal read. `off` restores native dispatch; omitti
 an override restores the tmux default. Restore any native binding you manually
 edited separately. No real user file is changed by the extension. Never emulate
 this with a terminal macro typing the command and Enter into an existing draft.
-The earlier optional shortcut has narrow owner confirmation below; the new default
-configuration remains human-pending and does not expand the accepted matrix.
+The optional shortcut and subsequent default/concise UI have narrow owner
+confirmation below. The newer no-extension-confirmation UX remains human-pending;
+none of these observations expands the accepted matrix.
 
 ## Separate modules and public seams
 
@@ -302,7 +304,7 @@ They were previously reproduced against archived accepted `0124bd6`; no unrelate
 manifest/test fix is included. The optional existing integration's two PDF/model-
 policy subcases plus parent fail because **pdfinfo is absent on PATH**, not because
 of a clipboard assertion. That optional PDF suite was not rerun for the current
-registration/copy follow-up; no Poppler installation/PDF fix was attempted.
+clipboard-UX follow-ups; no Poppler installation/PDF fix was attempted.
 
 Shortcut regression coverage uses fresh public loading plus the actual exported
 `CustomEditor` and real extension-runner conflict handling. Public TUI keybinding
@@ -310,14 +312,15 @@ managers use documented native-paste/interrupt definitions and read only tempora
 `keybindings.json` fixtures; this is not a claim of exercising the entire CLI
 settings loader. Tests prove off/native dispatch, default/override native conflict
 warning/override, optional unbind/remap, both custom keys, reserved user collisions,
-invalid override, consent before emission, exact draft/attachment preservation,
+invalid override, no extra confirmation, modal render before emission, exact draft/attachment preservation,
 clear/handoff and repeat/overlay/cancel/unresolved guards, with no model turn.
 Native paste callbacks are counters, never physical clipboard helpers. Current
 coverage also verifies default and empty-override registration only in valid tmux
 context; `off`, outside context and invalid pane preserve native dispatch (even
 with a custom override). Valid startup has no informational toast, invalid values
-still warn, consent precedes the read, and concise success retains the pending
-clear affordance.
+still warn, confirmation stubs throw if called, and concise success retains the
+pending clear affordance. Failed topology/overlay checks remain no-read; native
+terminal denial (EPERM) coverage is retained.
 
 The private transport cases activate the **default** shortcut by sending **Ctrl+V
 from the fake outer PTY**, not programmatically submitting a slash command. The
@@ -399,10 +402,22 @@ reported verbatim:
 This records owner-confirmed optional-shortcut success, not every modifier,
 collision or cancellation case. The subsequent request to remove the opt-in
 requirement authorized the new tmux-context default and concise routine copy;
-it did not waive unresolved-read/focus hazards. The **new default configuration
-and shortened UI remain human-pending**, supported by the automated default-path
-regression above. No new image receipt, persistence acknowledgement or handler-
-ordering trace is inferred from this shortcut report.
+it did not waive unresolved-read/focus hazards. No new image receipt, persistence
+acknowledgement or handler-ordering trace is inferred from this shortcut report.
+
+### Default shortcut and concise UI follow-up
+
+After the default-shortcut/concise-UI changes (`2f5c0d8` and wording follow-up
+`3bb690d`), the owner reported verbatim:
+
+> works! make a commit and push
+
+This is narrow owner confirmation that the default shortcut and concise UI worked,
+not a full modifier/collision/cancel matrix or a storage acknowledgement. It does
+not establish exact process/handler ordering. The owner then explicitly requested
+removing the extension's extra first-use confirmation; **that newer no-confirmation
+UX remains human-pending**, with automated actual-editor/private-tmux coverage.
+Native Ghostty permission prompts and unsafe-exit confirmation are unchanged.
 
 Remaining human-pending cases include broader attachment-handoff/submission cases, denial,
 Ctrl+C/drain, timeout, warned exit/late replies, cleanup failures, other PNG

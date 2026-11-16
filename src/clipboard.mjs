@@ -3,7 +3,6 @@ import { probeClipboardTopology } from './clipboard-capabilities.mjs';
 import { openClipboardModal } from './clipboard-modal.mjs';
 
 const KEY = 'pi-tmux-image-clipboard';
-const CONSENT = 'Read a PNG from your terminal clipboard? The dialog captures typing; stay in this tmux pane until finished. Ctrl+C cancels import, not Ghostty permission or the terminal read. Nothing is submitted automatically.';
 
 /** Public extension API only. Separate from image rendering, PDF and viewer pacing. */
 export function registerClipboardPaste(pi, { presentation, env = process.env, parseKey, matchesKey, truncateToWidth,
@@ -50,7 +49,7 @@ export function registerClipboardPaste(pi, { presentation, env = process.env, pa
   pi.on('session_start', (_event, ctx) => {
     close();
     if (ctx.mode !== 'tui' || typeof ctx.ui.onTerminalInput !== 'function' || !env.TMUX || !/^%\d+$/.test(env.TMUX_PANE || '')) return;
-    const current = { context: ctx, closed: false, consent: false, busy: false, pending: undefined, attempt: undefined, modal: undefined, removalFailed: false, focusWarning: false };
+    const current = { context: ctx, closed: false, busy: false, pending: undefined, attempt: undefined, modal: undefined, removalFailed: false, focusWarning: false };
     runtime = current;
     current.reader = createReader({ parseKey, onChange: () => update(current), onWarning: (message) => notify(current, message) });
     current.unsubscribe = ctx.ui.onTerminalInput((data) => {
@@ -99,11 +98,6 @@ export function registerClipboardPaste(pi, { presentation, env = process.env, pa
       const attempt = new AbortController(); current.attempt = attempt; current.busy = true;
       const live = () => runtime === current && !current.closed && !attempt.signal.aborted;
       try {
-        if (!current.consent) {
-          const agreed = await ctx.ui.confirm('Paste clipboard image?', CONSENT, { signal: attempt.signal });
-          if (!live() || !agreed) return;
-          current.consent = true;
-        }
         if (typeof parseKey !== 'function' || typeof matchesKey !== 'function' || typeof truncateToWidth !== 'function') throw new Error();
         if (!presentation.connection || presentation.connection.tui.hasOverlay()) throw new Error();
         const before = await probe({ mode: ctx.mode, env, signal: attempt.signal });

@@ -63,8 +63,8 @@ Original PDF bytes and later pages are not sent to the model.
 ## Remote clipboard
 
 Press **Ctrl+V** or run `/tmux-image-paste` in interactive Pi inside tmux with
-**Ghostty ≥1.4**. First use asks for consent; Ghostty may also ask for permission.
-The dialog reads a **still, noninterlaced PNG up to 8 MiB**, then makes it ready
+**Ghostty ≥1.4**. The read dialog opens directly; Ghostty may independently ask
+for clipboard permission. The dialog reads a **still, noninterlaced PNG up to 8 MiB**, then makes it ready
 for your next prompt. Your draft and existing attachments stay intact; nothing
 is submitted automatically. Remove a pending image with `/tmux-image-paste clear`.
 
