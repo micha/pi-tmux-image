@@ -11,7 +11,7 @@ const entry = join(hostRoot, 'dist/index.js');
 const host = await import(pathToFileURL(entry).href);
 const tuiModule = await import(pathToFileURL(createRequire(entry).resolve('@earendil-works/pi-tui')).href);
 process.env.PATH = `${join(directory, 'bin')}:${process.env.PATH}`;
-process.env.PI_TMUX_IMAGE_PASTE_SHORTCUT = 'ctrl+v';
+delete process.env.PI_TMUX_IMAGE_PASTE_SHORTCUT; // Exercise default factory registration.
 const keybindings = new tuiModule.KeybindingsManager({ ...tuiModule.TUI_KEYBINDINGS,
   'app.clipboard.pasteImage': { defaultKeys: 'ctrl+v' },
 }, JSON.parse(await readFile(join(directory, 'agent/keybindings.json'), 'utf8')));
@@ -80,7 +80,7 @@ try {
   };
   const before = editorEvents, original = editor.getText();
   terminal.write('CLIPBOARD_PRIVATE_WORKER_READY'); await start; await shortcutWork;
-  assert.equal(activations, 1, 'actual outer-PTY Ctrl+V activated extension shortcut');
+  assert.equal(activations, 1, 'actual outer-PTY Ctrl+V activated default extension shortcut');
   assert.equal(nativePastes, 0); assert.equal(submissions, 0, 'no synthetic Enter/submission');
   assert.equal(requests, 0, 'no automatic model turn');
   assert.ok(editor.getText() === original, 'actual editor draft unchanged');

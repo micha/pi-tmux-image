@@ -2,7 +2,7 @@
 
 ## Current implementation status
 
-Experimental `/tmux-image-paste` now uses an explicitly accepted **visible
+`/tmux-image-paste` now uses an explicitly accepted **visible
 input-owning dialog** in the focused pane. It normalizes tmux CSI-u/xterm Alt-key
 markers and assembles bounded replies only while that dialog owns input. This
 supersedes the nonmodal implementation in `2493197`, whose first real trial

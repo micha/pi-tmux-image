@@ -1,8 +1,9 @@
-# Experimental focused-pane clipboard PNG dialog
+# Focused-pane clipboard PNG dialog
 
 ## Current scope
 
-`/tmux-image-paste` opens a visible **Reading clipboard—do not type** dialog.
+**Ctrl+V** (default in inherited valid tmux/pane context) or `/tmux-image-paste`
+opens a visible **Reading clipboard** dialog with a do-not-type instruction.
 Only while that owned dialog is visibly focused does clipboard assembly own
 ordinary input. It uses Pi's existing TUI loop, not an editor replacement,
 second terminal loop, host patch or keyboard-mode change. After a valid read,
@@ -49,8 +50,11 @@ of upstream limitations, not general-safe transport acceptance.
 ## Visible ownership and keys
 
 The first invocation per runtime asks for explicit consent before any read is sent.
-It explains modal input capture, staying focused, Ghostty permissions, cancellation,
-warned exit and standard storage. Ghostty's own `clipboard-read=ask` permission
+The short consent explains clipboard access, captured typing, staying in the pane,
+and that local cancellation does not cancel terminal permission/read. Normal success
+says **PNG ready for your next prompt.**; the pending widget retains the clear
+command. Unsafe-exit/failure warnings remain; handoff/storage details stay in this
+reference rather than routine UI. Ghostty's own `clipboard-read=ask` permission
 prompt remains intact; there is no password, automatic authorization or retry.
 
 | Key/action | Meaning |
@@ -94,19 +98,29 @@ Branch/transport changes stop import but do not pretend the terminal read ended.
 No native image placements, shared PNG resources, viewer controls, PDF behavior
 or pacing policy are changed.
 
-## Optional per-process shortcut
+## Default shortcut and per-process preferences
 
-Default behavior is unchanged: **no shortcut registration**. To opt in with this
-extension already configured, start a fresh process with:
+The owner explicitly approved removing the opt-in requirement after confirming
+the optional shortcut worked. Factory registration now defaults to **Ctrl+V**
+only when inherited `TMUX` is present and `TMUX_PANE` matches `%` plus digits,
+the same context predicate used by runtime activation. There is no topology probe
+just to decide registration. Actual read eligibility still uses the unchanged
+capability checks after explicit invocation. Outside that context **no shortcut
+is registered**, even with an override; native paste is unchanged.
+
+Optional preferences on a fresh launch:
 
 ```sh
-PI_TMUX_IMAGE_PASTE_SHORTCUT=ctrl+v pi
+PI_TMUX_IMAGE_PASTE_SHORTCUT=off pi
+PI_TMUX_IMAGE_PASTE_SHORTCUT=ctrl+shift+v pi
 ```
 
-Exactly `ctrl+v`, `ctrl+shift+v` and `ctrl+alt+v` are supported (lowercase, no extra
-spaces). Unset/empty disables registration; invalid values warn without breaking
-the command. This is a one-process environment prefix, not a persistent export,
-Pi setting, CLI flag or terminal key-mode change. No background read occurs.
+Exactly `ctrl+v`, `ctrl+shift+v`, `ctrl+alt+v` and `off` are accepted (lowercase,
+no spaces). Unset/empty uses the tmux default; `off` disables registration.
+Invalid values register none and give a short warning without breaking the
+command. Valid configuration has **no startup toast**. This is a one-process
+environment prefix, not a persistent export, Pi setting, CLI flag or terminal
+key-mode change. No background read occurs.
 
 The value is sampled during the extension factory, when public
 `pi.registerShortcut` participates in host discovery. `pi.getFlag()` yields its
@@ -116,14 +130,14 @@ registered disabled handler and no cross-extension dispatcher/global key listene
 The shortcut directly invokes the **same command handler** with empty arguments;
 consent, topology, modal ownership, bounds, timeout/drain, exit, PNG validation,
 pending/clear and interactive handoff are unchanged. Existing draft text and
-attachments are neither erased nor submitted. The opted key is PNG-dialog-only:
+attachments are neither erased nor submitted. The registered key is PNG-dialog-only:
 rejection/cancel never automatically falls back to native clipboard or text paste.
 Cmd+V/ordinary terminal text paste is not remapped;
 the dialog still deliberately captures typing/paste while focused.
 
 Inspected installed Pi **1.5.2** public extension/keybinding docs and preset example,
 then verified actual public `CustomEditor`/runner dispatch: the extension handler
-runs before native paste. **`app.clipboard.pasteImage` is nonreserved**; opting into
+runs before native paste. **`app.clipboard.pasteImage` is nonreserved**; default
 Ctrl+V therefore causes a host conflict warning identifying the native action and
 saying `Using` the extension, not `Skipping`. This intentional replacement is
 supported without a config edit. Reserved actions—including user remaps of those
@@ -140,18 +154,18 @@ entries:
 
 This preserves native paste on an otherwise unused alternative key. Or set its
 value to `[]` to unbind it and silence the native overlap warning. Neither is
-required for the opted shortcut. Check `/hotkeys`, startup notice and host conflict
+required for the shortcut. Check `/hotkeys` and host conflict
 warnings if the key cannot activate. Modified keys depend on terminal reporting;
 no key protocol/config changes or native-protection workaround are made here.
 
-Changing the environment opt-in requires a **fresh Pi process/restart-resume**,
+Changing registration/preferences requires a **fresh Pi process/restart-resume**,
 not merely `/reload` with already-loaded transitive modules. Never replace a live
-runtime with an unresolved terminal read. Undo by omitting the prefix next launch
-and restoring any native binding you manually edited. No real user file is changed
-by the extension. Never emulate this with a terminal macro typing the command and
-Enter into an existing draft. The shortcut variant has automated evidence below;
-the earlier owner-confirmed command-path success does not establish human shortcut
-acceptance.
+runtime with an unresolved terminal read. `off` restores native dispatch; omitting
+an override restores the tmux default. Restore any native binding you manually
+edited separately. No real user file is changed by the extension. Never emulate
+this with a terminal macro typing the command and Enter into an existing draft.
+The earlier optional shortcut has narrow owner confirmation below; the new default
+configuration remains human-pending and does not expand the accepted matrix.
 
 ## Separate modules and public seams
 
@@ -189,8 +203,8 @@ A single explicitly invoked OSC 5522 `type=read` requests `image/png` through on
 wrapper. Prefix is runtime-random; only canonical **actually issued** sequence
 IDs are owned. Old IDs remain recognizable with one high-water mark, not an
 unbounded tombstone list. No clipboard write, paste-event mode,
-OS helper or automatic configuration change is introduced; only the explicit
-optional shortcut replaces its chosen key.
+OS helper or automatic configuration change is introduced; only the explicitly invoked
+registered shortcut replaces its chosen key.
 
 | Resource | Bound |
 | --- | --- |
@@ -276,32 +290,39 @@ Automated results on Pi/pi-tui **1.5.2**, private tmux **3.8**:
 | Gate | Passed | Failed | Skipped |
 | --- | ---: | ---: | ---: |
 | Focused portable clipboard tests | 19 | 0 | 0 |
-| Public SDK/TUI clipboard integration | 17 | 0 | 0 |
+| Public SDK/TUI clipboard integration | 19 | 0 | 0 |
 | Private real-tmux + actual ProcessTerminal/TUI/Editor/extension | 4 | 0 | 0 |
 | Historical public input-framing diagnostic | 4 | 0 | 0 |
 | `npm test` | 268 | 2 | 35 |
-| Existing optional `test/host-integration.mjs` | 9 | 3 | 0 |
+| Existing optional `test/host-integration.mjs` (prior gate) | 9 | 3 | 0 |
 
 The two portable failures remain unchanged package-test expectations for
 `extensions/tmux-image/index.ts`, while the manifest declares the flat entry.
 They were previously reproduced against archived accepted `0124bd6`; no unrelated
 manifest/test fix is included. The optional existing integration's two PDF/model-
 policy subcases plus parent fail because **pdfinfo is absent on PATH**, not because
-of a clipboard assertion. No Poppler installation/PDF fix was attempted.
+of a clipboard assertion. That optional PDF suite was not rerun for the current
+registration/copy follow-up; no Poppler installation/PDF fix was attempted.
 
 Shortcut regression coverage uses fresh public loading plus the actual exported
 `CustomEditor` and real extension-runner conflict handling. Public TUI keybinding
 managers use documented native-paste/interrupt definitions and read only temporary
 `keybindings.json` fixtures; this is not a claim of exercising the entire CLI
-settings loader. Tests prove off/native dispatch, opted default-native conflict
+settings loader. Tests prove off/native dispatch, default/override native conflict
 warning/override, optional unbind/remap, both custom keys, reserved user collisions,
-invalid opt-in, consent before emission, exact draft/attachment preservation,
+invalid override, consent before emission, exact draft/attachment preservation,
 clear/handoff and repeat/overlay/cancel/unresolved guards, with no model turn.
-Native paste callbacks are counters, never physical clipboard helpers.
+Native paste callbacks are counters, never physical clipboard helpers. Current
+coverage also verifies default and empty-override registration only in valid tmux
+context; `off`, outside context and invalid pane preserve native dispatch (even
+with a custom override). Valid startup has no informational toast, invalid values
+still warn, consent precedes the read, and concise success retains the pending
+clear affordance.
 
-The private transport cases now activate the opted shortcut by sending **Ctrl+V
-from the fake outer PTY**, not programmatically submitting a slash command. Their
-temporary native binding is unbound; factory loading is fresh. They assert exactly
+The private transport cases activate the **default** shortcut by sending **Ctrl+V
+from the fake outer PTY**, not programmatically submitting a slash command. The
+shortcut override is explicitly unset; their temporary native binding is unbound
+and factory loading is fresh. They assert exactly
 one activating editor event, no Enter/submission/native clipboard callback, and
 retain all prior protocol/draft/pending/outside-input assertions.
 
@@ -316,8 +337,9 @@ The earlier modal gate passed isolated temporary HOME/`PI_CODING_AGENT_DIR`
 `pi install <checkout>`, `pi list`, `pi --help` and public discovery (one extension,
 zero errors, six commands). The shortcut gate instead uses public resource-loader
 package discovery from a fresh copied manifest/source checkout and **temporary**
-agent package settings: unset, `ctrl+v` and invalid environment cases each discover
-one extension/zero errors/six commands, registering zero/one/zero shortcuts.
+agent package settings: default/empty/custom in valid tmux discover one shortcut;
+`off`, invalid value, outside tmux and invalid pane discover none. Each case loads
+one extension/zero errors/six commands.
 No new package installation or activation is performed for the shortcut task.
 Fresh copied-checkout loading is also exercised by both host fixtures. Diff checks
 pass. No runtime host dependencies were installed in this checkout, no active
@@ -366,6 +388,21 @@ No image content or payload is retained in this record. It is not a trace of exa
 process identity or handler ordering, a host persistence/storage acknowledgement,
 or an inspection of session-disk contents. Neither observation undoes the first
 nonmodal failed-trial history above.
+
+### Optional shortcut follow-up
+
+Against **`3e12752`**, the owner tested the then-optional Ctrl+V shortcut and
+reported verbatim:
+
+> it works! i think we can remove the warnings and disclaimers now
+
+This records owner-confirmed optional-shortcut success, not every modifier,
+collision or cancellation case. The subsequent request to remove the opt-in
+requirement authorized the new tmux-context default and concise routine copy;
+it did not waive unresolved-read/focus hazards. The **new default configuration
+and shortened UI remain human-pending**, supported by the automated default-path
+regression above. No new image receipt, persistence acknowledgement or handler-
+ordering trace is inferred from this shortcut report.
 
 Remaining human-pending cases include broader attachment-handoff/submission cases, denial,
 Ctrl+C/drain, timeout, warned exit/late replies, cleanup failures, other PNG

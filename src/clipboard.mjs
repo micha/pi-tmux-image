@@ -3,16 +3,17 @@ import { probeClipboardTopology } from './clipboard-capabilities.mjs';
 import { openClipboardModal } from './clipboard-modal.mjs';
 
 const KEY = 'pi-tmux-image-clipboard';
-const CONSENT = 'Experimental: a visible Reading clipboard—do not type dialog will capture input instead of your draft. Stay in this focused tmux pane, client and Pi session/process, including Ghostty permission prompts; do not disconnect. Ctrl+C cancels import but keeps the dialog draining. Timeout/cancel does NOT cancel the terminal permission prompt/read. Ctrl+Q twice explicitly leaves anyway; late replies may then contaminate your draft and new reads remain blocked. Nothing is auto-submitted or erased. Submitted images are stored even when model images are blocked. Continue?';
+const CONSENT = 'Read a PNG from your local clipboard? The dialog captures typing; stay in this tmux pane until finished. Ctrl+C cancels import, not Ghostty permission or the terminal read. Nothing is submitted automatically.';
 
 /** Public extension API only. Separate from image rendering, PDF and viewer pacing. */
 export function registerClipboardPaste(pi, { presentation, env = process.env, parseKey, matchesKey, truncateToWidth,
   probe = probeClipboardTopology, createReader = createClipboardReader } = {}) {
-  // Factory-time opt-in: flags are not resolved yet and late registration would
-  // miss host shortcut discovery. Never register a disabled/default shortcut.
-  const shortcutValue = env.PI_TMUX_IMAGE_PASTE_SHORTCUT;
-  const shortcut = ['ctrl+v', 'ctrl+shift+v', 'ctrl+alt+v'].includes(shortcutValue) ? shortcutValue : undefined;
-  const invalidShortcut = Boolean(shortcutValue) && !shortcut;
+  // Public factory-time registration uses only inherited context, never probes.
+  // Disabled/outside-tmux keys are not registered, preserving native dispatch.
+  const shortcutValue = env.PI_TMUX_IMAGE_PASTE_SHORTCUT || 'ctrl+v';
+  const supportedShortcut = ['ctrl+v', 'ctrl+shift+v', 'ctrl+alt+v'].includes(shortcutValue);
+  const shortcut = env.TMUX && /^%\d+$/.test(env.TMUX_PANE || '') && supportedShortcut ? shortcutValue : undefined;
+  const invalidShortcut = shortcutValue !== 'off' && !supportedShortcut;
   let runtime;
   function notify(current, message, level = 'warning') {
     if (runtime === current && !current.closed) {
@@ -24,9 +25,9 @@ export function registerClipboardPaste(pi, { presentation, env = process.env, pa
     current.modal?.update();
     const state = current.reader.state;
     const status = state.waiting ? state.unresolved
-      ? 'Clipboard: terminal read UNRESOLVED — resolve its permission prompt; do not retry or leave this pane.'
-      : 'Clipboard: reading PNG in input-owning dialog — do not type or leave this pane.'
-      : current.pending ? 'Clipboard: 1 PNG pending for next interactive prompt; /tmux-image-paste clear removes it.' : undefined;
+      ? 'Clipboard: read UNRESOLVED — check terminal permission; stay in this pane.'
+      : 'Clipboard: reading PNG — do not type or leave this pane.'
+      : current.pending ? 'Clipboard: 1 PNG pending — /tmux-image-paste clear' : undefined;
     try { current.context.ui.setWidget(KEY, status ? [status] : undefined); } catch {}
   }
   function focusLost(current) {
@@ -59,8 +60,7 @@ export function registerClipboardPaste(pi, { presentation, env = process.env, pa
       if (current.modal && current.reader.state.waiting) focusLost(current);
       return current.reader.input(data);
     });
-    if (invalidShortcut) notify(current, 'Invalid PI_TMUX_IMAGE_PASTE_SHORTCUT; use ctrl+v, ctrl+shift+v or ctrl+alt+v. No shortcut registered; /tmux-image-paste remains available.');
-    else if (shortcut) notify(current, `Clipboard shortcut ${shortcut} requested. If Pi accepts it, it intentionally replaces that key's native action; Cmd+V is unchanged. Check /hotkeys and host conflict warnings if it does not activate; reserved keys are not overridden.`, 'info');
+    if (invalidShortcut) notify(current, 'Invalid PI_TMUX_IMAGE_PASTE_SHORTCUT. Use ctrl+v, ctrl+shift+v, ctrl+alt+v or off; /tmux-image-paste still works.');
   });
   pi.on('session_shutdown', close);
   pi.on('session_tree', () => {
@@ -80,7 +80,7 @@ export function registerClipboardPaste(pi, { presentation, env = process.env, pa
     return { action: 'transform', text: event.text, images: [...(event.images || []), image] };
   });
   const command = {
-    description: 'Experimental focused-pane PNG paste dialog; clear removes pending image; cancel keeps draining',
+    description: 'Paste a clipboard PNG; clear removes pending image; cancel keeps waiting',
     handler: async (args, ctx) => {
       const current = runtime;
       if (!current || current.closed || ctx.mode !== 'tui') {
@@ -100,7 +100,7 @@ export function registerClipboardPaste(pi, { presentation, env = process.env, pa
       const live = () => runtime === current && !current.closed && !attempt.signal.aborted;
       try {
         if (!current.consent) {
-          const agreed = await ctx.ui.confirm('Experimental focused-pane paste dialog', CONSENT, { signal: attempt.signal });
+          const agreed = await ctx.ui.confirm('Paste clipboard image?', CONSENT, { signal: attempt.signal });
           if (!live() || !agreed) return;
           current.consent = true;
         }
@@ -138,7 +138,7 @@ export function registerClipboardPaste(pi, { presentation, env = process.env, pa
         if (!live()) return;
         if (before.fingerprint !== after.fingerprint || presentation.connection?.epoch !== connection.epoch || current.removalFailed || current.modal) throw new Error();
         current.pending = result.image; update(current);
-        notify(current, 'PNG staged for your next interactive prompt; clear with /tmux-image-paste clear. Consumed at input handoff, not a storage acknowledgement; later extensions may discard it.', 'info');
+        notify(current, 'PNG ready for your next prompt.', 'info');
       } catch {
         if (current.modal && !current.modal.emitted) current.modal.close();
         if (live()) notify(current, 'Clipboard import failed its focused Ghostty >=1.4/tmux, dialog or transport checks. No image staged; no setting changed.', 'error');
@@ -149,7 +149,7 @@ export function registerClipboardPaste(pi, { presentation, env = process.env, pa
   };
   pi.registerCommand('tmux-image-paste', command);
   if (shortcut) pi.registerShortcut(shortcut, {
-    description: 'Open the clipboard PNG paste dialog (intentional opted key replacement)',
+    description: 'Paste a clipboard PNG',
     handler: (ctx) => command.handler('', ctx),
   });
 }

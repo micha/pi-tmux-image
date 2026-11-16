@@ -51,14 +51,13 @@ export function openClipboardModal({ tui, parseKey, matchesKey, truncateToWidth,
   function render(width) {
     const state = reader.state;
     return [
-      removalFailed ? 'Clipboard dialog cleanup failed — Ctrl+Q retries owned removal.' : state.unresolved ? 'Clipboard read unresolved — waiting/draining. Do not type.' : 'Reading clipboard — do not type.',
-      'Stay in this tmux pane, terminal client and Pi runtime.',
-      'Ghostty permission may still be pending; resolve it in the terminal.',
-      'Ctrl+C: cancel image import, KEEP this dialog draining.',
-      'Timeout/cancel does NOT cancel the terminal permission prompt/read.',
-      exitArmed ? 'WARNING: leaving can put late clipboard text in your draft.' : 'Ctrl+Q: show explicit leave-anyway warning. Escape does not leave.',
-      exitArmed ? 'Press Ctrl+Q AGAIN to leave anyway; new reads remain blocked.' : 'The dialog closes after a clean owned terminal completion.',
-    ].map((line) => truncateToWidth(line, width));
+      removalFailed ? 'Could not close clipboard dialog — Ctrl+Q retries.' : state.unresolved ? 'Clipboard read unresolved — waiting.' : 'Reading clipboard',
+      'Stay in this pane; do not type.',
+      state.unresolved ? 'Ghostty permission/read may still be pending; check the terminal.' : 'Check Ghostty permission if asked.',
+      'Ctrl+C: cancel import; keep waiting.',
+      exitArmed ? 'WARNING: leaving may put late clipboard text in your draft.' : 'Ctrl+Q: cancel and show leave options. Escape keeps this open.',
+      exitArmed ? 'Press Ctrl+Q AGAIN to leave; new reads remain blocked.' : '',
+    ].filter(Boolean).map((line) => truncateToWidth(line, width));
   }
   function close() {
     if (closed) return !removalFailed;

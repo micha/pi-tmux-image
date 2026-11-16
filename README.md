@@ -60,82 +60,50 @@ The transcript shows **only page 1**; browse other pages in the viewer.
 Local viewing is independent of `images.blockImages`: it blocks model access, **not storage**.
 Original PDF bytes and later pages are not sent to the model.
 
-## Experimental remote clipboard
+## Remote clipboard
 
-With **Ghostty ≥1.4**, one focused tmux pane/client and interactive Pi:
+Press **Ctrl+V** or run `/tmux-image-paste` in interactive Pi inside tmux with
+**Ghostty ≥1.4**. First use asks for consent; Ghostty may also ask for permission.
+The dialog reads a **still, noninterlaced PNG up to 8 MiB**, then makes it ready
+for your next prompt. Your draft and existing attachments stay intact; nothing
+is submitted automatically. Remove a pending image with `/tmux-image-paste clear`.
 
-```text
-/tmux-image-paste
-/tmux-image-paste clear
-/tmux-image-paste cancel
-```
+- **Stay in the same focused pane; do not type while the dialog is open.**
+- **Ctrl+C** cancels import but keeps waiting. It does not cancel terminal
+  permission/read; resolve that before leaving or restarting Pi.
+- **Ctrl+Q twice** warns, then leaves anyway; late replies may enter your draft.
+  Escape keeps the dialog open. New reads stay blocked while unresolved.
 
-The first use asks for consent, then opens **Reading clipboard—do not type**.
-The visible dialog captures input so replies—including tmux CSI-u/xterm encoded
-markers—do not reach the draft on the supported path. Ghostty may separately ask
-for clipboard permission. A valid **still, noninterlaced PNG up to 8 MiB** closes
-the dialog and is staged for your next interactive prompt. Existing attachments
-are preserved; nothing is submitted automatically.
+Ctrl+V opens the PNG dialog, with no native/text-paste fallback. **Cmd+V remains
+ordinary terminal text paste.** Submitted images use normal Pi storage/model
+policy; `images.blockImages` blocks model access, not storage.
 
-- **Ctrl+C:** cancel image import locally; keep the dialog visibly draining.
-- **Ctrl+Q, then Ctrl+Q again:** acknowledge the warning and leave anyway.
-  Late replies can then put protocol/base64 text in your draft.
-- If owned dialog cleanup fails, **Ctrl+Q retries removal**.
-- **Escape does not leave.** Ordinary typing/text paste is unchanged outside the dialog.
-- `clear` removes a pending image; `cancel` stops import **locally only**, not
-  Ghostty's permission prompt/read. Cmd+V is unchanged; Ctrl+V is unchanged by default.
+### Shortcut preferences
 
-**Stay in the same focused pane, client and Pi session, including permission
-prompts.** Timeout/cancel keeps the visible waiting/draining dialog by default.
-An **UNRESOLVED** state blocks new reads until a clean owned terminal completion
-or error arrives, even after explicit dialog exit. Resolve any terminal prompt
-before leaving; do not blindly retry, reload or disconnect.
-
-Switching windows can send replies to another pane; another dialog taking focus
-can receive them too. There is no protection after pane/client/session/process
-changes or knowingly leaving the dialog, and no automatic draft erasure/repair.
-If late protocol text appears, inspect/edit it manually.
-
-A pending image is consumed when handed to the next interactive input pipeline,
-**not** on a storage acknowledgement. Later input extensions or submission
-failure may discard it without automatic retry. Submitted images follow normal
-Pi model policy and session storage; `images.blockImages` does **not** prevent
-storage. If these risks are unsuitable, transfer a file and use `/tmux-image`.
-
-### Optional clipboard shortcut
-
-No shortcut is registered by default. With this extension configured, explicitly
-opt in when starting a **fresh Pi process**:
+Ctrl+V is registered by default only with inherited tmux/pane context; outside
+that context native paste is unchanged. To disable or choose another key, start
+a **fresh Pi process** (not `/reload`):
 
 ```sh
-PI_TMUX_IMAGE_PASTE_SHORTCUT=ctrl+v pi
+PI_TMUX_IMAGE_PASTE_SHORTCUT=off pi
+PI_TMUX_IMAGE_PASTE_SHORTCUT=ctrl+shift+v pi
 ```
 
-This intentionally replaces Pi's native Ctrl+V action with the **same** clipboard
-dialog, leaving the existing draft/attachments intact and never submitting them.
-The opted key is **PNG-dialog-only**: rejection/cancel never falls back to native
-clipboard or text paste. Cmd+V stays normal terminal text paste. Accepted literal
-values are `ctrl+v`, `ctrl+shift+v` and `ctrl+alt+v` (lowercase, no spaces);
-terminal key reporting and Pi's reserved-key rules still apply.
-Invalid values warn and leave `/tmux-image-paste` usable.
+Accepted literal overrides: `ctrl+v`, `ctrl+shift+v`, `ctrl+alt+v`, `off`.
+Unset/empty uses the tmux default. Overrides do not enable shortcuts outside tmux.
 
-Pi 1.5.2 warns about native Ctrl+V overlap but uses the opted extension shortcut.
-Optionally **merge**, never overwrite, this into your own
-`~/.pi/agent/keybindings.json` (or your custom agent directory):
+Pi's native Ctrl+V overlap warning is separate. Optionally **merge** this into your
+agent directory's `keybindings.json` to retain native paste on an unused alternative
+key (or use `[]` to disable it); the extension never edits your settings:
 
 ```json
 { "app.clipboard.pasteImage": "alt+v" }
 ```
 
-Choose an unused alternative key, or use `[]` instead to unbind native paste.
-This manual edit is optional; the extension never edits keybindings/settings.
-Check `/hotkeys` and startup conflict warnings if the shortcut does not activate;
-reserved bindings are skipped and another extension can win a collision.
-Use a fresh process/restart-resume, not `/reload`, for extension opt-in changes.
-To undo, omit the environment prefix on the next launch and restore any native
-binding you manually changed. Do not use terminal macros that type the slash
-command plus Enter into a possibly nonempty draft.
+Check `/hotkeys` and host conflict warnings if a key does not activate; reserved
+bindings and other extensions may take precedence. Do not use command-plus-Enter
+terminal macros to paste into a draft.
 
-Details and automated versus human evidence: [clipboard import](docs/clipboard-paste.md).
+[Details, limits and verification](docs/clipboard-paste.md).
 
 More: [PDF caveats](docs/pdf-document-viewer.md) · [terminal compatibility](docs/capabilities.md).
