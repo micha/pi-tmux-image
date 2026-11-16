@@ -8,6 +8,11 @@ const CONSENT = 'Experimental: a visible Reading clipboard—do not type dialog 
 /** Public extension API only. Separate from image rendering, PDF and viewer pacing. */
 export function registerClipboardPaste(pi, { presentation, env = process.env, parseKey, matchesKey, truncateToWidth,
   probe = probeClipboardTopology, createReader = createClipboardReader } = {}) {
+  // Factory-time opt-in: flags are not resolved yet and late registration would
+  // miss host shortcut discovery. Never register a disabled/default shortcut.
+  const shortcutValue = env.PI_TMUX_IMAGE_PASTE_SHORTCUT;
+  const shortcut = ['ctrl+v', 'ctrl+shift+v', 'ctrl+alt+v'].includes(shortcutValue) ? shortcutValue : undefined;
+  const invalidShortcut = Boolean(shortcutValue) && !shortcut;
   let runtime;
   function notify(current, message, level = 'warning') {
     if (runtime === current && !current.closed) {
@@ -54,6 +59,8 @@ export function registerClipboardPaste(pi, { presentation, env = process.env, pa
       if (current.modal && current.reader.state.waiting) focusLost(current);
       return current.reader.input(data);
     });
+    if (invalidShortcut) notify(current, 'Invalid PI_TMUX_IMAGE_PASTE_SHORTCUT; use ctrl+v, ctrl+shift+v or ctrl+alt+v. No shortcut registered; /tmux-image-paste remains available.');
+    else if (shortcut) notify(current, `Clipboard shortcut ${shortcut} requested. If Pi accepts it, it intentionally replaces that key's native action; Cmd+V is unchanged. Check /hotkeys and host conflict warnings if it does not activate; reserved keys are not overridden.`, 'info');
   });
   pi.on('session_shutdown', close);
   pi.on('session_tree', () => {
@@ -72,7 +79,7 @@ export function registerClipboardPaste(pi, { presentation, env = process.env, pa
     const image = current.pending; current.pending = undefined; update(current);
     return { action: 'transform', text: event.text, images: [...(event.images || []), image] };
   });
-  pi.registerCommand('tmux-image-paste', {
+  const command = {
     description: 'Experimental focused-pane PNG paste dialog; clear removes pending image; cancel keeps draining',
     handler: async (args, ctx) => {
       const current = runtime;
@@ -139,5 +146,10 @@ export function registerClipboardPaste(pi, { presentation, env = process.env, pa
         if (runtime === current && current.attempt === attempt) { current.attempt = undefined; current.busy = false; update(current); }
       }
     },
+  };
+  pi.registerCommand('tmux-image-paste', command);
+  if (shortcut) pi.registerShortcut(shortcut, {
+    description: 'Open the clipboard PNG paste dialog (intentional opted key replacement)',
+    handler: (ctx) => command.handler('', ctx),
   });
 }

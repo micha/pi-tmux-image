@@ -18,7 +18,8 @@ for (const format of ['csi-u', 'xterm']) for (const fragmented of [false, true])
   }, async () => {
     const directory = await mkdtemp(join(tmpdir(), 'pi-clipboard-real-tmux-'));
     try {
-      await mkdir(join(directory, 'package')); await mkdir(join(directory, 'workspace')); await mkdir(join(directory, 'bin'));
+      await mkdir(join(directory, 'package')); await mkdir(join(directory, 'workspace')); await mkdir(join(directory, 'bin')); await mkdir(join(directory, 'agent'));
+      await writeFile(join(directory, 'agent/keybindings.json'), JSON.stringify({ 'app.clipboard.pasteImage': [] }));
       for (const name of ['src', 'extensions', 'package.json']) await cp(join(repo, name), join(directory, 'package', name), { recursive: true });
       // Only capability evidence is stubbed. Transport uses absolute real tmux,
       // its PTYs, real inbound key reencoding and public ProcessTerminal.start.
@@ -36,6 +37,7 @@ else process.exitCode=1;
       assert.equal(result.ok, true); assert.equal(result.modifyOtherKeys, true);
       assert.equal(result.encodedMarkersObserved, true); assert.equal(result.pendingImage, true);
       assert.equal(result.draftUnchanged, true); assert.equal(result.editorReceivedProtocolOrModalTyping, false); assert.equal(result.outsideInputPreserved, true);
+      assert.equal(result.shortcutActivated, true); assert.equal(result.submissions, 0);
       assert.equal(result.automaticTurns, 0); assert.equal(result.realClipboardRead, false);
     } finally { await rm(directory, { recursive: true, force: true }); }
   });

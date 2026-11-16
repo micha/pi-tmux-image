@@ -48,7 +48,7 @@ of upstream limitations, not general-safe transport acceptance.
 
 ## Visible ownership and keys
 
-The first command per runtime asks for explicit consent before any read is sent.
+The first invocation per runtime asks for explicit consent before any read is sent.
 It explains modal input capture, staying focused, Ghostty permissions, cancellation,
 warned exit and standard storage. Ghostty's own `clipboard-read=ask` permission
 prompt remains intact; there is no password, automatic authorization or retry.
@@ -94,6 +94,65 @@ Branch/transport changes stop import but do not pretend the terminal read ended.
 No native image placements, shared PNG resources, viewer controls, PDF behavior
 or pacing policy are changed.
 
+## Optional per-process shortcut
+
+Default behavior is unchanged: **no shortcut registration**. To opt in with this
+extension already configured, start a fresh process with:
+
+```sh
+PI_TMUX_IMAGE_PASTE_SHORTCUT=ctrl+v pi
+```
+
+Exactly `ctrl+v`, `ctrl+shift+v` and `ctrl+alt+v` are supported (lowercase, no extra
+spaces). Unset/empty disables registration; invalid values warn without breaking
+the command. This is a one-process environment prefix, not a persistent export,
+Pi setting, CLI flag or terminal key-mode change. No background read occurs.
+
+The value is sampled during the extension factory, when public
+`pi.registerShortcut` participates in host discovery. `pi.getFlag()` yields its
+default there, so an unresolved CLI flag cannot correctly select factory-time
+registration. Late `session_start` registration is not used. There is no always-
+registered disabled handler and no cross-extension dispatcher/global key listener.
+The shortcut directly invokes the **same command handler** with empty arguments;
+consent, topology, modal ownership, bounds, timeout/drain, exit, PNG validation,
+pending/clear and interactive handoff are unchanged. Existing draft text and
+attachments are neither erased nor submitted. The opted key is PNG-dialog-only:
+rejection/cancel never automatically falls back to native clipboard or text paste.
+Cmd+V/ordinary terminal text paste is not remapped;
+the dialog still deliberately captures typing/paste while focused.
+
+Inspected installed Pi **1.5.2** public extension/keybinding docs and preset example,
+then verified actual public `CustomEditor`/runner dispatch: the extension handler
+runs before native paste. **`app.clipboard.pasteImage` is nonreserved**; opting into
+Ctrl+V therefore causes a host conflict warning identifying the native action and
+saying `Using` the extension, not `Skipping`. This intentional replacement is
+supported without a config edit. Reserved actions—including user remaps of those
+actions onto the chosen key—remain host-skipped. Other extension collisions follow
+Pi's normal conflict rules; this package does not reorder or bypass them.
+
+Optionally merge one of these **manually** into your agent directory's
+`keybindings.json` (`~/.pi/agent/keybindings.json` by default), retaining your other
+entries:
+
+```json
+{ "app.clipboard.pasteImage": "alt+v" }
+```
+
+This preserves native paste on an otherwise unused alternative key. Or set its
+value to `[]` to unbind it and silence the native overlap warning. Neither is
+required for the opted shortcut. Check `/hotkeys`, startup notice and host conflict
+warnings if the key cannot activate. Modified keys depend on terminal reporting;
+no key protocol/config changes or native-protection workaround are made here.
+
+Changing the environment opt-in requires a **fresh Pi process/restart-resume**,
+not merely `/reload` with already-loaded transitive modules. Never replace a live
+runtime with an unresolved terminal read. Undo by omitting the prefix next launch
+and restoring any native binding you manually edited. No real user file is changed
+by the extension. Never emulate this with a terminal macro typing the command and
+Enter into an existing draft. The shortcut variant has automated evidence below;
+the earlier owner-confirmed command-path success does not establish human shortcut
+acceptance.
+
 ## Separate modules and public seams
 
 - `src/clipboard.mjs`: public command, session lifecycle, input-transform handoff
@@ -126,11 +185,12 @@ closed. Identity/visibility checks before reading and before staging are bounded
 observations, not delivery ACKs or focus locks. Customized hidden intermediaries
 and unreported client/focus changes are not universally detectable.
 
-A single explicit OSC 5522 `type=read` requests `image/png` through one tmux DCS
+A single explicitly invoked OSC 5522 `type=read` requests `image/png` through one tmux DCS
 wrapper. Prefix is runtime-random; only canonical **actually issued** sequence
 IDs are owned. Old IDs remain recognizable with one high-water mark, not an
-unbounded tombstone list. No clipboard write, paste-event mode, shortcut override,
-OS helper or configuration change is introduced.
+unbounded tombstone list. No clipboard write, paste-event mode,
+OS helper or automatic configuration change is introduced; only the explicit
+optional shortcut replaces its chosen key.
 
 | Resource | Bound |
 | --- | --- |
@@ -215,11 +275,11 @@ Automated results on Pi/pi-tui **1.5.2**, private tmux **3.8**:
 
 | Gate | Passed | Failed | Skipped |
 | --- | ---: | ---: | ---: |
-| Focused portable clipboard tests | 17 | 0 | 0 |
-| Public SDK/TUI clipboard integration | 9 | 0 | 0 |
+| Focused portable clipboard tests | 19 | 0 | 0 |
+| Public SDK/TUI clipboard integration | 17 | 0 | 0 |
 | Private real-tmux + actual ProcessTerminal/TUI/Editor/extension | 4 | 0 | 0 |
 | Historical public input-framing diagnostic | 4 | 0 | 0 |
-| `npm test` | 266 | 2 | 35 |
+| `npm test` | 268 | 2 | 35 |
 | Existing optional `test/host-integration.mjs` | 9 | 3 | 0 |
 
 The two portable failures remain unchanged package-test expectations for
@@ -229,6 +289,22 @@ manifest/test fix is included. The optional existing integration's two PDF/model
 policy subcases plus parent fail because **pdfinfo is absent on PATH**, not because
 of a clipboard assertion. No Poppler installation/PDF fix was attempted.
 
+Shortcut regression coverage uses fresh public loading plus the actual exported
+`CustomEditor` and real extension-runner conflict handling. Public TUI keybinding
+managers use documented native-paste/interrupt definitions and read only temporary
+`keybindings.json` fixtures; this is not a claim of exercising the entire CLI
+settings loader. Tests prove off/native dispatch, opted default-native conflict
+warning/override, optional unbind/remap, both custom keys, reserved user collisions,
+invalid opt-in, consent before emission, exact draft/attachment preservation,
+clear/handoff and repeat/overlay/cancel/unresolved guards, with no model turn.
+Native paste callbacks are counters, never physical clipboard helpers.
+
+The private transport cases now activate the opted shortcut by sending **Ctrl+V
+from the fake outer PTY**, not programmatically submitting a slash command. Their
+temporary native binding is unbound; factory loading is fresh. They assert exactly
+one activating editor event, no Enter/submission/native clipboard callback, and
+retain all prior protocol/draft/pending/outside-input assertions.
+
 The private transport cases are **CSI-u and xterm**, each with a coalesced single
 reply write (no timing gap) and split/delayed writes. They assert exact format-
 specific encoded markers, not merely generic parsed Alt keys. The existing
@@ -236,13 +312,18 @@ private routing diagnostic still reproduces wrong-window delivery; the historica
 Pi framing diagnostic still reproduces raw-control recovery. No upstream fix is
 claimed.
 
-Isolated temporary HOME/`PI_CODING_AGENT_DIR`: `pi install <checkout>`, `pi list`,
-`pi --help` and public resource discovery pass (one extension, zero errors, six
-commands). Fresh copied-checkout loading is also exercised by both new host
-fixtures. Diff checks pass. No runtime host dependencies were installed in this
-checkout, no active user-server/config/package operation occurred, and these
-automated gates performed no real clipboard/provider access or push. Full older host-seam suites that
-assume another entry/package layout were not silently adapted.
+The earlier modal gate passed isolated temporary HOME/`PI_CODING_AGENT_DIR`
+`pi install <checkout>`, `pi list`, `pi --help` and public discovery (one extension,
+zero errors, six commands). The shortcut gate instead uses public resource-loader
+package discovery from a fresh copied manifest/source checkout and **temporary**
+agent package settings: unset, `ctrl+v` and invalid environment cases each discover
+one extension/zero errors/six commands, registering zero/one/zero shortcuts.
+No new package installation or activation is performed for the shortcut task.
+Fresh copied-checkout loading is also exercised by both host fixtures. Diff checks
+pass. No runtime host dependencies were installed in this checkout, no active
+user-server/config/package operation occurred, and these automated gates performed
+no real clipboard/provider access or push. Full older host-seam suites that assume
+another entry/package layout were not silently adapted.
 
 ## Coordinated human verification: owner-confirmed image paste
 

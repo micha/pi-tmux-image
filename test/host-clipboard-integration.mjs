@@ -1,7 +1,7 @@
 // Offline public SDK + public TUI test. All clipboard replies and tmux identity
 // are synthetic; no active server, physical terminal, provider or clipboard.
 import assert from 'node:assert/strict';
-import { cp, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -38,9 +38,13 @@ async function until(predicate) {
   while (!predicate()) { assert.ok(Date.now() < deadline, 'offline test event did not arrive'); await delay(2); }
 }
 
-async function setup(directory, blockImages, mode = 'regular') {
+async function setup(directory, blockImages, mode = 'regular', config = {}) {
   const checkout = join(directory, 'package'), cwd = join(directory, 'workspace'), agentDir = join(directory, 'agent'), bin = join(directory, 'bin');
-  await mkdir(checkout); await mkdir(cwd); await mkdir(bin);
+  await mkdir(checkout); await mkdir(cwd); await mkdir(bin); await mkdir(agentDir);
+  await writeFile(join(agentDir, 'keybindings.json'), JSON.stringify(config.keybindings || {}));
+  const keybindings = new tuiModule.KeybindingsManager({ ...tuiModule.TUI_KEYBINDINGS,
+    'app.clipboard.pasteImage': { defaultKeys: 'ctrl+v' }, 'app.interrupt': { defaultKeys: 'escape' },
+  }, JSON.parse(await readFile(join(agentDir, 'keybindings.json'), 'utf8')));
   for (const name of ['src','extensions','package.json']) await cp(join(repo, name), join(checkout, name), { recursive: true });
   // A fresh absolute entry path avoids cached transforms masking relative imports.
   await writeFile(join(directory, 'early.ts'), `export default function(pi) { pi.on('input', e => e.text === 'early-handled' ? {action:'handled'} : undefined); }`);
@@ -51,9 +55,11 @@ else if(a[0]==='show-options') process.stdout.write('on\\n');
 else if(a[0]==='list-clients') process.stdout.write('/dev/fake\\tghostty 1.4.0\\txterm-ghostty\\t0\\tattached,focused,UTF-8\\n');
 else process.exitCode=1;
 `, { mode: 0o700 });
-  const previous = Object.fromEntries(['TMUX','TMUX_PANE','PATH'].map((key) => [key, process.env[key]]));
+  const previous = Object.fromEntries(['TMUX','TMUX_PANE','PATH','PI_TMUX_IMAGE_PASTE_SHORTCUT'].map((key) => [key, process.env[key]]));
+  if (config.shortcut === undefined) delete process.env.PI_TMUX_IMAGE_PASTE_SHORTCUT;
+  else process.env.PI_TMUX_IMAGE_PASTE_SHORTCUT = config.shortcut;
   process.env.TMUX = 'synthetic,1,0'; process.env.TMUX_PANE = '%7'; process.env.PATH = `${bin}:${previous.PATH}`;
-  let later = 'continue', consent = true, confirmations = 0, unsubscribeCount = 0;
+  let later = 'continue', consent = true, confirmations = 0, unsubscribeCount = 0, nativePastes = 0, reservedActions = 0, shortcutWork;
   const writes = [], keys = [], notices = [], requests = [], widgetMap = new Map();
   const input = new tuiModule.StdinBuffer();
   let terminalInput;
@@ -61,13 +67,18 @@ else process.exitCode=1;
     start(callback) { terminalInput = callback; }, stop() {}, write(data) { writes.push(data); },
     moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {}, clearFromCursor() {}, clearScreen() {}, setTitle() {}, setProgress() {}, async drainInput() {} };
   const tui = new (mode === 'fullscreen' ? tuiModule.TuiAltScreen : tuiModule.TuiMainScreen)(terminal);
-  const editor = { render() { return []; }, invalidate() {}, handleInput(data) { keys.push(data); } };
+  class ObservedEditor extends host.CustomEditor {
+    handleInput(data) { keys.push(data); super.handleInput(data); }
+  }
+  const editor = new ObservedEditor(tui, { borderColor: (text) => text, selectList: {} }, keybindings);
+  editor.onPasteImage = () => { nativePastes++; }; // Never read the physical clipboard.
+  editor.onEscape = () => { reservedActions++; };
   tui.addChild(editor); tui.setFocus(editor);
   input.on('data', (data) => terminalInput(data));
   input.on('paste', (data) => terminalInput(`\x1b[200~${data}\x1b[201~`));
   tui.start();
   const uiContext = {
-    confirm: async (_title, message) => { confirmations++; assert.match(message, /Timeout\/cancel/); return consent; },
+    confirm: async (_title, message) => { if (config.shortcut && !confirmations) assert.equal(reads(writes).length, 0, 'first consent before emission'); confirmations++; assert.match(message, /Timeout\/cancel/); return consent; },
     notify: (message, level) => notices.push({ message, level }),
     onTerminalInput: (listener) => { const unsubscribe = tui.addInputListener(listener); return () => { unsubscribeCount++; unsubscribe(); }; },
     setWidget(key, content) {
@@ -103,8 +114,17 @@ else process.exitCode=1;
     const created = await host.createAgentSession({ cwd, agentDir, settingsManager: settings, resourceLoader: loader, sessionManager: host.SessionManager.inMemory(cwd), model, modelRuntime, thinkingLevel: 'off', noTools: 'all' });
     session = created.session;
     await session.bindExtensions({ mode: 'tui', uiContext });
+    const shortcuts = session.extensionRunner.getShortcuts(keybindings.getResolvedBindings());
+    editor.onExtensionShortcut = (data) => {
+      for (const [key, shortcut] of shortcuts) if (tuiModule.matchesKey(data, key)) {
+        shortcutWork = Promise.resolve(shortcut.handler(session.extensionRunner.createContext()));
+        return true;
+      }
+      return false;
+    };
     assert.equal(reads(writes).length, 0); assert.equal(session.messages.length, 0); assert.equal(requests.length, 0);
-    return { session, tui, writes, keys, notices, requests, input, widgetMap,
+    return { session, tui, writes, keys, notices, requests, input, widgetMap, editor, shortcuts,
+      get shortcutWork() { return shortcutWork; }, get nativePastes() { return nativePastes; }, get reservedActions() { return reservedActions; },
       set later(value) { later = value; }, set consent(value) { consent = value; },
       get confirmations() { return confirmations; }, get unsubscribeCount() { return unsubscribeCount; },
       async stage() {
@@ -127,6 +147,78 @@ else process.exitCode=1;
     throw error;
   }
 }
+
+test('public SDK/actual CustomEditor: shortcut off preserves native paste dispatch and ordinary text paste', options, async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'pi-clipboard-shortcut-off-')); let h;
+  try {
+    h = await setup(directory, true); assert.equal(h.shortcuts.size, 0);
+    h.editor.setText('draft'); h.input.process('\x16'); assert.equal(h.nativePastes, 1);
+    h.input.process('\x1b]'); h.input.process('\x1b[200~ text paste\x1b[201~'); h.input.process(' typed');
+    assert.equal(h.editor.getText(), 'draft text paste typed'); assert.equal(reads(h.writes).length, 0);
+    assert.equal(h.requests.length, 0); assert.equal(h.confirmations, 0);
+  } finally { await h?.cleanup(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('public SDK/actual CustomEditor: opted shortcuts, native conflict/unbind/remap and attachment preservation', options, async (t) => {
+  for (const config of [
+    { shortcut: 'ctrl+v' },
+    { shortcut: 'ctrl+v', keybindings: { 'app.clipboard.pasteImage': [] } },
+    { shortcut: 'ctrl+v', keybindings: { 'app.clipboard.pasteImage': 'alt+v' } },
+    { shortcut: 'ctrl+shift+v' }, { shortcut: 'ctrl+alt+v' },
+  ]) await t.test(JSON.stringify(config), async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'pi-clipboard-shortcut-')); let h;
+    try {
+      h = await setup(directory, true, 'regular', config); assert.equal(h.shortcuts.size, 1);
+      const encoded = { 'ctrl+v': '\x16', 'ctrl+shift+v': '\x1b[118;6u', 'ctrl+alt+v': '\x1b[118;7u' }[config.shortcut];
+      assert.equal(tuiModule.matchesKey(encoded, config.shortcut), true);
+      h.editor.setText('existing unsent draft');
+      h.consent = false; h.input.process(encoded); await h.shortcutWork;
+      assert.equal(reads(h.writes).length, 0); assert.equal(h.nativePastes, 0); assert.equal(h.confirmations, 1);
+      const diagnostics = h.session.extensionRunner.getShortcutDiagnostics();
+      if (config.shortcut === 'ctrl+v' && !config.keybindings) assert.ok(diagnostics.some((d) => /app.clipboard.pasteImage.*Using/.test(d.message)));
+      h.consent = true;
+      async function stageShortcut() {
+        const count = reads(h.writes).length; h.input.process(encoded);
+        await until(() => reads(h.writes).length > count);
+        const id = /id=([A-Za-z0-9_.+-]+);/.exec(reads(h.writes).at(-1))[1];
+        h.input.process(encoded); // Focused modal deliberately captures repeats.
+        h.input.process(packet(id, 'OK') + packet(id, 'DATA', png, ':mime=aW1hZ2UvcG5n') + packet(id, 'DONE'));
+        await h.shortcutWork;
+      }
+      await stageShortcut(); assert.equal(h.editor.getText(), 'existing unsent draft');
+      h.input.process(encoded); await h.shortcutWork; assert.equal(reads(h.writes).length, 1, 'pending blocks repeated shortcut');
+      await h.session.prompt('/tmux-image-paste clear'); assert.equal(h.widgetMap.has('pi-tmux-image-clipboard'), false);
+      await stageShortcut();
+      const existing = { type: 'image', mimeType: 'image/png', data: png }, attachments = [existing];
+      const handed = await h.session.extensionRunner.emitInput(h.editor.getText(), attachments, 'interactive');
+      assert.equal(handed.text, 'existing unsent draft'); assert.equal(handed.images.length, 2);
+      assert.equal(handed.images[0], existing); assert.equal(attachments.length, 1);
+      assert.equal(h.editor.getText(), 'existing unsent draft'); assert.equal(h.requests.length, 0); assert.equal(h.session.messages.length, 0);
+      if (config.keybindings?.['app.clipboard.pasteImage'] === 'alt+v') { h.input.process('\x1bv'); assert.equal(h.nativePastes, 1); }
+      const other = { render: () => ['other dialog'], handleInput() {}, invalidate() {} }, handle = h.tui.showOverlay(other);
+      const before = reads(h.writes).length; h.input.process(encoded); assert.equal(reads(h.writes).length, before); assert.equal(handle.isFocused(), true);
+      handle.hide();
+      h.input.process(encoded); await until(() => reads(h.writes).length > before);
+      h.input.process('\x03'); await h.shortcutWork; assert.equal(h.tui.hasOverlay(), true);
+      await h.shortcuts.get(config.shortcut).handler(h.session.extensionRunner.createContext());
+      assert.equal(reads(h.writes).length, before + 1, 'unresolved blocks even direct repeat');
+      const id = /id=([A-Za-z0-9_.+-]+);/.exec(reads(h.writes).at(-1))[1]; h.input.process(packet(id, 'DONE'));
+    } finally { await h?.cleanup(); await rm(directory, { recursive: true, force: true }); }
+  });
+});
+
+test('public SDK/actual CustomEditor: invalid opt-in and user-reserved collision fail without clipboard read', options, async () => {
+  for (const config of [ { shortcut: 'ctrl+c' }, { shortcut: 'ctrl+v', keybindings: { 'app.clipboard.pasteImage': [], 'app.interrupt': 'ctrl+v' } } ]) {
+    const directory = await mkdtemp(join(tmpdir(), 'pi-clipboard-shortcut-invalid-')); let h;
+    try {
+      h = await setup(directory, true, 'regular', config); assert.equal(h.shortcuts.size, 0);
+      h.editor.setText('unchanged'); h.input.process('\x16'); assert.equal(reads(h.writes).length, 0);
+      if (config.shortcut === 'ctrl+c') assert.ok(h.notices.some((n) => /Invalid PI_TMUX_IMAGE_PASTE_SHORTCUT/.test(n.message)));
+      else { assert.equal(h.reservedActions, 1); assert.ok(h.session.extensionRunner.getShortcutDiagnostics().some((d) => /Skipping/.test(d.message))); }
+      await h.stage(); assert.equal(h.editor.getText(), 'unchanged');
+    } finally { await h?.cleanup(); await rm(directory, { recursive: true, force: true }); }
+  }
+});
 
 test('public SDK clipboard extension: intact request/staging/interactive submission respects model policy', options, async (t) => {
   for (const blocked of [false, true]) await t.test(`blockImages=${blocked}`, async () => {

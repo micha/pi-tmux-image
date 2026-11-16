@@ -69,7 +69,7 @@ try:
             if len(buffered) > 2 * 1024 * 1024:
                 raise RuntimeError('private terminal output bound exceeded')
     until(b'CLIPBOARD_PRIVATE_WORKER_READY')
-    (root / 'start').write_text('start')
+    os.write(master, b'\x16')  # Opted Ctrl+V, not command text or Enter.
     request = until(rb'\x1b\]5522;type=read:id=([a-zA-Z0-9_.+-]+);aW1hZ2UvcG5n\x1b\\')
     request_id = request.group(1)
     # Deliberate modal typing must never reach the editor draft.

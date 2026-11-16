@@ -81,9 +81,9 @@ are preserved; nothing is submitted automatically.
 - **Ctrl+Q, then Ctrl+Q again:** acknowledge the warning and leave anyway.
   Late replies can then put protocol/base64 text in your draft.
 - If owned dialog cleanup fails, **Ctrl+Q retries removal**.
-- **Escape does not leave.** Outside the dialog, native typing/paste is unchanged.
+- **Escape does not leave.** Ordinary typing/text paste is unchanged outside the dialog.
 - `clear` removes a pending image; `cancel` stops import **locally only**, not
-  Ghostty's permission prompt/read. Cmd+V and Pi's Ctrl+V are not rebound.
+  Ghostty's permission prompt/read. Cmd+V is unchanged; Ctrl+V is unchanged by default.
 
 **Stay in the same focused pane, client and Pi session, including permission
 prompts.** Timeout/cancel keeps the visible waiting/draining dialog by default.
@@ -101,6 +101,40 @@ A pending image is consumed when handed to the next interactive input pipeline,
 failure may discard it without automatic retry. Submitted images follow normal
 Pi model policy and session storage; `images.blockImages` does **not** prevent
 storage. If these risks are unsuitable, transfer a file and use `/tmux-image`.
+
+### Optional clipboard shortcut
+
+No shortcut is registered by default. With this extension configured, explicitly
+opt in when starting a **fresh Pi process**:
+
+```sh
+PI_TMUX_IMAGE_PASTE_SHORTCUT=ctrl+v pi
+```
+
+This intentionally replaces Pi's native Ctrl+V action with the **same** clipboard
+dialog, leaving the existing draft/attachments intact and never submitting them.
+The opted key is **PNG-dialog-only**: rejection/cancel never falls back to native
+clipboard or text paste. Cmd+V stays normal terminal text paste. Accepted literal
+values are `ctrl+v`, `ctrl+shift+v` and `ctrl+alt+v` (lowercase, no spaces);
+terminal key reporting and Pi's reserved-key rules still apply.
+Invalid values warn and leave `/tmux-image-paste` usable.
+
+Pi 1.5.2 warns about native Ctrl+V overlap but uses the opted extension shortcut.
+Optionally **merge**, never overwrite, this into your own
+`~/.pi/agent/keybindings.json` (or your custom agent directory):
+
+```json
+{ "app.clipboard.pasteImage": "alt+v" }
+```
+
+Choose an unused alternative key, or use `[]` instead to unbind native paste.
+This manual edit is optional; the extension never edits keybindings/settings.
+Check `/hotkeys` and startup conflict warnings if the shortcut does not activate;
+reserved bindings are skipped and another extension can win a collision.
+Use a fresh process/restart-resume, not `/reload`, for extension opt-in changes.
+To undo, omit the environment prefix on the next launch and restore any native
+binding you manually changed. Do not use terminal macros that type the slash
+command plus Enter into a possibly nonempty draft.
 
 Details and automated versus human evidence: [clipboard import](docs/clipboard-paste.md).
 

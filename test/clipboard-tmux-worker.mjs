@@ -1,7 +1,6 @@
 // Synthetic subprocess worker: owns only a private pane and fake outer PTY.
 import assert from 'node:assert/strict';
-import { watch } from 'node:fs';
-import { writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -12,13 +11,19 @@ const entry = join(hostRoot, 'dist/index.js');
 const host = await import(pathToFileURL(entry).href);
 const tuiModule = await import(pathToFileURL(createRequire(entry).resolve('@earendil-works/pi-tui')).href);
 process.env.PATH = `${join(directory, 'bin')}:${process.env.PATH}`;
+process.env.PI_TMUX_IMAGE_PASTE_SHORTCUT = 'ctrl+v';
+const keybindings = new tuiModule.KeybindingsManager({ ...tuiModule.TUI_KEYBINDINGS,
+  'app.clipboard.pasteImage': { defaultKeys: 'ctrl+v' },
+}, JSON.parse(await readFile(join(directory, 'agent/keybindings.json'), 'utf8')));
 const terminal = new tuiModule.ProcessTerminal();
 const tui = new tuiModule.TuiMainScreen(terminal);
-let editorEvents = 0, altStarts = 0, altEnds = 0, requests = 0, session;
-class ObservedEditor extends tuiModule.Editor {
+let editorEvents = 0, altStarts = 0, altEnds = 0, requests = 0, session, shortcutWork, activations = 0, submissions = 0, nativePastes = 0;
+class ObservedEditor extends host.CustomEditor {
   handleInput(data) { editorEvents++; super.handleInput(data); }
 }
-const editor = new ObservedEditor(tui, { borderColor: (s) => s, selectList: {} });
+const editor = new ObservedEditor(tui, { borderColor: (s) => s, selectList: {} }, keybindings);
+editor.onSubmit = () => { submissions++; };
+editor.onPasteImage = () => { nativePastes++; }; // No physical clipboard helper.
 editor.setText('private synthetic draft sentinel');
 tui.addChild(editor); tui.setFocus(editor);
 const beginMarker = format === 'csi-u' ? '\x1b[93;3u' : '\x1b[27;3;93~';
@@ -62,15 +67,24 @@ try {
   await session.bindExtensions({ mode: 'tui', uiContext });
   // Actual ProcessTerminal negotiates with private tmux, not a fake input buffer.
   await until(() => terminal.modifyOtherKeysActive);
-  const start = new Promise((resolve) => {
-    const watcher = watch(directory, (_event, filename) => { if (filename === 'start') { watcher.close(); resolve(); } });
-  });
-  terminal.write('CLIPBOARD_PRIVATE_WORKER_READY'); await start;
+  let triggered;
+  const start = new Promise((resolve) => { triggered = resolve; });
+  const shortcuts = session.extensionRunner.getShortcuts(keybindings.getResolvedBindings());
+  assert.equal(shortcuts.size, 1);
+  editor.onExtensionShortcut = (data) => {
+    for (const [key, shortcut] of shortcuts) if (tuiModule.matchesKey(data, key)) {
+      activations++; shortcutWork = Promise.resolve(shortcut.handler(session.extensionRunner.createContext()));
+      triggered(); return true;
+    }
+    return false;
+  };
   const before = editorEvents, original = editor.getText();
-  await session.prompt('/tmux-image-paste');
+  terminal.write('CLIPBOARD_PRIVATE_WORKER_READY'); await start; await shortcutWork;
+  assert.equal(activations, 1, 'actual outer-PTY Ctrl+V activated extension shortcut');
+  assert.equal(nativePastes, 0); assert.equal(submissions, 0, 'no synthetic Enter/submission');
   assert.equal(requests, 0, 'no automatic model turn');
   assert.ok(editor.getText() === original, 'actual editor draft unchanged');
-  assert.ok(editorEvents === before, 'no protocol or modal typing reached editor');
+  assert.ok(editorEvents === before + 1, 'only activating Ctrl+V, no protocol or modal typing, reached editor');
   assert.ok(widgets.get('pi-tmux-image-clipboard')?.render().join('').includes('1 PNG pending'), 'PNG pending');
   assert.ok(altStarts > 0 && altEnds > 0, 'actual tmux inbound Alt-key encoding observed');
   assert.equal(tui.hasOverlay(), false, 'owned dialog removed after completion');
@@ -85,7 +99,7 @@ try {
   assert.equal(pending.images[0].mimeType, 'image/png');
   assert.equal(session.messages.length, 0, 'handoff alone does not submit');
   result = { ok: true, format, modifyOtherKeys: terminal.modifyOtherKeysActive, encodedMarkersObserved: true,
-    pendingImage: true, draftUnchanged: true, outsideInputPreserved: true, editorReceivedProtocolOrModalTyping: false, automaticTurns: requests, realClipboardRead: false };
+    pendingImage: true, shortcutActivated: true, submissions, draftUnchanged: true, outsideInputPreserved: true, editorReceivedProtocolOrModalTyping: false, automaticTurns: requests, realClipboardRead: false };
 } catch (error) {
   result = { ok: false, format, error: error.message };
 } finally {
