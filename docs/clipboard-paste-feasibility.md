@@ -1,11 +1,22 @@
-# Remote clipboard image paste: blocked at tmux response routing
+# Remote clipboard image paste: focused-pane scope and remaining input gate
 
-## Decision
+## Current decision
 
-Do **not** add `/tmux-image-paste` or a shortcut yet. Ghostty 1.4 implements the
-required clipboard protocol, and public Pi APIs offer a possible pending-image
-submission seam, but the tested tmux transport does not safely return responses
-to their requesting pane. Outbound passthrough alone is insufficient.
+The owner explicitly approved a **focused-pane-only** workflow: paste only into
+the focused pane and do not change panes before completion. General safe routing
+is still blocked, but tmux origin-ID routing is **not** a prerequisite for that
+narrower approved workflow. The original routing evidence below remains valid;
+focus checks do not remove its hazard.
+
+A second investigation found a separate blocker in the installed **Pi 1.5.2**
+input seam: delayed fragments of OSC 5522 are converted into legacy Alt-key and
+printable-text events before extensions receive them. No supported design was
+found that both bounds owned-response handling and preserves ordinary key
+semantics through the available public seams, even with no pane switch. See **Focused-pane host-input gate** below. `/tmux-image-paste` is
+therefore still **not implemented**; no read is emitted. Ghostty 1.4 protocol
+support and the focused-pane agreement do not fix this separate host-input gate.
+
+## Original routing evidence (still applies outside the approved workflow)
 
 A clipboard permission prompt can remain open while the user changes tmux
 windows. A synthetic isolated experiment with **tmux 3.8** delivered the complete
@@ -85,9 +96,9 @@ password/name remembering, configuration changes, or permission bypass is needed
 Graphics support, truecolor, `terminal.showImages` and placeholder support do not
 establish clipboard capability.
 
-## Public Pi seam: possible, not implemented or integration-verified
+## Public Pi staging seam: possible, not implemented or integration-verified
 
-Inspected installed **Pi 1.5.2** `docs/extensions.md` input/custom-UI sections,
+Inspected installed **Pi 1.5.2** complete `docs/extensions.md`,
 `docs/tui.md`, shipped `examples/extensions/input-transform.ts`, public extension
 types and terminal/input implementation. Existing repository renderer evidence
 in `renderer-seam.md` covers **Pi 1.0.3**, not this new clipboard feature.
@@ -113,7 +124,68 @@ No staging prototype was connected to the unsafe transport. Standard submitted
 images must retain Pi's normal `images.blockImages` behavior and session storage:
 blocking model access does **not** prevent submitted images from being stored.
 
-## Reproduce without reading any clipboard
+## Focused-pane host-input gate
+
+`test/host-clipboard-input.mjs` uses only **public pi-tui 1.5.2 exports**:
+`StdinBuffer`, `TuiMainScreen`, `addInputListener`, and a fake terminal/focused
+component. It never starts a real terminal or sends clipboard requests. These
+are the buffer and TUI listener that underlie `ctx.ui.onTerminalInput`.
+
+Observed cases:
+
+1. A complete synthetic OSC 5522 DATA packet reaches the public listener as one
+   event: straightforward exact-ID consumption would be possible here.
+2. The same packet, split **after the owned ID and part of the synthetic base64**,
+   with a 100 ms gap, reaches both the public input listener and focused
+   component as `ESC ]` followed by individual printable metadata/payload keys.
+   No pane/client/session change is involved.
+3. An ordinary standalone Alt+] also produces the same `ESC ]` listener event.
+4. Plain typing and bracketed text paste remain ordinary input in the fixture.
+
+The installed `StdinBuffer` has a 50 ms default sequence timeout. Its protected
+terminal-reply header list covers color/program-status/XTVersion/graphics
+replies, but **not OSC 5522**. On timeout an unrecognized OSC is intentionally
+recovered as Alt+] plus reparsed keystrokes. This is a **gap inside a packet**,
+not a delay waiting for Ghostty permission before any response starts.
+
+An extension cannot decide ownership on the initial Alt+] event. Passing it and
+subsequent header bytes through leaks protocol text; retaining it until an ID
+appears can hold a real Alt+] indefinitely. A bounded timer would need a way to
+replay that key through the original host input pipeline, but the public
+`onTerminalInput` callback only synchronously returns consume/replacement data.
+There is no public asynchronous raw-key replay method. `pasteToEditor` and
+`setEditorText` insert text; they do not replay original key/shortcut semantics.
+Reaching into the current editor or terminal input internals, replacing the
+editor, or adding another stdin owner is outside the approved design.
+
+The same ambiguity applies to an owned **late** reply after a request timeout.
+A runtime-random ID prefix plus issued-sequence high-water mark could identify
+old requests in bounded space, but only **after intact framing reaches the
+extension**. It cannot make the initial Alt+] event safely attributable.
+
+The smallest host prerequisite is proper OSC 5522 response framing before the
+legacy-Alt recovery path, with bounded buffering/recovery and a supported way
+for extensions to consume owned responses (for example a public bounded
+terminal-response registration/parser seam). Merely increasing timeouts,
+assuming every packet arrives in one chunk, or swallowing all Alt+] is not
+safe. Native OSC 5522 recognition would address the demonstrated long-packet
+fragment case; header fragmentation and malformed/unterminated packet bounds
+would still need explicit tests. No host patch is made or activated here.
+
+Run explicitly against a host-supplied **pi-tui package root** (which may be a
+sibling of coding-agent in a packaged distribution):
+
+```sh
+PI_TEST_TUI_ROOT=/path/to/installed/pi-tui node --test test/host-clipboard-input.mjs
+```
+
+Result on pi-tui 1.5.2: **4 passed, 0 failed, 0 skipped**. These passing assertions
+reproduce the limitation, not a working paste feature. A host with corrected
+framing should fail the limitation assertions and be reevaluated. The diagnostic
+is outside the default `*.test.mjs` suite and skips explicitly without a host
+root; it imports no private host modules or physical dependencies into this repo.
+
+## Reproduce tmux routing without reading any clipboard
 
 ```sh
 python3 scripts/probe-clipboard-routing.py
@@ -149,8 +221,9 @@ Observed output on tmux 3.8:
 }
 ```
 
-Success reproduces the **blocker**, not clipboard functionality. Changed behavior
-makes the probe fail for investigation; it is not a universal feature detector.
+Success reproduces the **unsupported focus-change hazard**, not clipboard
+functionality. Changed behavior makes the probe fail for investigation; it is
+not a universal feature detector.
 This is synthetic automated transport evidence, **not** human Ghostty/macOS/SSH
 round-trip acceptance. No real clipboard probe is authorized by this record.
 
@@ -180,25 +253,37 @@ For this documentation/diagnostic-only change:
 - `git diff --check`: passed. No real clipboard or physical-terminal test ran.
 
 The existing suite results do not verify clipboard staging, parsing, bounds or
-model-policy integration: those features remain unimplemented behind the
-transport blocker.
+model-policy integration: those features remain unimplemented. The focused-pane
+follow-up's separate public-host diagnostic is recorded above; a clean archive
+of accepted baseline `0124bd6` was independently tested with `npm test` and
+reproduced **249 passed, 35 skipped, 2 failed**, with the same two entry-path
+failures. No unrelated manifest/test fix is included.
 
 ## Unblocking and future acceptance
 
-First obtain a transport with explicit request ownership, routing, bounded
-handling and late-response disposal across focus changes and pane destruction.
-That likely requires tmux OSC 5522 support (or a separately approved alternative
-transport). Merely asking users not to switch panes is not a privacy guarantee.
-Do not lock user input, switch windows back, mutate tmux/Ghostty settings, add a
-Mac helper or patch Pi internals to work around this.
+For **focused-pane-only** support, first resolve the Pi host-input framing gate.
+Then require explicit first-use consent to remain in the same focused pane,
+client and Pi session/process until completion, including terminal permission
+prompts. Timeout/cancel does **not** cancel that prompt or guarantee no late
+response. Leaving, disconnecting or switching during an outstanding request is
+unsupported; focus checks may warn/reject but cannot prevent misrouting.
 
-After that prerequisite, implement clipboard handling as a separate bounded
-subsystem, reusing topology checks without graphics-only policy gates. Require
-explicit requests, conservative concurrency, strict owned-ID parsing, safe
+For **general focus-independent** support, additionally obtain explicit tmux
+OSC 5522 origin-ID routing and late-response ownership across focus changes and
+pane destruction (or a separately approved alternative transport). The focused
+workflow agreement is not a general privacy guarantee.
+
+Do not lock user input, switch windows back, mutate tmux/Ghostty settings, add a
+Mac helper or patch Pi internals to work around either gate.
+
+After the applicable prerequisite, implement clipboard handling as a separate
+bounded subsystem, reusing topology checks without graphics-only policy gates.
+Require explicit requests, conservative concurrency, strict owned-ID parsing, safe
 cancellation/timeouts/denial/oversize/malformed handling, no spontaneous reads or
 submissions, pending-image merge/cancel and lifecycle cleanup. Test fragmented
 replies mixed with ordinary typing and bracketed text paste, existing
 attachments, both model-blocking settings, and no payload/protocol logging.
-Only then coordinate a real Ghostty 1.4/macOS → SSH → tmux → Pi permission/deny,
-success and delayed-reply window-switch check with the owner, without activating
-an active package or reading the clipboard implicitly.
+Only then coordinate real Ghostty 1.4/macOS → SSH → tmux → Pi permission/denial
+and success checks with the owner, without activating an active package or
+reading the clipboard implicitly. Focus-change leakage remains a synthetic-only
+unsupported-path check until general routing is fixed.

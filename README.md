@@ -62,12 +62,13 @@ Original PDF bytes and later pages are not sent to the model.
 
 ## Remote clipboard
 
-Image paste from a local Mac into Pi over SSH is not supported by this package;
-there is no `/tmux-image-paste` command. Ghostty 1.4 supports image clipboard
-reads, but tested tmux response routing can send clipboard data to the wrong
-pane after a window switch. Normal text paste is unchanged. Transfer the image
-to the remote machine and use its path instead.
+Image paste from a local Mac into Pi over SSH is not implemented yet;
+there is no `/tmux-image-paste` command. Even when staying in one focused pane,
+Pi 1.5.2's input buffering prevents safe handling of delayed clipboard reply
+fragments through the current public extension APIs. Separately, switching tmux windows while a read is pending can
+send clipboard data to the wrong pane. Normal text paste is unchanged. Transfer
+the image to the remote machine and use its path instead.
 
-Details: [clipboard transport blocker](docs/clipboard-paste-feasibility.md).
+Details: [clipboard feasibility and remaining gates](docs/clipboard-paste-feasibility.md).
 
 More: [PDF caveats](docs/pdf-document-viewer.md) · [terminal compatibility](docs/capabilities.md).
