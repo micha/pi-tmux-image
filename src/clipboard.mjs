@@ -3,7 +3,7 @@ import { probeClipboardTopology } from './clipboard-capabilities.mjs';
 import { openClipboardModal } from './clipboard-modal.mjs';
 
 const KEY = 'pi-tmux-image-clipboard';
-const CONSENT = 'Read a PNG from your local clipboard? The dialog captures typing; stay in this tmux pane until finished. Ctrl+C cancels import, not Ghostty permission or the terminal read. Nothing is submitted automatically.';
+const CONSENT = 'Read a PNG from your terminal clipboard? The dialog captures typing; stay in this tmux pane until finished. Ctrl+C cancels import, not Ghostty permission or the terminal read. Nothing is submitted automatically.';
 
 /** Public extension API only. Separate from image rendering, PDF and viewer pacing. */
 export function registerClipboardPaste(pi, { presentation, env = process.env, parseKey, matchesKey, truncateToWidth,
