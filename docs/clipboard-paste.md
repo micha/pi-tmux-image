@@ -244,7 +244,7 @@ checkout, no active user-server/config/package operation occurred, and these
 automated gates performed no real clipboard/provider access or push. Full older host-seam suites that
 assume another entry/package layout were not silently adapted.
 
-## Coordinated human verification: narrow smoke test passed
+## Coordinated human verification: owner-confirmed image paste
 
 Against code commit **`52e9ece`**, the owner completed one harmless-image smoke
 test on **Ghostty 1.4.0/macOS → SSH/Linux → tmux 3.8 → Pi 1.5.2**. This was a
@@ -267,12 +267,26 @@ owner replied verbatim:
 > yes, dissapeared and editor stayed clean
 
 This supports a **real read through strict PNG validation to pending staging,
-pending clear and a clean editor** on that one path. The workflow requested no
-intentional model submission and stopped at clear. It does not establish image
-handoff, storage acknowledgement, model receipt or independent no-network/turn
-instrumentation. It does not undo the first nonmodal failed-trial history above.
+pending clear and a clean editor** on that one path. That isolated workflow
+requested no intentional model submission and stopped at clear; by itself it
+establishes neither image handoff/model receipt nor independent no-network/turn
+instrumentation.
 
-Remaining human-pending cases include attachment handoff/submission, denial,
+Subsequently, the owner sent an actual standard image attachment in the coordinator
+conversation and asked whether the assistant could see it. The coordinator reported
+receiving and accurately visually recognizing the image. The owner then explicitly
+confirmed:
+
+> so the image paste works!
+
+This extends the human evidence to **owner-confirmed successful image paste with
+actual assistant-visible image receipt/recognition**, beyond read/stage/clear.
+No image content or payload is retained in this record. It is not a trace of exact
+process identity or handler ordering, a host persistence/storage acknowledgement,
+or an inspection of session-disk contents. Neither observation undoes the first
+nonmodal failed-trial history above.
+
+Remaining human-pending cases include broader attachment-handoff/submission cases, denial,
 Ctrl+C/drain, timeout, warned exit/late replies, cleanup failures, other PNG
 variants/sizes, and broader terminal/layout/input cases. Automated coverage remains
 separate evidence, not a full human matrix pass. Cross-pane/client/focus-switch
