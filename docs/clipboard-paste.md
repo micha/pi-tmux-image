@@ -240,18 +240,43 @@ Isolated temporary HOME/`PI_CODING_AGENT_DIR`: `pi install <checkout>`, `pi list
 `pi --help` and public resource discovery pass (one extension, zero errors, six
 commands). Fresh copied-checkout loading is also exercised by both new host
 fixtures. Diff checks pass. No runtime host dependencies were installed in this
-checkout, no active user-server/config/package operation occurred, and no real
-clipboard/provider access or push was performed. Full older host-seam suites that
+checkout, no active user-server/config/package operation occurred, and these
+automated gates performed no real clipboard/provider access or push. Full older host-seam suites that
 assume another entry/package layout were not silently adapted.
 
-## Coordinated human verification (pending)
+## Coordinated human verification: narrow smoke test passed
 
-After independent review and explicit process/package coordination, use a harmless
-small PNG on the Mac in the **same focused pane**. Invoke the command, accept the
-new modal consent and Ghostty permission, **do not type** while the dialog owns
-input, and check that it closes to one pending image without protocol text in the
-draft or an automatic turn. Clear it or intentionally submit once. Exercise denial,
-Ctrl+C/drain and warned exit separately only with harmless data and coordination.
-Do not deliberately switch panes or force fragmentation with real clipboard data.
-Any unresolved request still requires resolving the terminal prompt before leaving.
-No automated result here authorizes live activation or establishes human acceptance.
+Against code commit **`52e9ece`**, the owner completed one harmless-image smoke
+test on **Ghostty 1.4.0/macOS → SSH/Linux → tmux 3.8 → Pi 1.5.2**. This was a
+fresh isolated Pi process, not `/reload` or a package installation: the temporary
+launcher explicitly loaded local `extensions/tmux-image.ts`, disabled discovery,
+other extensions and tools, used an in-memory session and `PI_OFFLINE=1`, and kept
+agent settings temporary (`cacheWarming` off, `images.blockImages=true`,
+`terminal.showImages=false`). The owner copied the harmless Mac image and manually
+invoked `/tmux-image-paste`, handling consent/permissions as needed. We did not
+request or log the clipboard content.
+
+The owner reported the exact success notice:
+
+> PNG staged for your next interactive prompt; clear with /tmux-image-paste clear. Consumed at input handoff, not a storage acknowledgement; later extensions may discard it.
+
+After being asked whether `/tmux-image-paste clear` removed pending state, the
+editor stayed free of protocol/base64 and there was no automatic response, the
+owner replied verbatim:
+
+> yes, dissapeared and editor stayed clean
+
+This supports a **real read through strict PNG validation to pending staging,
+pending clear and a clean editor** on that one path. The workflow requested no
+intentional model submission and stopped at clear. It does not establish image
+handoff, storage acknowledgement, model receipt or independent no-network/turn
+instrumentation. It does not undo the first nonmodal failed-trial history above.
+
+Remaining human-pending cases include attachment handoff/submission, denial,
+Ctrl+C/drain, timeout, warned exit/late replies, cleanup failures, other PNG
+variants/sizes, and broader terminal/layout/input cases. Automated coverage remains
+separate evidence, not a full human matrix pass. Cross-pane/client/focus-switch
+routing is still unsupported, not accepted by this success. Do not deliberately
+switch panes or force fragmentation with real clipboard data; unresolved requests
+still require resolving the terminal prompt before leaving. This record authorizes
+no further read, installation, active-package operation or host/config change.
