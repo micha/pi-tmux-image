@@ -127,7 +127,10 @@ a fake outer terminal PTY, and two controlled receiver windows. It enables
 passthrough **only on that private server**. Nothing from the fake terminal is
 written to the invoking terminal. It observes a DCS-wrapped read request, injects
 synthetic OK/DATA/DONE responses, then issues a second request and changes windows
-before injecting its response. The payload is a fixed synthetic marker, not an
+before injecting its response. It also injects ordinary text typing while each
+window is active and checks that those bytes arrive unchanged before the reply.
+This verifies the fake transport preserves normal typing, not Pi editor or
+native clipboard integration. The payload is a fixed synthetic marker, not an
 image or clipboard data. All processes/files are cleaned up on normal completion
 or handled errors. Like other processes, an uncatchable kill can leave temporary
 resources. It does not contact Ghostty, SSH, Pi, a provider, or the active tmux
@@ -139,6 +142,7 @@ Observed output on tmux 3.8:
 {
   "tmux": "tmux 3.8",
   "outbound_passthrough_observed": true,
+  "normal_typing_preserved_in_both_windows": true,
   "same_active_pane_received_exact_reply": true,
   "different_active_pane_received_origin_reply": true,
   "real_clipboard_accessed": false
@@ -155,7 +159,8 @@ round-trip acceptance. No real clipboard probe is authorized by this record.
 For this documentation/diagnostic-only change:
 
 - `python3 scripts/probe-clipboard-routing.py`: reproduced both same-active-pane
-  delivery and wrong-window delivery on tmux 3.8.
+  delivery and wrong-window delivery on tmux 3.8, with ordinary typing preserved
+  byte-for-byte in both fake receivers.
 - `python3 -m py_compile scripts/probe-clipboard-routing.py`: passed; generated
   bytecode removed from the checkout.
 - `npm test`: **249 passed, 35 skipped, 2 failed**. Both failures are an existing

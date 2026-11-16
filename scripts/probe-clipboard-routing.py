@@ -46,7 +46,10 @@ while True:
         with (pathlib.Path(directory) / (name + ".bin")).open("ab") as output:
             output.write(data)
         pending += data
-        if b"status=DONE:id=origin-request" in pending and pending.endswith(b"\\x1b\\\\"):
+        if pending == b"plain text 123\\r":
+            os.write(1, ("TYPED-" + name).encode())
+            pending = b""
+        elif b"status=DONE:id=origin-request" in pending and pending.endswith(b"\\x1b\\\\"):
             os.write(1, ("RECEIVED-" + name).encode())
             pending = b""
 ''')
@@ -81,31 +84,39 @@ while True:
             command("send-keys", "-t", "probe:origin", "r")
             # Observe the outbound request only on the fake terminal, never stdout.
             until(b"\x1b]5522;type=read:id=origin-request;aW1hZ2UvcG5n\x1b\\")
+            typing = b"plain text 123\r"
+            os.write(master, typing)
+            until(b"TYPED-origin")
+            origin_typing = (root / "origin.bin").read_bytes() == typing
             reply = (b"\x1b]5522;type=read:status=OK:id=origin-request\x1b\\"
                      b"\x1b]5522;type=read:status=DATA:id=origin-request:"
                      b"mime=aW1hZ2UvcG5n;c3ludGhldGlj\x1b\\"
                      b"\x1b]5522;type=read:status=DONE:id=origin-request\x1b\\")
             os.write(master, reply)
             until(b"RECEIVED-origin")
-            same_pane = (root / "origin.bin").read_bytes() == reply
+            same_pane = (root / "origin.bin").read_bytes() == typing + reply
             command("send-keys", "-t", "probe:origin", "r")
             until(b"\x1b]5522;type=read:id=origin-request;aW1hZ2UvcG5n\x1b\\")
             command("new-window", "-t", "probe", "-n", "other", sys.executable,
                     str(receiver), "other", directory)
             until(b"READY-other")
+            os.write(master, typing)
+            until(b"TYPED-other")
+            other_typing = (root / "other.bin").read_bytes() == typing
             # Simulate the same reply arriving after a user changes windows while
             # the outer terminal's permission prompt is pending.
             os.write(master, reply)
             until(b"RECEIVED-other")
-            wrong_pane = (root / "other.bin").read_bytes() == reply
+            wrong_pane = (root / "other.bin").read_bytes() == typing + reply
             print(json.dumps({
                 "tmux": command("-V").stdout.decode().strip(),
                 "outbound_passthrough_observed": True,
+                "normal_typing_preserved_in_both_windows": origin_typing and other_typing,
                 "same_active_pane_received_exact_reply": same_pane,
                 "different_active_pane_received_origin_reply": wrong_pane,
                 "real_clipboard_accessed": False,
             }, indent=2))
-            if not same_pane or not wrong_pane:
+            if not same_pane or not wrong_pane or not origin_typing or not other_typing:
                 raise RuntimeError("routing behavior changed; investigate before drawing conclusions")
         finally:
             subprocess.run([tmux, "-S", socket, "kill-server"], env=env,
