@@ -70,23 +70,31 @@ With **Ghostty ≥1.4**, one focused tmux pane/client and interactive Pi:
 /tmux-image-paste cancel
 ```
 
-The first use asks for consent. Ghostty may separately request clipboard
-permission. A valid **still, noninterlaced PNG up to 8 MiB** is staged for your
-next interactive prompt; existing attachments are preserved. Nothing is
-submitted automatically. `clear` removes the pending image; `cancel` stops an
-import **locally only**. Cmd+V text paste and Pi's Ctrl+V are unchanged.
+The first use asks for consent, then opens **Reading clipboard—do not type**.
+The visible dialog captures input so replies—including tmux CSI-u/xterm encoded
+markers—do not reach the draft on the supported path. Ghostty may separately ask
+for clipboard permission. A valid **still, noninterlaced PNG up to 8 MiB** closes
+the dialog and is staged for your next interactive prompt. Existing attachments
+are preserved; nothing is submitted automatically.
 
-**Stay in the same focused pane, client and Pi session until completion, including
-permission prompts.** Timeout/cancel does not cancel Ghostty's prompt/read.
-An **UNRESOLVED** widget blocks new reads until an owned terminal completion or
-error arrives. Resolve any terminal prompt before leaving; do not blindly retry,
-reload or disconnect.
+- **Ctrl+C:** cancel image import locally; keep the dialog visibly draining.
+- **Ctrl+Q, then Ctrl+Q again:** acknowledge the warning and leave anyway.
+  Late replies can then put protocol/base64 text in your draft.
+- If owned dialog cleanup fails, **Ctrl+Q retries removal**.
+- **Escape does not leave.** Outside the dialog, native typing/paste is unchanged.
+- `clear` removes a pending image; `cancel` stops import **locally only**, not
+  Ghostty's permission prompt/read. Cmd+V and Pi's Ctrl+V are not rebound.
 
-This is best effort: Pi 1.5.2 fragmented replies can put protocol/base64 text in
-your draft **before detection, potentially the whole payload**. Detected imports
-are rejected; inspect/edit the draft manually. Detection is not guaranteed and
-nothing is silently erased. Switching windows can send replies to another pane;
-there is no protection after pane/client/session/process changes.
+**Stay in the same focused pane, client and Pi session, including permission
+prompts.** Timeout/cancel keeps the visible waiting/draining dialog by default.
+An **UNRESOLVED** state blocks new reads until a clean owned terminal completion
+or error arrives, even after explicit dialog exit. Resolve any terminal prompt
+before leaving; do not blindly retry, reload or disconnect.
+
+Switching windows can send replies to another pane; another dialog taking focus
+can receive them too. There is no protection after pane/client/session/process
+changes or knowingly leaving the dialog, and no automatic draft erasure/repair.
+If late protocol text appears, inspect/edit it manually.
 
 A pending image is consumed when handed to the next interactive input pipeline,
 **not** on a storage acknowledgement. Later input extensions or submission

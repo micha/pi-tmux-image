@@ -3,7 +3,7 @@ import { validateClipboardPng } from './clipboard-png.mjs';
 
 const OSC = '\x1b]5522;', ST = '\x1b\\';
 const MAX_HEADER = 512, MAX_PACKET = 8192;
-const warning = 'Fragmented clipboard reply detected; that paste was rejected. Protocol text may be in your draft. Inspect it manually; nothing was erased. Stay in this pane while the terminal read is unresolved.';
+const warning = 'Clipboard reply outside the paste dialog detected; that paste was rejected. Protocol text may be in your draft. Inspect it manually; nothing was erased. Stay in this pane while the terminal read is unresolved.';
 
 export function strictBase64(text) {
   if (typeof text !== 'string' || text.length % 4 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(text)) throw new Error('Invalid clipboard encoding.');
@@ -25,7 +25,7 @@ function metadata(text) {
 /** Runtime-local bounded reader. No terminal effects, subscriptions, messages or submission. */
 export function createClipboardReader({ prefix = `piimg-${randomUUID()}`, timeoutMs = 30000,
   maxBytes = 8 * 1024 * 1024, maxPackets = 4096, now = Date.now,
-  setTimer = setTimeout, clearTimer = clearTimeout, onChange = () => {}, onWarning = () => {} } = {}) {
+  setTimer = setTimeout, clearTimer = clearTimeout, onChange = () => {}, onWarning = () => {}, parseKey = () => undefined } = {}) {
   if (!/^[A-Za-z0-9_.+-]{1,80}$/.test(prefix)) throw new TypeError('Invalid clipboard request prefix');
   let issued = 0, active, fragment, disposed = false, lateFragmentWarningShown = false;
   function owned(id) {
@@ -158,12 +158,22 @@ export function createClipboardReader({ prefix = `piimg-${randomUUID()}`, timeou
       const request = `${OSC}type=read:id=${id};aW1hZ2UvcG5n${ST}`;
       return { done, request: `\x1bPtmux;${request.replaceAll('\x1b', '\x1b\x1b')}${ST}` };
     },
+    rejectFrame(data) {
+      if (disposed || !active || typeof data !== 'string' || !data.startsWith(OSC)) return;
+      const header = data.slice(OSC.length, OSC.length + MAX_HEADER);
+      const match = /(?:^|:)id=([A-Za-z0-9_.+-]+)(?=:|;|$)/.exec(header);
+      if (/(?:^|:)type=read(?=:|;|$)/.test(header) && match && match[1] === active.id) {
+        reject('Clipboard frame was malformed or oversized; terminal read remains unresolved.');
+      }
+    },
     input(data) {
       if (disposed || typeof data !== 'string') return;
       if (data.startsWith('\x1b[200~')) { fragment = undefined; return; }
       if (data === '\x1b[O' && active) reject('Terminal focus changed; clipboard import stopped, but its terminal read may remain pending.');
       if (packet(data)) { fragment = undefined; return { consume: true }; }
-      if (observeFragment(data)) return { consume: true };
+      const key = parseKey(data);
+      const observed = key === 'alt+]' ? '\x1b]' : key === 'alt+\\' ? ST : data;
+      if (observeFragment(observed)) return { consume: true };
     },
     cancel() { if (active) reject('Clipboard import cancelled locally; this does not cancel the terminal permission prompt. Stay in this pane until resolved.'); },
     dispose() {

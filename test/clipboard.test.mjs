@@ -5,6 +5,7 @@ import { createClipboardReader, strictBase64 } from '../src/clipboard-protocol.m
 import { validateClipboardPng } from '../src/clipboard-png.mjs';
 import { probeClipboardTopology } from '../src/clipboard-capabilities.mjs';
 import { registerClipboardPaste } from '../src/clipboard.mjs';
+import { createClipboardAssembler } from '../src/clipboard-modal.mjs';
 
 function crc(bytes) {
   let value = 0xffffffff;
@@ -200,15 +201,19 @@ test('clipboard topology bounds hung queries, malformed output and missing tmux'
   }
 });
 
-function extensionHarness({ consent = true, mode = 'tui', probe = async () => ({ fingerprint: 'same' }) } = {}) {
+function extensionHarness({ consent = true, mode = 'tui', probe = async () => ({ fingerprint: 'same' }), readerOptions = {}, renderFailure = () => false, hideFailure = () => false } = {}) {
   const handlers = new Map(), commands = new Map(), notices = [], writes = [], widgets = new Map();
-  let input, confirms = 0, unsubscribe = 0;
+  let input, overlay, confirms = 0, unsubscribe = 0, frames = 0;
+  const keys = [];
+  const parseKey = (data) => ({ '\x1b]': 'alt+]', '\x1b\\': 'alt+\\', '\x03': 'ctrl+c', '\x11': 'ctrl+q', '\x1b[93;3u': 'alt+]', '\x1b[92;3u': 'alt+\\', '\x1b[27;3;93~': 'alt+]', '\x1b[27;3;92~': 'alt+\\' })[data];
+  const tui = { hasOverlay: () => Boolean(overlay), requestRender() {}, renderNow() { frames++; if (renderFailure(frames)) throw new Error('Synthetic frame failure'); },
+    showOverlay(component) { overlay = component; return { isFocused: () => overlay === component, isHidden: () => false, hide() { if (hideFailure()) throw new Error('Synthetic owned hide failure'); if (overlay === component) overlay = undefined; } }; } };
   const pi = { on(name, handler) { const list = handlers.get(name) || []; list.push(handler); handlers.set(name, list); }, registerCommand(name, command) { commands.set(name, command); } };
   const ctx = { mode, ui: { confirm: async () => { confirms++; return consent; }, notify: (...args) => notices.push(args), setWidget: (key, lines) => widgets.set(key, lines), onTerminalInput: (listener) => { input = listener; return () => { unsubscribe++; }; } } };
-  const presentation = { connection: { epoch: 1, tui: { hasOverlay: () => false } }, write: (data) => writes.push(data), bind() {} };
-  registerClipboardPaste(pi, { presentation, env, probe });
+  const presentation = { connection: { epoch: 1, tui }, write: (data) => { assert.ok(overlay && frames > 0, 'dialog rendered before emission'); writes.push(data); }, bind() {} };
+  registerClipboardPaste(pi, { presentation, env, probe, parseKey, matchesKey: (data, key) => parseKey(data) === key, truncateToWidth: (text, width) => text.slice(0, width), createReader: (options) => createClipboardReader({ ...options, ...readerOptions }) });
   const emit = async (name, event = {}) => { let result; for (const handler of handlers.get(name) || []) result = await handler(event, ctx); return result; };
-  return { ctx, emit, notices, writes, widgets, input: (data) => input?.(data), command: (args = '') => commands.get('tmux-image-paste').handler(args, ctx), get confirms() { return confirms; }, get unsubscribe() { return unsubscribe; } };
+  return { ctx, emit, notices, writes, widgets, keys, get modal() { return overlay; }, input: (data) => { const result = input?.(data); if (!result?.consume) { if (overlay) overlay.handleInput(data); else keys.push(data); } return result; }, command: (args = '') => commands.get('tmux-image-paste').handler(args, ctx), get confirms() { return confirms; }, get unsubscribe() { return unsubscribe; } };
 }
 async function stage(h) {
   const command = h.command();
@@ -228,6 +233,78 @@ test('clipboard extension only reads after consent, visibly stages, preserves at
   assert.equal(await h.emit('input', { source: 'interactive', text: 'next' }), undefined);
   assert.equal(JSON.stringify(h.notices).includes(PNG.toString('base64')), false);
   await h.emit('session_shutdown'); assert.equal(h.unsubscribe, 1);
+});
+
+test('clipboard assembler handles split raw headers/terminators, coalesced records and bounded unknown frames', async () => {
+  const { instance: r } = reader(); const request = r.begin(), id = idOf(request.request);
+  const assembler = createClipboardAssembler({ parseKey: () => undefined, packet: (data) => r.input(data), malformed: (data) => r.rejectFrame(data) });
+  const all = packet('unowned-1', 'DONE') + packet(id, 'OK') + packet(id, 'DATA', PNG.toString('base64'), ':mime=aW1hZ2UvcG5n') + packet(id, 'DONE');
+  assembler.input('ordinary typing outside a frame');
+  for (const char of all) assembler.input(char);
+  assert.equal((await request.done).ok, true);
+  assembler.reset(); r.dispose();
+  const next = reader().instance, pending = next.begin(), nextId = idOf(pending.request);
+  const bounded = createClipboardAssembler({ parseKey: () => undefined, packet: (data) => next.input(data), malformed: (data) => next.rejectFrame(data) });
+  bounded.input(packet(nextId, 'DATA', 'A'.repeat(9000), ':mime=aW1hZ2UvcG5n'));
+  assert.equal((await pending.done).ok, false); assert.equal(next.state.unresolved, true);
+  bounded.input(packet(nextId, 'DONE')); assert.equal(next.state.waiting, false); next.dispose();
+});
+
+test('clipboard modal timeout/cancel keeps visible draining; explicit double Ctrl+Q leaves but retains quarantine', async () => {
+  for (const reason of ['timeout', 'cancel', 'leave']) {
+    let timeout;
+    const h = extensionHarness({ readerOptions: { prefix: 'modal', setTimer(fn) { timeout = fn; return 1; }, clearTimer() {} } });
+    await h.emit('session_start'); const command = h.command();
+    for (let i = 0; i < 10 && !h.writes.length; i++) await Promise.resolve();
+    const id = idOf(h.writes[0]); assert.ok(h.modal);
+    h.input('ordinary typing captured while modal'); assert.equal(h.keys.length, 0);
+    if (reason === 'timeout') timeout(); else h.input('\x03');
+    await command;
+    assert.ok(h.modal); assert.match(h.modal.render(100).join(''), /unresolved/);
+    if (reason === 'leave') {
+      h.input('\x11'); assert.ok(h.modal); assert.match(h.modal.render(100).join(''), /AGAIN/);
+      h.input('\x11'); assert.equal(h.modal, undefined);
+      h.input('normal typing restored'); assert.ok(h.keys.includes('normal typing restored'));
+      const count = h.writes.length; await h.command(); assert.equal(h.writes.length, count);
+      h.input('\x1b[93;3u'); for (const char of packet(id, 'DONE').slice(2, -2)) h.input(char); h.input('\x1b[92;3u');
+    } else h.input(packet(id, 'DONE'));
+    assert.equal(h.modal, undefined); assert.equal([...h.widgets.values()].flat().some((text) => text?.includes('UNRESOLVED')), false);
+    assert.equal(await h.emit('input', { source: 'interactive', text: 'next' }), undefined);
+    await h.emit('session_shutdown');
+  }
+});
+
+test('clipboard dialog initial/removal frame failures prevent emission or staging', async () => {
+  const initial = extensionHarness({ renderFailure: () => true });
+  await initial.emit('session_start'); await initial.command(); assert.equal(initial.writes.length, 0); assert.equal(initial.modal, undefined);
+  await initial.emit('session_shutdown');
+  const removal = extensionHarness({ renderFailure: (frame) => frame > 1 });
+  await removal.emit('session_start'); await stage(removal);
+  assert.equal(await removal.emit('input', { source: 'interactive', text: 'unchanged' }), undefined);
+  assert.equal(removal.modal, undefined); await removal.emit('session_shutdown');
+});
+
+test('clipboard owned hide failures retain usable retry controls, including failed initial render and explicit leave', async () => {
+  for (const phase of ['initial', 'completed', 'leave', 'shutdown']) {
+    let failHide = true;
+    const h = extensionHarness({ hideFailure: () => failHide, renderFailure: (frame) => phase === 'initial' && frame === 1 });
+    await h.emit('session_start');
+    if (phase === 'initial') { await h.command(); assert.equal(h.writes.length, 0); }
+    else if (phase === 'completed') await stage(h);
+    else {
+      const command = h.command(); for (let i = 0; i < 10 && !h.writes.length; i++) await Promise.resolve();
+      if (phase === 'shutdown') { await h.emit('session_shutdown'); await command; }
+      else { h.input('\x03'); await command; h.input('\x11'); h.input('\x11'); }
+    }
+    assert.ok(h.modal, `${phase}: failed hide must retain its mounted owner`);
+    h.input('typing while owned cleanup failed'); assert.equal(h.keys.length, 0, 'handler is live, not an inert orphan');
+    h.input('\x11'); assert.ok(h.modal, 'retry can fail without abandoning the owned overlay');
+    failHide = false; h.input('\x11'); assert.equal(h.modal, undefined, 'explicit retry removes only owned overlay');
+    if (phase === 'leave') h.input(packet(idOf(h.writes[0]), 'DONE'));
+    assert.equal(await h.emit('input', { source: 'interactive', text: 'next' }), undefined, 'no unconfirmed image is staged');
+    h.input('outside restored'); assert.ok(h.keys.includes('outside restored'));
+    await h.emit('session_shutdown');
+  }
 });
 
 test('clipboard extension clear, lifecycle, denied consent and non-TUI do not submit or emit', async () => {

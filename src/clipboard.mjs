@@ -1,110 +1,140 @@
 import { createClipboardReader } from './clipboard-protocol.mjs';
 import { probeClipboardTopology } from './clipboard-capabilities.mjs';
+import { openClipboardModal } from './clipboard-modal.mjs';
 
 const KEY = 'pi-tmux-image-clipboard';
-const CONSENT = 'Experimental: stay in this focused tmux pane, terminal client and Pi session/process until the read completes, including Ghostty permission prompts. Do not disconnect. Timeout/cancel does NOT cancel the terminal prompt or guarantee no late reply. Fragmented replies may put protocol text in your draft before detection; inspect it manually. No draft is erased and nothing is auto-submitted. Submitted images are stored in the session even when model images are blocked. Continue?';
+const CONSENT = 'Experimental: a visible Reading clipboard—do not type dialog will capture input instead of your draft. Stay in this focused tmux pane, client and Pi session/process, including Ghostty permission prompts; do not disconnect. Ctrl+C cancels import but keeps the dialog draining. Timeout/cancel does NOT cancel the terminal permission prompt/read. Ctrl+Q twice explicitly leaves anyway; late replies may then contaminate your draft and new reads remain blocked. Nothing is auto-submitted or erased. Submitted images are stored even when model images are blocked. Continue?';
 
 /** Public extension API only. Separate from image rendering, PDF and viewer pacing. */
-export function registerClipboardPaste(pi, { presentation, env = process.env,
+export function registerClipboardPaste(pi, { presentation, env = process.env, parseKey, matchesKey, truncateToWidth,
   probe = probeClipboardTopology, createReader = createClipboardReader } = {}) {
   let runtime;
+  function notify(current, message, level = 'warning') {
+    if (runtime === current && !current.closed) {
+      try { current.context.ui.notify(message, level); } catch {}
+    }
+  }
   function update(current) {
     if (runtime !== current || current.closed) return;
+    current.modal?.update();
     const state = current.reader.state;
     const status = state.waiting ? state.unresolved
-      ? 'Clipboard: terminal read UNRESOLVED — stay in this pane; resolve its permission prompt.'
-      : 'Clipboard: reading PNG — stay in this pane (including permission prompts).'
+      ? 'Clipboard: terminal read UNRESOLVED — resolve its permission prompt; do not retry or leave this pane.'
+      : 'Clipboard: reading PNG in input-owning dialog — do not type or leave this pane.'
       : current.pending ? 'Clipboard: 1 PNG pending for next interactive prompt; /tmux-image-paste clear removes it.' : undefined;
-    // UI feedback failure must not turn an owned reply into editor input.
     try { current.context.ui.setWidget(KEY, status ? [status] : undefined); } catch {}
+  }
+  function focusLost(current) {
+    current.reader.cancel();
+    if (!current.focusWarning) {
+      current.focusWarning = true;
+      notify(current, 'Clipboard dialog lost TUI input focus. Import stopped but the terminal read may remain pending; the dialog was not dismissed. Another UI may receive replies. Resolve the terminal prompt; no focus was changed.');
+    }
   }
   function close() {
     const current = runtime;
     if (!current) return;
+    if (current.reader.state.waiting) notify(current, 'Pi is leaving a runtime with an unresolved terminal clipboard read. This does not cancel Ghostty permission; late replies cannot be protected in another runtime/process.');
     current.closed = true;
-    current.attempt?.abort();
-    current.reader.dispose();
-    current.unsubscribe?.();
-    current.pending = undefined;
+    current.attempt?.abort(); current.reader.dispose(); current.modal?.dispose();
+    current.unsubscribe?.(); current.pending = undefined;
     try { current.context.ui.setWidget(KEY, undefined); } catch {}
     runtime = undefined;
   }
   pi.on('session_start', (_event, ctx) => {
     close();
     if (ctx.mode !== 'tui' || typeof ctx.ui.onTerminalInput !== 'function' || !env.TMUX || !/^%\d+$/.test(env.TMUX_PANE || '')) return;
-    const current = { context: ctx, closed: false, consent: false, busy: false, pending: undefined, attempt: undefined };
+    const current = { context: ctx, closed: false, consent: false, busy: false, pending: undefined, attempt: undefined, modal: undefined, removalFailed: false, focusWarning: false };
     runtime = current;
-    current.reader = createReader({ onChange: () => update(current), onWarning: (message) => {
-      if (runtime === current && !current.closed) {
-        try { current.context.ui.notify(message, 'warning'); } catch {}
-      }
-    } });
-    current.unsubscribe = ctx.ui.onTerminalInput((data) => current.reader.input(data));
+    current.reader = createReader({ parseKey, onChange: () => update(current), onWarning: (message) => notify(current, message) });
+    current.unsubscribe = ctx.ui.onTerminalInput((data) => {
+      // The visible focused overlay owns input through its public component.
+      // Elsewhere only the bounded non-holding late-response observer runs.
+      if (current.modal?.focused()) return;
+      if (current.modal && current.reader.state.waiting) focusLost(current);
+      return current.reader.input(data);
+    });
   });
   pi.on('session_shutdown', close);
   pi.on('session_tree', () => {
     if (!runtime) return;
     runtime.attempt?.abort(); runtime.reader.cancel(); runtime.pending = undefined; update(runtime);
   });
-  presentation.bind({ onDisconnect() { runtime?.attempt?.abort(); runtime?.reader.cancel(); } });
+  presentation.bind({ onDisconnect() {
+    if (!runtime) return;
+    runtime.attempt?.abort(); runtime.reader.cancel();
+    if (runtime.reader.state.waiting) notify(runtime, 'Clipboard transport disconnected; import stopped, but any visible dialog keeps draining while its TUI is alive. Terminal permission was not cancelled.');
+  } });
   pi.on('input', (event) => {
     const current = runtime;
     if (!current || current.closed || event.source !== 'interactive' || !current.pending) return;
-    // Consume AT HANDOFF, not at persistence/turn ACK. A later transformer may
-    // handle the prompt or replace images. Never retry into another user prompt.
-    const image = current.pending;
-    current.pending = undefined;
-    update(current);
+    // Consume AT HANDOFF, not at persistence/turn ACK. Later handlers may discard.
+    const image = current.pending; current.pending = undefined; update(current);
     return { action: 'transform', text: event.text, images: [...(event.images || []), image] };
   });
   pi.registerCommand('tmux-image-paste', {
-    description: 'Experimental focused-pane clipboard PNG import; clear removes pending image; cancel stops import locally',
+    description: 'Experimental focused-pane PNG paste dialog; clear removes pending image; cancel keeps draining',
     handler: async (args, ctx) => {
       const current = runtime;
       if (!current || current.closed || ctx.mode !== 'tui') {
         ctx.ui.notify('Clipboard import requires interactive Pi with public terminal-input support inside tmux.', 'error'); return;
       }
       const action = args.trim();
-      if (action === 'clear') { current.pending = undefined; update(current); ctx.ui.notify('Pending clipboard image removed.', 'info'); return; }
+      if (action === 'clear') { current.pending = undefined; update(current); notify(current, 'Pending clipboard image removed.', 'info'); return; }
       if (action === 'cancel') {
         current.attempt?.abort(); current.reader.cancel();
-        ctx.ui.notify('Stopped locally only. Any terminal permission prompt/read may still be pending; stay in this pane until resolved.', 'warning'); return;
+        notify(current, 'Stopped importing locally only; the dialog keeps draining. Resolve any terminal permission prompt. Leaving the dialog explicitly can expose late replies.'); return;
       }
-      if (action) { ctx.ui.notify('Usage: /tmux-image-paste [clear|cancel]', 'warning'); return; }
-      if (current.busy || current.reader.state.waiting || current.pending) {
-        ctx.ui.notify('Clipboard import is busy/unresolved, or a PNG is pending. Resolve the terminal prompt; submit or clear a pending image before another read.', 'warning'); return;
+      if (action) { notify(current, 'Usage: /tmux-image-paste [clear|cancel]'); return; }
+      if (current.busy || current.reader.state.waiting || current.pending || current.modal) {
+        notify(current, 'Clipboard import is busy/unresolved, or a PNG is pending. Resolve the terminal prompt; submit or clear a pending image before another read.'); return;
       }
-      const attempt = new AbortController();
-      current.attempt = attempt; current.busy = true;
+      const attempt = new AbortController(); current.attempt = attempt; current.busy = true;
       const live = () => runtime === current && !current.closed && !attempt.signal.aborted;
       try {
         if (!current.consent) {
-          const agreed = await ctx.ui.confirm('Experimental focused-pane image paste', CONSENT, { signal: attempt.signal });
+          const agreed = await ctx.ui.confirm('Experimental focused-pane paste dialog', CONSENT, { signal: attempt.signal });
           if (!live() || !agreed) return;
           current.consent = true;
         }
-        if (!presentation.connection || presentation.connection.tui.hasOverlay()) throw new Error('Close other overlays before importing a clipboard image.');
+        if (typeof parseKey !== 'function' || typeof matchesKey !== 'function' || typeof truncateToWidth !== 'function') throw new Error();
+        if (!presentation.connection || presentation.connection.tui.hasOverlay()) throw new Error();
         const before = await probe({ mode: ctx.mode, env, signal: attempt.signal });
         if (!live()) return;
         const connection = presentation.connection;
-        if (!connection || connection.tui.hasOverlay()) throw new Error('Clipboard terminal transport is unavailable.');
+        if (!connection || connection.tui.hasOverlay()) throw new Error();
+        current.removalFailed = false; current.focusWarning = false;
+        let modal;
+        modal = openClipboardModal({ tui: connection.tui, parseKey, matchesKey, truncateToWidth, reader: current.reader,
+          cancelPreparation: () => attempt.abort(), isCurrent: () => runtime === current && !current.closed && current.modal === modal,
+          onFocusLost: () => focusLost(current),
+          onClosed: (rendered, removed) => {
+            if (removed && current.modal === modal) current.modal = undefined;
+            if (!rendered) current.removalFailed = true; // Sticky for this import, even after cleanup retry.
+          },
+          onLeave: () => { update(current); notify(current, 'Clipboard dialog left explicitly. The terminal read remains unresolved; late replies may contaminate your draft. New reads remain blocked until a clean owned completion.'); },
+        });
+        current.modal = modal;
+        if (!modal.ready || !live() || !modal.focused()) {
+          modal.close();
+          if (live()) throw new Error('Clipboard dialog was not visibly ready.');
+          return;
+        }
+        // Install and render the owned input component BEFORE beginning/writing.
+        modal.markEmitted();
         const request = current.reader.begin();
-        // The write is void and may partially fail: keep unresolved ownership.
-        try { presentation.write(request.request); }
-        catch { current.reader.cancel(); }
+        try { presentation.write(request.request); } catch { current.reader.cancel(); }
         const result = await request.done;
         if (!live()) return;
-        if (!result.ok) { ctx.ui.notify(result.message, 'warning'); return; }
+        if (!result.ok) { notify(current, result.message); return; }
         const after = await probe({ mode: ctx.mode, env, signal: attempt.signal });
         if (!live()) return;
-        if (before.fingerprint !== after.fingerprint || presentation.connection?.epoch !== connection.epoch) {
-          throw new Error('Clipboard terminal context changed; image discarded. Focus checks cannot prevent tmux reply misrouting.');
-        }
-        current.pending = result.image;
-        update(current);
-        ctx.ui.notify('PNG staged for your next interactive prompt; clear with /tmux-image-paste clear. It is consumed when handed to the input pipeline, not on a storage acknowledgement; later input extensions may discard it.', 'info');
+        if (before.fingerprint !== after.fingerprint || presentation.connection?.epoch !== connection.epoch || current.removalFailed || current.modal) throw new Error();
+        current.pending = result.image; update(current);
+        notify(current, 'PNG staged for your next interactive prompt; clear with /tmux-image-paste clear. Consumed at input handoff, not a storage acknowledgement; later extensions may discard it.', 'info');
       } catch {
-        if (live()) ctx.ui.notify('Clipboard import failed its focused Ghostty >=1.4/tmux or transport checks. No image staged; no setting changed.', 'error');
+        if (current.modal && !current.modal.emitted) current.modal.close();
+        if (live()) notify(current, 'Clipboard import failed its focused Ghostty >=1.4/tmux, dialog or transport checks. No image staged; no setting changed.', 'error');
       } finally {
         if (runtime === current && current.attempt === attempt) { current.attempt = undefined; current.busy = false; update(current); }
       }

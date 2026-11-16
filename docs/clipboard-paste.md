@@ -1,239 +1,257 @@
-# Experimental focused-pane clipboard PNG import
+# Experimental focused-pane clipboard PNG dialog
 
-## Scope and explicit compromise
+## Current scope
 
-`/tmux-image-paste` is an **experimental, explicit-user-request-only** command.
-The owner accepted a focused-pane-only workflow and best-effort fragmented-reply
-detection after possible prompt contamination. This supersedes the earlier
-hard-gate implementation decision in [clipboard-paste-feasibility.md](clipboard-paste-feasibility.md),
-not its evidence. Neither the tmux routing defect nor Pi 1.5.2 framing behavior
-was fixed. There is no claim of a universally safe terminal-input transport.
+`/tmux-image-paste` opens a visible **Reading clipboard—do not type** dialog.
+Only while that owned dialog is visibly focused does clipboard assembly own
+ordinary input. It uses Pi's existing TUI loop, not an editor replacement,
+second terminal loop, host patch or keyboard-mode change. After a valid read,
+the dialog is removed/flushed and one standard PNG is staged for the next
+interactive user prompt. Nothing is submitted automatically.
 
-Only Ghostty with **numeric client XTVersion evidence >=1.4** is accepted in v1.
-Name-only Ghostty, Ghostty 1.3, Kitty, unknown/multiplexer clients, multiple
-clients, linked windows, inactive panes/windows, tmux copy mode, nonfocused,
-read-only/control/suspended clients, missing/disabled passthrough and non-TUI
-paths fail closed. A spoofed/customized intermediary or unreported terminal
-focus is not universally detectable. Identity/visibility checks are observations,
-not a transport ACK or a lock on future focus.
+This supersedes the nonmodal best-effort implementation in `2493197`, following
+explicit owner approval of modal input capture. It does **not** solve tmux
+origin routing or upstream Pi framing. Stay in the same focused tmux pane,
+terminal client and Pi runtime, including during Ghostty permission prompts.
+There is no claim of protection after pane/client/process/runtime changes.
 
-No default shortcut, paste-event mode, clipboard write, remembered permission
-password, configuration change, Mac helper, background clipboard read, automatic
-retry, prompt erasure, message injection or automatic user submission is added.
-Normal Cmd+V text paste and Pi's native Ctrl+V remain unchanged.
+## Why a modal is necessary on the tested path
 
-## Public seams and separation
+The first real nonmodal trial returned printable OSC 5522 OK/DATA/DONE records
+in the draft and reported a timeout, not successful import. The observation
+establishes failure on that actual path; it did not by itself prove network
+fragment timing or installation/cache behavior.
 
-- `src/clipboard.mjs`: registers the command and session/input lifecycle using
-  public Pi extension methods. Uses the existing widget-injected presentation
-  terminal for transport, `ctx.ui.onTerminalInput` for input, and a separate
-  namespaced text widget for state. It neither replaces the editor nor owns
-  another stdin loop.
-- `src/clipboard-capabilities.mjs`: clipboard-specific, uncached, read-only
-  PATH-resolved tmux queries using the existing bounded exec helper. Checks
-  `pane_id`, session, window/pane activity, linked/copy/dead state, inherited
-  passthrough and exactly one session client's identity/control/focus flags.
-  Rechecks topology before staging and compares client/pane identity. It never
-  reads Pi graphics preferences, truecolor or `images.blockImages`.
-- `src/clipboard-protocol.mjs`: host-import-free protocol reader and fragment
-  observer, injected clock/timer for tests. One active request and a bounded
-  same-runtime issued-ID identity range.
-- `src/clipboard-png.mjs`: bounded PNG container/CRC/dimension/DEFLATE/scanline
-  validation, including palette indices. No file access or external decoder.
+Read-only source inspection and synthetic private tmux **3.8** reproduction
+found the missing input transformation:
 
-The declared `extensions/tmux-image.ts` entry had `../../src` imports left from
-its former nested entry location. The feature corrects those five imports to
-`../src`, as required for fresh-source loading in a copied checkout. The manifest
-and existing package-test expectations are not otherwise changed. No native,
-viewer, PDF, transport encoder or pacing implementation is modified.
+- With `extended-keys=on`, Pi's normal `CSI >4;2m` modifyOtherKeys fallback and
+  `extended-keys-format=csi-u`, tmux turns `ESC ]` into `ESC [ 93 ; 3 u` (Alt+])
+  and ESC + backslash (ST) into `ESC [ 92 ; 3 u` (Alt+backslash).
+- The xterm extended-key format produces `ESC [ 27 ; 3 ; 93 ~` and
+  `ESC [ 27 ; 3 ; 92 ~` respectively.
+- This happens even for **one coalesced complete reply with no timing gaps**.
+  The public key parser recognizes both forms, but the earlier literal-OSC-only
+  observer did not. Pi's editor ignores those Alt keys and inserts the printable
+  protocol body; the reader then times out.
+- The earlier SDK capture-terminal test bypassed tmux inbound key reencoding.
+  Adding OSC 5522 to Pi's protected-reply list alone would not fix delimiters
+  already turned into key events by tmux.
 
-Inspected Pi **1.5.2** complete `docs/extensions.md`, `docs/tui.md`, `docs/sdk.md`,
-shipped input-transform/streaming and widget examples, and public declarations
-plus the existing renderer/capability contracts. Tests import public installed
-package entry points, not private host modules. Pi 1.0.3 clipboard compatibility
-is not claimed by older graphics acceptance records.
+Tagged Ghostty **v1.4.0** source (`clipboard_response.zig`,
+`stream_handler.zig`, `Surface.zig`) encodes `ESC ] 5522` and propagates the request
+terminator through `ReadSuccess`. Our request uses ESC + backslash (ST), so BEL/C1 or delayed
+permission must not be asserted as the observed root cause. The assembler accepts
+literal, encoded and split delimiters within its explicit modal ownership.
+[Original feasibility diagnostics](clipboard-paste-feasibility.md) remain evidence
+of upstream limitations, not general-safe transport acceptance.
 
-## Request lifetime and bounded resources
+## Visible ownership and keys
 
-The first command in each session runtime opens an explicit consent dialog
-**before emitting any clipboard request**. It explains the experimental input
-risk and that the user must remain in the same focused pane/client/Pi runtime,
-including during Ghostty's permission prompt. Ghostty's own default permission
-prompt remains intact; the extension does not bypass it.
+The first command per runtime asks for explicit consent before any read is sent.
+It explains modal input capture, staying focused, Ghostty permissions, cancellation,
+warned exit and standard storage. Ghostty's own `clipboard-read=ask` permission
+prompt remains intact; there is no password, automatic authorization or retry.
 
-A single OSC 5522 `type=read` requests only `image/png`, with a random runtime
-prefix and canonical issued sequence ID. One tmux DCS wrapper is used. No paste
-mode or unowned capability-response interception is needed: numeric Ghostty
-version identification is capability evidence, not proof of successful reads.
-
-Limits:
-
-| Resource | Limit |
+| Key/action | Meaning |
 | --- | --- |
-| Read deadline | 30 seconds |
-| Encoded packet | 8192 characters |
-| Metadata | 512 characters |
-| DATA decoded chunk | 4096 bytes |
-| Read packets | 4096 before import rejection |
-| PNG bytes / staged images | 8 MiB / one |
-| Pixels / inflated scanlines | 16,777,216 / 64 MiB |
-| PNG chunks | 2048 |
-| Issued sequence | 1 through 999,999,999, exact canonical decimal |
-| Fragment observer | one metadata prefix, <=8192 observed characters, 1 second inter-event gap |
-| tmux query | 300 ms, 4096-byte stdout/stderr bounds, at most three sequential queries per probe |
+| Ordinary typing/text paste while dialog owns focus | Captured deliberately; not inserted or replayed into the editor. **Do not type.** |
+| **Ctrl+C** | Cancel image import locally, drop image bytes, keep the visible dialog draining. |
+| **Ctrl+Q**, once | Cancel locally and show the explicit late-reply/leave-anyway warning. |
+| **Ctrl+Q**, again | Knowingly close the dialog; restore normal editing, retain unresolved request quarantine. Late replies may enter the draft. |
+| Escape | Does **not** leave the dialog; raw ESC may be part of a split reply delimiter. Use the documented control keys. |
+| `/tmux-image-paste cancel` (programmatic command invocation) | Same local cancellation/draining semantics; not cancellation of Ghostty permission. |
+| `/tmux-image-paste clear` | Remove a pending image, not an outstanding terminal read. |
 
-A PNG must have valid signature/chunk lengths/CRCs, legal dimensions/depth/color,
-contiguous IDAT, one terminal IEND, valid bounded zlib stream and scanline filter
-bytes. PNG palette indices are reconstructed/checked. Interlaced PNG and APNG
-are rejected in v1. Base64 is strict, padded and canonical; MIME must decode
-exactly to `image/png`. Import occurs only after OK + data + successful DONE.
-No partial image is staged. Errors/diagnostics are static sanitized text, never
-clipboard bytes, encoded payloads or protocol snippets.
+Timeout (30 seconds), cancellation, rejected/malformed data or transport loss
+**does not cancel the terminal permission prompt/read**. Accumulated image bytes
+are dropped; the default is a visible **unresolved/waiting/draining** dialog.
+There is no automatic unsafe modal dismissal, automatic quarantine expiry or
+silent retry. Resolve any terminal prompt before leaving the pane. If the terminal
+never responds, the user may explicitly leave the dialog with the warned double
+Ctrl+Q, but another read remains refused until a clean owned completion/error.
 
-**Timeout, local cancel, malformed/oversized data and detected fragmentation do
-not cancel the terminal's read/permission prompt.** They discard accumulated
-image bytes but retain a small unresolved request identity/state. The visible
-widget says **UNRESOLVED**; further reads are refused until a clean owned DONE or
-terminal error arrives. Completion/error packets must have only type/status/id
-metadata and no payload, including in discard and fragmented-recovery paths;
-malformed terminal-looking packets cannot release quarantine. There is no automatic quarantine expiry or unsafe
-"forget and retry" action. If the terminal never responds, import remains
-unavailable in that runtime. The user must resolve any outstanding terminal
-prompt before leaving; terminating/replacing Pi is outside protected handling
-and is not a way to cancel the terminal request safely.
+The dialog is mounted and `renderNow()` flushed **before request emission**.
+It refuses existing overlays/viewers/search and does not hide or focus somebody
+else's UI. Public focus loss synchronously revokes image import without hiding
+or reclaiming the dialog. If another dialog takes focus, a warning explains that
+other UI may receive replies; normal input to that UI is not stolen. On returning,
+the clipboard dialog remains a drain obligation. This is not universal search,
+mouse, terminal focus or external-overlay isolation.
 
-Exact issued IDs remain identifiable without an unbounded tombstone list: a
-random runtime prefix plus issued-sequence high-water mark. Intact late owned
-packets are consumed without staging. A future/unissued sequence, zero,
-leading-zero alias, arbitrary prefix match, different runtime ID, or non-read
-response is not owned. One session-local input subscription is removed on
-shutdown; pending image bytes and attempt/reader timers are released. Branch
-navigation clears pending and locally cancels a read, while preserving its
-same-runtime unresolved ownership.
+Clean owned completion removes only this overlay handle and flushes the removal
+frame before staging. A failed hide retains the owned handle and usable cleanup
+controls: Ctrl+Q retries that exact handle, never a global overlay pop. This also
+applies if initial rendering and its cleanup both fail; no read is emitted from
+an unconfirmed initial frame. A failed removal frame invalidates that import's
+staging even if later cleanup succeeds. If shutdown cannot hide the dialog, its
+remaining component is cleanup-only (Ctrl+Q/Ctrl+C retry removal), never an old
+runtime parser/importer. Session shutdown
+warns if a terminal read remains outstanding, drops pending/image/frame data,
+unsubscribes and removes the owned overlay while the old public TUI exists.
+It cannot preserve protection after the runtime/client/process is replaced.
+Branch/transport changes stop import but do not pretend the terminal read ended.
+No native image placements, shared PNG resources, viewer controls, PDF behavior
+or pacing policy are changed.
 
-## Pi fragmentation and draft contamination
+## Separate modules and public seams
 
-Pi 1.5.2 may recover an incomplete OSC after a 50 ms input gap as Alt+] plus
-individual printable protocol/base64 keys. The observer **does not withhold or
-replay Alt+] or other ambiguous ordinary keys**. It watches bounded sequences
-and rejects/warns only after enough protocol metadata establishes an exact
-issued request ID. Prefix characters have already passed through. To avoid
-swallowing normal typing that is indistinguishable from base64, it does **not**
-consume individual printable payload keystrokes either. Thus **more than the
-initial prefix, potentially the whole payload, can contaminate the draft**.
+- `src/clipboard.mjs`: public command, session lifecycle, input-transform handoff
+  and visible pending state. Uses the existing widget-injected TUI transport.
+- `src/clipboard-modal.mjs`: owned public `TUI.showOverlay` handle and passive
+  width-fitted component; modal-only bounded frame assembler. Public `parseKey`
+  and `matchesKey` normalize raw/CSI-u/xterm Alt markers. No private listener
+  reorder, editor access, async key replay, stdout/stdin patch or second owner.
+- `src/clipboard-protocol.mjs`: exact issued-ID, status/order/base64/MIME/PNG
+  checks, read deadline/quarantine and bounded non-holding outside-modal late
+  observer. The late observer also recognizes parsed extended Alt markers, but
+  does not capture ordinary printable protocol keys outside the dialog.
+- `src/clipboard-capabilities.mjs`: independent, uncached read-only actual-pane
+  and client checks; no graphics truecolor/showImages/model-blocking gates.
+- `src/clipboard-png.mjs`: bounded PNG container/CRC/dimension/DEFLATE/scanline and
+  palette-index validation, without source paths or external converters.
 
-Only intact owned packets and an identifiable reconstructed frame terminator
-are consumed. A recognized fragmented import is rejected, not reconstructed
-into a valid staged image. The user is warned to inspect/edit the draft
-manually; no attempt is made to clear, restore or silently repair it. Detection
-is best effort, not complete: unknown/malformed fragments, gaps, observation
-bounds, bracketed paste, changed focus/session/process, and missing responses
-can defeat recognition or leave an unresolved timeout of unknown cause.
+Inspected installed Pi **1.5.2** complete extension/TUI/SDK docs, input and widget
+examples/public declarations, plus repository renderer/viewer ownership records.
+Only public installed package entry points are imported by tests. Prior Pi 1.0.3
+viewer acceptance does not establish clipboard API/behavior acceptance.
 
-The same-runtime observer also handles recognizable late fragments, but cannot
-protect another pane/process/client or a replacement session/runtime. The tmux
-synthetic diagnostic still proves those unsupported routing hazards. Do not
-interpret before/after focus checks as preventing misrouted bytes.
+## Capability, protocol and bounds
 
-## Pending attachment handoff, privacy and other extensions
+V1 requires actual numeric Ghostty client version evidence **>=1.4**, one attached
+focused non-control/non-read-only/non-suspended client, one tmux layer, an active
+visible pane/window not in copy mode, no linked window, and enabled inherited
+passthrough. Name-only/old/unknown/Kitty/nested/multiple-client/non-TUI paths fail
+closed. Identity/visibility checks before reading and before staging are bounded
+observations, not delivery ACKs or focus locks. Customized hidden intermediaries
+and unreported client/focus changes are not universally detectable.
 
-A valid PNG remains runtime-only until the next **interactive input event**.
-The widget shows one pending image and `/tmux-image-paste clear` removes it.
-`/tmux-image-paste cancel` cancels an import locally; it is not the pending-image
-remove action and does not cancel terminal permissions. Commands bypass input
-transforms; RPC and extension-authored input do not consume the pending image.
+A single explicit OSC 5522 `type=read` requests `image/png` through one tmux DCS
+wrapper. Prefix is runtime-random; only canonical **actually issued** sequence
+IDs are owned. Old IDs remain recognizable with one high-water mark, not an
+unbounded tombstone list. No clipboard write, paste-event mode, shortcut override,
+OS helper or configuration change is introduced.
 
-The transform returns the **unchanged text**, a new array preserving all existing
-attachments in order, then the pending standard Pi image. It consumes pending
-state **at this one handoff**, not at host persistence or a model-turn ACK:
+| Resource | Bound |
+| --- | --- |
+| Deadline / active requests | 30 seconds / one |
+| Encoded frame / metadata / decoded DATA chunk | 8192 chars / 512 chars / 4096 bytes |
+| Read packet count | 4096 before rejecting import |
+| PNG / staged images | 8 MiB / one |
+| Pixels / inflated scanlines / PNG chunks | 16,777,216 / 64 MiB / 2048 |
+| Issued sequence | Canonical decimal 1 through 999,999,999 |
+| Outside-modal observer | One bounded prefix/frame count; 1-second inter-event gap |
+| tmux query | 300 ms / 4096 bytes; at most three sequential queries per probe |
 
-- An earlier handler returning `handled` prevents this transform from running;
-  the image remains pending.
-- A later handler returning `handled` or replacing the images can prevent final
-  use. The image is **not** automatically restored or retried into another prompt.
-  The tested Pi runner catches a later handler's thrown error and continues with
-  the previous transform; a thrown handler error alone is not a submission ACK
-  or an automatic rollback.
-- Host preflight/auth/submission failure after input processing likewise does
-  not restore the pending image. Handoff is not a storage acknowledgement.
+The modal assembler holds at most one bounded frame, ignores unframed typing and
+unowned complete responses, and never displays reply contents. It handles complete
+raw packets, coalesced records, encoded markers and split raw headers/terminators.
+Malformed/oversized recognizable owned frames reject import; unknown frames do
+not establish ownership. Timeout/cancel clears assembler/image data while keeping
+small unresolved identity state. Only clean type/status/id-only DONE/error packets
+with no MIME/payload release quarantine, including discard paths.
 
-The staging notification makes this behavior explicit. There is no public native
-draft-attachment setter; these are not promised as native attachment chips.
-No protocol text/details/custom renderer-only message replaces the attachment.
+PNG validation requires legal bounded still noninterlaced PNG, chunk integrity,
+contiguous IDAT, terminal IEND, bounded valid zlib/scanlines/filter bytes and valid
+palette indices. APNG/interlaced PNG are rejected. Base64 must be padded/canonical;
+MIME must be exactly `image/png`. Only OK + valid data + clean DONE stages an image.
+Errors, logs, UI and session text never contain protocol/payload bytes.
 
-Once intentionally submitted, standard Pi image normalization, model policy and
-session storage apply. **`images.blockImages` controls model access, not session
-storage.** No setting is read or changed to bypass that policy. Clearing before
-handoff drops the extension's reference, not a secure-erasure guarantee; after
-handoff, the extension cannot delete the image from session history or another
-extension's memory.
+Outside the dialog, ordinary Alt+], typing and bracketed paste are not held or
+replayed. After explicit exit/lost focus, late printable protocol text can still
+contaminate another UI/draft before best-effort ownership detection; nothing is
+automatically erased. Filtering cannot protect another pane or a fresh runtime.
 
-## Automated verification and coordinated human check
+## Pending handoff and privacy
 
-Portable focused tests:
+One pending PNG is visible in a separate widget. Commands, RPC and extension-
+authored input do not consume it. The next **interactive** input transform returns
+unchanged text plus existing attachments in order, followed by the standard PNG.
+It consumes pending state **at handoff, not a host storage/model-turn ACK**:
+
+- An earlier handler's `handled` prevents our handoff and retains the pending image.
+- A later handler's `handled` or replacement images may discard it; it is not
+  restored/retried into another prompt. The tested Pi runner catches a later
+  handler's thrown error and continues with the previous transform.
+- Host preflight/auth/submission failure after handoff likewise does not restore it.
+
+There is no native draft-image setter/chip promise and no renderer-only custom
+message substitute. No automatic submit/run is triggered. Normal Pi normalization,
+`images.blockImages` and session storage apply upon intentional submission.
+**Model blocking does not prevent storage.** Clearing drops the extension's reference,
+not a secure-erasure guarantee, and cannot rewrite already-submitted session data.
+
+## Automated verification
 
 ```sh
 node --test test/clipboard.test.mjs
 npm test
-```
-
-Public installed-host integration, using a host-supplied root:
-
-```sh
 PI_OFFLINE=1 PI_TEST_HOST_ROOT=/path/to/installed/coding-agent \
-  node --test test/host-clipboard-integration.mjs
+  node --test test/host-clipboard-integration.mjs test/host-clipboard-tmux.mjs
 PI_TEST_TUI_ROOT=/path/to/installed/pi-tui node --test test/host-clipboard-input.mjs
 python3 scripts/probe-clipboard-routing.py
 ```
 
-The integration uses a **copied checkout with a fresh absolute extension path**,
-a private workspace/agent settings, fake PATH-resolved tmux, public SDK session
-and TUI input buffering, and an offline model-runtime stub. It proves full
-intact request/reply/staging/user-submission behavior and actual model filtering
-with blocking on/off, plus the permitted degraded fragment path. Neither
-synthetic diagnostic is relabeled as successful general safety.
+The **new transport regression** creates only a private temporary tmux server and
+fake outer PTY. It sets that private server's extended-key formats, runs real
+public `ProcessTerminal` keyboard negotiation, `StdinBuffer`, TUI, actual Editor,
+SDK and a fresh copied extension. Synthetic OK/DATA/DONE replies traverse **real
+tmux inbound key reencoding**, both CSI-u and xterm, coalesced and delayed/split.
+Assertions observe encoded markers, a valid pending image, exact unchanged real
+editor draft, zero editor protocol/modal-typing keys and zero model turns.
+After the dialog closes, the same real PTY path also verifies ordinary typing,
+native Alt+] and bracketed text paste against the actual editor. Only capability identity evidence is a fake PATH tmux; the graphics/input transport
+uses the real absolute tmux executable/private socket. No physical terminal,
+Ghostty clipboard or active server is touched. Tests require existing Python 3,
+tmux and installed public Pi packages; they install no dependencies.
 
-Automated results against Pi/pi-tui **1.5.2**, with no real clipboard read:
+The SDK fixture separately verifies both model-blocking settings, handoff/other
+handlers, clear/reload/branch, drain/explicit exit, ordinary input outside modal,
+existing/covering overlays and malformed completion quarantine. Pure tests inject
+timeout clocks and verify limits/PNG/IDs/fragmentation/ownership. Historical
+framing/routing diagnostics still intentionally reproduce upstream hazards.
 
-- Focused portable tests: **13 passed, 0 failed**, including malformed terminal
-  completions in intact/fragmented and normal/discard paths.
-- New public SDK/TUI clipboard integration: **6 passed, 0 failed, 0 skipped**
-  (four parent cases plus the two model-policy subcases).
-- Existing public-host input-framing diagnostic: **4 passed**, still reproducing
-  the degradation. Existing private tmux **3.8** routing probe still reproduces
-  wrong-window delivery and ordinary-typing preservation.
-- `npm test`: **262 passed, 35 skipped, 2 failed** (299 total). The same unchanged
-  `test/package.test.mjs` expectations still reference
-  `extensions/tmux-image/index.ts` instead of the declared flat entry. Accepted
-  baseline `0124bd6` was separately archived/tested during the earlier follow-up
-  and produced 249/35/2; this feature adds 13 passing portable cases without
-  correcting that unrelated test/manifest disagreement.
-- Existing `test/host-integration.mjs`: **9 passed, 3 failed** (two PDF/model-policy
-  subcases and their parent). Both subcases stop because **pdfinfo is absent on
-  PATH**; no Poppler install or unrelated PDF fix was attempted. Remaining
-  non-TUI/policy/pre-source/refresh cases pass. Do not claim full existing PDF
-  integration acceptance from the new clipboard tests.
-- Isolated temporary HOME/`PI_CODING_AGENT_DIR`: `pi install <checkout>`, `pi list`,
-  `pi --help` and public resource discovery passed: one extension, zero load
-  errors, six commands including the new command and all five preserved ones.
-  Fresh copied-checkout loading is also covered by the new SDK test.
-- `git diff --check`: passed. No host dependencies installed in this repository,
-  no global installation, active configuration/package operation, push or real
-  provider request. Older host-seam suites still assume a different package
-  layout/entry path; they were not silently adapted. The new test resolves the
-  host-supplied public pi-tui entry with `createRequire`, including sibling layouts.
+Automated results on Pi/pi-tui **1.5.2**, private tmux **3.8**:
 
-No real clipboard/physical Ghostty/macOS/SSH round trip or active-package
-activation is authorized by these tests.
+| Gate | Passed | Failed | Skipped |
+| --- | ---: | ---: | ---: |
+| Focused portable clipboard tests | 17 | 0 | 0 |
+| Public SDK/TUI clipboard integration | 9 | 0 | 0 |
+| Private real-tmux + actual ProcessTerminal/TUI/Editor/extension | 4 | 0 | 0 |
+| Historical public input-framing diagnostic | 4 | 0 | 0 |
+| `npm test` | 266 | 2 | 35 |
+| Existing optional `test/host-integration.mjs` | 9 | 3 | 0 |
 
-After independent review, coordinate an explicit harmless-image human test:
-use an isolated/fresh Pi process with this checkout only by owner agreement;
-copy a nonsensitive small PNG on the Mac; remain in the same focused pane;
-invoke the command, read/accept both experimental consent and Ghostty permission,
-check the pending widget and unchanged draft, then deliberately submit a simple
-prompt (or clear instead). Confirm no automatic turn and normal text paste.
-Exercise denial separately. Do not deliberately switch panes with real data or
-manufacture fragmentation on a real clipboard; keep those checks synthetic.
-Any unresolved state means resolve the terminal prompt before leaving, not
-blindly retry/reload/disconnect. Record automated evidence separately from the
-owner's observed outcomes.
+The two portable failures remain unchanged package-test expectations for
+`extensions/tmux-image/index.ts`, while the manifest declares the flat entry.
+They were previously reproduced against archived accepted `0124bd6`; no unrelated
+manifest/test fix is included. The optional existing integration's two PDF/model-
+policy subcases plus parent fail because **pdfinfo is absent on PATH**, not because
+of a clipboard assertion. No Poppler installation/PDF fix was attempted.
+
+The private transport cases are **CSI-u and xterm**, each with a coalesced single
+reply write (no timing gap) and split/delayed writes. They assert exact format-
+specific encoded markers, not merely generic parsed Alt keys. The existing
+private routing diagnostic still reproduces wrong-window delivery; the historical
+Pi framing diagnostic still reproduces raw-control recovery. No upstream fix is
+claimed.
+
+Isolated temporary HOME/`PI_CODING_AGENT_DIR`: `pi install <checkout>`, `pi list`,
+`pi --help` and public resource discovery pass (one extension, zero errors, six
+commands). Fresh copied-checkout loading is also exercised by both new host
+fixtures. Diff checks pass. No runtime host dependencies were installed in this
+checkout, no active user-server/config/package operation occurred, and no real
+clipboard/provider access or push was performed. Full older host-seam suites that
+assume another entry/package layout were not silently adapted.
+
+## Coordinated human verification (pending)
+
+After independent review and explicit process/package coordination, use a harmless
+small PNG on the Mac in the **same focused pane**. Invoke the command, accept the
+new modal consent and Ghostty permission, **do not type** while the dialog owns
+input, and check that it closes to one pending image without protocol text in the
+draft or an automatic turn. Clear it or intentionally submit once. Exercise denial,
+Ctrl+C/drain and warned exit separately only with harmless data and coordination.
+Do not deliberately switch panes or force fragmentation with real clipboard data.
+Any unresolved request still requires resolving the terminal prompt before leaving.
+No automated result here authorizes live activation or establishes human acceptance.

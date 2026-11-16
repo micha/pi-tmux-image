@@ -2,12 +2,21 @@
 
 ## Current implementation status
 
-Experimental `/tmux-image-paste` now implements the explicitly accepted
-focused-pane/best-effort compromise. See [clipboard-paste.md](clipboard-paste.md)
-for current interfaces, limits, consent, unresolved requests, draft contamination
-and validation. The observations below remain reproducible. They are **not**
-fixed by the feature; stronger guarantees remain blocked. No tmux/Pi host patch,
-focus lock, key replay, automatic draft repair or permission bypass is used.
+Experimental `/tmux-image-paste` now uses an explicitly accepted **visible
+input-owning dialog** in the focused pane. It normalizes tmux CSI-u/xterm Alt-key
+markers and assembles bounded replies only while that dialog owns input. This
+supersedes the nonmodal implementation in `2493197`, whose first real trial
+reported timeout and printable protocol text in the draft.
+
+The follow-up private tmux 3.8 reproduction found complete OSC replies are
+key-reencoded under Pi's normal modifyOtherKeys mode plus extended keys—even
+without timing gaps. That path was absent from the earlier fake-terminal SDK
+fixture. The new regression traverses real private tmux inbound encoding and
+public ProcessTerminal/TUI/Editor. See [clipboard-paste.md](clipboard-paste.md)
+for current keys, limits, lifecycle and evidence. Outside-modal late contamination
+and focus-independent routing remain unsafe; none of the upstream observations
+below is claimed fixed. No tmux/Pi patch, key-mode/config change, pane focus lock,
+key replay, draft repair or permission bypass is used.
 
 ## Earlier conservative decision (superseded for experimental v1)
 

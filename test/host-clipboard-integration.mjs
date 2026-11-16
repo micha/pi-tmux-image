@@ -38,7 +38,7 @@ async function until(predicate) {
   while (!predicate()) { assert.ok(Date.now() < deadline, 'offline test event did not arrive'); await delay(2); }
 }
 
-async function setup(directory, blockImages) {
+async function setup(directory, blockImages, mode = 'regular') {
   const checkout = join(directory, 'package'), cwd = join(directory, 'workspace'), agentDir = join(directory, 'agent'), bin = join(directory, 'bin');
   await mkdir(checkout); await mkdir(cwd); await mkdir(bin);
   for (const name of ['src','extensions','package.json']) await cp(join(repo, name), join(checkout, name), { recursive: true });
@@ -60,7 +60,7 @@ else process.exitCode=1;
   const terminal = { columns: 80, rows: 24, kittyProtocolActive: false,
     start(callback) { terminalInput = callback; }, stop() {}, write(data) { writes.push(data); },
     moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {}, clearFromCursor() {}, clearScreen() {}, setTitle() {}, setProgress() {}, async drainInput() {} };
-  const tui = new tuiModule.TuiMainScreen(terminal);
+  const tui = new (mode === 'fullscreen' ? tuiModule.TuiAltScreen : tuiModule.TuiMainScreen)(terminal);
   const editor = { render() { return []; }, invalidate() {}, handleInput(data) { keys.push(data); } };
   tui.addChild(editor); tui.setFocus(editor);
   input.on('data', (data) => terminalInput(data));
@@ -104,7 +104,7 @@ else process.exitCode=1;
     session = created.session;
     await session.bindExtensions({ mode: 'tui', uiContext });
     assert.equal(reads(writes).length, 0); assert.equal(session.messages.length, 0); assert.equal(requests.length, 0);
-    return { session, writes, keys, notices, requests, input, widgetMap,
+    return { session, tui, writes, keys, notices, requests, input, widgetMap,
       set later(value) { later = value; }, set consent(value) { consent = value; },
       get confirmations() { return confirmations; }, get unsubscribeCount() { return unsubscribeCount; },
       async stage() {
@@ -175,25 +175,86 @@ test('public SDK clipboard: pending handoff semantics for earlier/later handlers
   } finally { await h?.cleanup(); await rm(directory, { recursive: true, force: true }); }
 });
 
-test('public SDK clipboard: fragment detection permits prefix contamination, quarantines, drains late packets without staging', options, async () => {
+test('public SDK clipboard: visible modal assembles delayed fragments without editor input', options, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'pi-clipboard-fragment-')); let h;
   try {
     h = await setup(directory, true);
     const command = h.session.prompt('/tmux-image-paste'); await until(() => reads(h.writes).length === 1);
     const id = /id=([A-Za-z0-9_.+-]+);/.exec(reads(h.writes)[0])[1];
     const data = packet(id, 'DATA', png, ':mime=aW1hZ2UvcG5n'), split = data.indexOf(png) + 4;
+    h.input.process(packet(id, 'OK'));
+    h.input.process('typing deliberately captured by visible modal');
     h.input.process(data.slice(0, split)); await delay(100); h.input.process(data.slice(split));
+    h.input.process(packet(id, 'DONE'));
     await command;
-    assert.ok(h.notices.some((n) => /Fragmented clipboard reply detected/.test(n.message)));
-    assert.ok(h.keys.join('').includes('5522;type=read'), 'permitted prefix contamination is not erased');
-    assert.ok(h.widgetMap.get('pi-tmux-image-clipboard').render().join('').includes('UNRESOLVED'));
-    await h.session.prompt('/tmux-image-paste'); assert.equal(reads(h.writes).length, 1, 'unresolved read cannot compete');
-    h.input.process(packet(id, 'DONE')); assert.equal(h.widgetMap.has('pi-tmux-image-clipboard'), false);
+    assert.equal(h.keys.length, 0, 'dialog owns all reply fragments, not the editor');
+    assert.ok(h.widgetMap.get('pi-tmux-image-clipboard').render().join('').includes('1 PNG pending'));
+    assert.equal(h.notices.some((n) => /outside the paste dialog/.test(n.message)), false);
+    await h.session.prompt('/tmux-image-paste clear');
     const keyCount = h.keys.length;
     h.input.process(packet(id, 'DATA', png, ':mime=aW1hZ2UvcG5n')); assert.equal(h.keys.length, keyCount, 'intact late issued response consumed');
     h.input.process('\x1b]'); await delay(100); h.input.process('plain text'); assert.ok(h.keys.join('').endsWith('\x1b]plain text'));
+    h.input.process('\x1b[200~normal paste\x1b[201~'); assert.ok(h.keys.at(-1).includes('normal paste'));
     h.input.process(packet('not-owned-1', 'DONE')); assert.ok(h.keys.at(-1).includes('not-owned-1'));
-    assert.equal((await h.session.extensionRunner.emitInput('inspect draft', undefined, 'interactive')).action, 'continue');
+    assert.equal((await h.session.extensionRunner.emitInput('ordinary input', undefined, 'interactive')).action, 'continue');
+    assert.equal(h.requests.length, 0); assert.equal(h.session.messages.length, 0);
+  } finally { await h?.cleanup(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('public SDK clipboard: cancel/drain, explicit leave, outside native input and late encoded completion', options, async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'pi-clipboard-modal-leave-')); let h;
+  try {
+    h = await setup(directory, true);
+    const command = h.session.prompt('/tmux-image-paste'); await until(() => reads(h.writes).length === 1);
+    const id = /id=([A-Za-z0-9_.+-]+);/.exec(reads(h.writes)[0])[1];
+    h.input.process('\x03'); await command; assert.equal(h.tui.hasOverlay(), true);
+    h.input.process('captured while draining'); assert.equal(h.keys.length, 0);
+    h.input.process('\x11'); assert.equal(h.tui.hasOverlay(), true, 'first Ctrl+Q only warns');
+    h.input.process('\x11'); assert.equal(h.tui.hasOverlay(), false, 'second Ctrl+Q leaves knowingly');
+    assert.ok(h.notices.some((n) => /dialog left explicitly/.test(n.message)));
+    await h.session.prompt('/tmux-image-paste'); assert.equal(reads(h.writes).length, 1);
+    h.input.process('\x1b[93;3u'); h.input.process('normal typing');
+    h.input.process('\x1b[200~normal paste\x1b[201~');
+    assert.ok(h.keys.join('').includes('normal typing')); assert.ok(h.keys.at(-1).includes('normal paste'));
+    h.input.process(packet(id, 'DONE').replace('\x1b]', '\x1b[93;3u').replace('\x1b\\', '\x1b[92;3u'));
+    assert.equal(h.widgetMap.has('pi-tmux-image-clipboard'), false, 'clean late encoded completion drains quarantine');
+    assert.equal(h.requests.length, 0); assert.equal(h.session.messages.length, 0);
+  } finally { await h?.cleanup(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('public SDK clipboard: other overlays are respected; focus loss keeps drain ownership visible and reload cleans up', options, async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'pi-clipboard-modal-focus-')); let h;
+  try {
+    h = await setup(directory, true);
+    const other = h.tui.showOverlay({ render: () => ['other dialog'], invalidate() {}, handleInput() {} });
+    await h.session.prompt('/tmux-image-paste'); assert.equal(reads(h.writes).length, 0, 'existing modal blocks read'); other.hide();
+    let command = h.session.prompt('/tmux-image-paste'); await until(() => reads(h.writes).length === 1);
+    const id = /id=([A-Za-z0-9_.+-]+);/.exec(reads(h.writes)[0])[1];
+    const covering = h.tui.showOverlay({ render: () => ['covering dialog'], invalidate() {}, handleInput() {} });
+    h.input.process('ordinary input in covering modal'); await command;
+    assert.equal(covering.isFocused(), true, 'clipboard must not reclaim another modal focus');
+    assert.ok(h.notices.some((n) => /lost TUI input focus/.test(n.message)));
+    covering.hide(); assert.equal(h.tui.hasOverlay(), true, 'clipboard drain dialog was not silently closed');
+    h.input.process(packet(id, 'DONE')); assert.equal(h.tui.hasOverlay(), false);
+    command = h.session.prompt('/tmux-image-paste'); await until(() => reads(h.writes).length === 2);
+    await h.session.reload(); await command;
+    assert.equal(h.tui.hasOverlay(), false); assert.equal(h.widgetMap.has('pi-tmux-image-clipboard'), false);
+    assert.ok(h.notices.some((n) => /leaving a runtime/.test(n.message)));
+    assert.equal(reads(h.writes).length, 2, 'reload never triggers a read');
+    assert.equal(h.requests.length, 0); assert.equal(h.session.messages.length, 0);
+  } finally { await h?.cleanup(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('public SDK clipboard: fullscreen owned dialog and cancellation preserve editor input', options, async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'pi-clipboard-modal-fullscreen-')); let h;
+  try {
+    h = await setup(directory, true, 'fullscreen');
+    const command = h.session.prompt('/tmux-image-paste'); await until(() => reads(h.writes).length === 1);
+    const id = /id=([A-Za-z0-9_.+-]+);/.exec(reads(h.writes)[0])[1];
+    h.input.process('modal typing'); h.input.process('\x03'); await command;
+    assert.equal(h.keys.length, 0); assert.equal(h.tui.hasOverlay(), true);
+    h.input.process(packet(id, 'DONE')); assert.equal(h.tui.hasOverlay(), false);
+    h.input.process('outside typing'); assert.ok(h.keys.join('').includes('outside typing'));
     assert.equal(h.requests.length, 0); assert.equal(h.session.messages.length, 0);
   } finally { await h?.cleanup(); await rm(directory, { recursive: true, force: true }); }
 });

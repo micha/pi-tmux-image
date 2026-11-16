@@ -14,7 +14,7 @@ const MESSAGE_TYPE = "pi-tmux-image";
 
 export default function (pi: ExtensionAPI, { createDocumentService = createPdfDocumentService } = {}) {
   const presentation = createPresentation();
-  registerClipboardPaste(pi, { presentation });
+  registerClipboardPaste(pi, { presentation, parseKey, matchesKey, truncateToWidth });
   const native = createNativeRenderer({ convertToPng });
   const legacyOccurrences = new WeakMap<object, string>();
   const legacyEntryOccurrences = new Map<string, string>();
