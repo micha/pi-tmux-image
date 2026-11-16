@@ -22,6 +22,7 @@ Human-facing setup, usage and limitations belong in `README.md`. Keep this file 
 | Wheel zoom or grab-to-pan | `docs/viewer-mouse.md` |
 | Viewer hot paths, input sampling or pacing | `docs/viewer-performance.md`, `docs/viewer-frame-pacing-plan.md` (handoff), `docs/viewer-pacing-design.md`, `docs/viewer-pacing-profile.md`, `docs/viewer-pacing.md` |
 | Transport/host integration | `docs/renderer-seam.md` |
+| Remote clipboard image paste | `docs/clipboard-paste-feasibility.md`; blocked on safe tmux response routing, no real clipboard probe without coordination |
 | Kitty protocol or image normalization | `docs/kitty-protocol.md`, `docs/pixel-normalization.md` |
 | Capability/settings policy | `docs/capabilities.md` |
 | Accounting or graphics memory | `docs/graphics-memory.md` |
