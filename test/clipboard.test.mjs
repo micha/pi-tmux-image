@@ -202,18 +202,18 @@ test('clipboard topology bounds hung queries, malformed output and missing tmux'
 });
 
 function extensionHarness({ mode = 'tui', shortcut, tmuxEnv = env, probe = async () => ({ fingerprint: 'same' }), readerOptions = {}, renderFailure = () => false, hideFailure = () => false } = {}) {
-  const handlers = new Map(), commands = new Map(), shortcuts = new Map(), notices = [], writes = [], widgets = new Map();
+  const handlers = new Map(), shortcuts = new Map(), notices = [], writes = [], widgets = new Map();
   let input, overlay, confirms = 0, unsubscribe = 0, frames = 0;
   const keys = [];
   const parseKey = (data) => ({ '\x1b]': 'alt+]', '\x1b\\': 'alt+\\', '\x03': 'ctrl+c', '\x11': 'ctrl+q', '\x1b[93;3u': 'alt+]', '\x1b[92;3u': 'alt+\\', '\x1b[27;3;93~': 'alt+]', '\x1b[27;3;92~': 'alt+\\' })[data];
   const tui = { hasOverlay: () => Boolean(overlay), requestRender() {}, renderNow() { frames++; if (renderFailure(frames)) throw new Error('Synthetic frame failure'); },
     showOverlay(component) { overlay = component; return { isFocused: () => overlay === component, isHidden: () => false, hide() { if (hideFailure()) throw new Error('Synthetic owned hide failure'); if (overlay === component) overlay = undefined; } }; } };
-  const pi = { on(name, handler) { const list = handlers.get(name) || []; list.push(handler); handlers.set(name, list); }, registerCommand(name, command) { commands.set(name, command); }, registerShortcut(key, options) { shortcuts.set(key, options); } };
+  const pi = { on(name, handler) { const list = handlers.get(name) || []; list.push(handler); handlers.set(name, list); }, registerShortcut(key, options) { shortcuts.set(key, options); } };
   const ctx = { mode, ui: { confirm: async () => { confirms++; throw new Error('Extension confirmation must not be called'); }, notify: (...args) => notices.push(args), setWidget: (key, lines) => widgets.set(key, lines), onTerminalInput: (listener) => { input = listener; return () => { unsubscribe++; }; } } };
   const presentation = { connection: { epoch: 1, tui }, write: (data) => { assert.ok(overlay && frames > 0, 'dialog rendered before emission'); writes.push(data); }, bind() {} };
-  registerClipboardPaste(pi, { presentation, env: { ...tmuxEnv, PI_TMUX_IMAGE_PASTE_SHORTCUT: shortcut }, probe, parseKey, matchesKey: (data, key) => parseKey(data) === key, truncateToWidth: (text, width) => text.slice(0, width), createReader: (options) => createClipboardReader({ ...options, ...readerOptions }) });
+  const clipboard = registerClipboardPaste(pi, { presentation, env: { ...tmuxEnv, PI_TMUX_IMAGE_PASTE_SHORTCUT: shortcut }, probe, parseKey, matchesKey: (data, key) => parseKey(data) === key, truncateToWidth: (text, width) => text.slice(0, width), createReader: (options) => createClipboardReader({ ...options, ...readerOptions }) });
   const emit = async (name, event = {}) => { let result; for (const handler of handlers.get(name) || []) result = await handler(event, ctx); return result; };
-  return { ctx, emit, notices, writes, widgets, keys, shortcuts, shortcut: (key = 'ctrl+v') => shortcuts.get(key).handler(ctx), get modal() { return overlay; }, input: (data) => { const result = input?.(data); if (!result?.consume) { if (overlay) overlay.handleInput(data); else keys.push(data); } return result; }, command: (args = '') => commands.get('tmux-image-paste').handler(args, ctx), get confirms() { return confirms; }, get unsubscribe() { return unsubscribe; } };
+  return { ctx, emit, notices, writes, widgets, keys, shortcuts, shortcut: (key = 'ctrl+v') => shortcuts.get(key).handler(ctx), get modal() { return overlay; }, input: (data) => { const result = input?.(data); if (!result?.consume) { if (overlay) overlay.handleInput(data); else keys.push(data); } return result; }, command: (args = '') => clipboard.paste(ctx, args), get confirms() { return confirms; }, get unsubscribe() { return unsubscribe; } };
 }
 async function stage(h, bytes = PNG, chunkSize) {
   const count = h.writes.length, command = h.command();
@@ -227,7 +227,7 @@ test('clipboard extension reads only on invocation without extra confirmation an
   assert.equal(h.notices.length, 0, 'no valid shortcut startup toast');
   await stage(h); assert.equal(h.confirms, 0);
   assert.deepEqual(h.notices, [['PNG ready for your next prompt.', 'info']]);
-  assert.ok([...h.widgets.values()].flat().some((text) => text?.includes('/tmux-image-paste clear')));
+  assert.ok([...h.widgets.values()].flat().some((text) => text?.includes('/tmux-image paste clear')));
   assert.ok([...h.widgets.values()].flat().some((text) => text?.includes('1 PNG pending')));
   const existing = { type: 'image', mimeType: 'image/png', data: 'existing' };
   for (const source of ['rpc','extension']) assert.equal(await h.emit('input', { source, text: 'untouched', images: [existing] }), undefined);

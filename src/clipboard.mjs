@@ -32,7 +32,7 @@ export function registerClipboardPaste(pi, { presentation, env = process.env, pa
     const status = state.waiting ? state.unresolved
       ? 'Clipboard: read UNRESOLVED — check terminal permission; stay in this pane.'
       : 'Clipboard: reading PNG — do not type or leave this pane.'
-      : current.pending.length ? `Clipboard: ${pngCount(current.pending.length)} pending — /tmux-image-paste clear` : undefined;
+      : current.pending.length ? `Clipboard: ${pngCount(current.pending.length)} pending — /tmux-image paste clear` : undefined;
     try { current.context.ui.setWidget(KEY, status ? [status] : undefined); } catch {}
   }
   function focusLost(current) {
@@ -65,7 +65,7 @@ export function registerClipboardPaste(pi, { presentation, env = process.env, pa
       if (current.modal && current.reader.state.waiting) focusLost(current);
       return current.reader.input(data);
     });
-    if (invalidShortcut) notify(current, 'Invalid PI_TMUX_IMAGE_PASTE_SHORTCUT. Use ctrl+v, ctrl+shift+v, ctrl+alt+v or off; /tmux-image-paste still works.');
+    if (invalidShortcut) notify(current, 'Invalid PI_TMUX_IMAGE_PASTE_SHORTCUT. Use ctrl+v, ctrl+shift+v, ctrl+alt+v or off; /tmux-image paste still works.');
   });
   pi.on('session_shutdown', close);
   pi.on('session_tree', () => {
@@ -84,9 +84,9 @@ export function registerClipboardPaste(pi, { presentation, env = process.env, pa
     const images = current.pending; current.pending = []; update(current);
     return { action: 'transform', text: event.text, images: [...(event.images || []), ...images] };
   });
-  const command = {
-    description: 'Paste a clipboard PNG; clear removes all pending PNGs; cancel keeps waiting',
-    handler: async (args, ctx) => {
+  const clipboard = {
+    actions: ['clear', 'cancel'],
+    async paste(ctx, args = '') {
       const current = runtime;
       if (!current || current.closed || ctx.mode !== 'tui') {
         ctx.ui.notify('Clipboard import requires interactive Pi with public terminal-input support inside tmux.', 'error'); return;
@@ -97,12 +97,12 @@ export function registerClipboardPaste(pi, { presentation, env = process.env, pa
         current.attempt?.abort(); current.reader.cancel();
         notify(current, 'Stopped importing locally only; the dialog keeps draining. Resolve any terminal permission prompt. Leaving the dialog explicitly can expose late replies.'); return;
       }
-      if (action) { notify(current, 'Usage: /tmux-image-paste [clear|cancel]'); return; }
+      if (action) { notify(current, `Usage: /tmux-image paste [${clipboard.actions.join('|')}]`); return; }
       if (current.busy || current.reader.state.waiting || current.modal) {
         notify(current, 'Clipboard import is still running or unresolved. Resolve any terminal permission prompt before pasting again.'); return;
       }
       if (current.pending.length >= MAX_PENDING_IMAGES || pendingBytes(current.pending) >= MAX_PENDING_BYTES) {
-        notify(current, `Clipboard queue is full (${MAX_PENDING_IMAGES} PNGs or ${MAX_PENDING_MIB} MiB total). Submit your prompt or use /tmux-image-paste clear.`); return;
+        notify(current, `Clipboard queue is full (${MAX_PENDING_IMAGES} PNGs or ${MAX_PENDING_MIB} MiB total). Submit your prompt or use /tmux-image paste clear.`); return;
       }
       const attempt = new AbortController(); current.attempt = attempt; current.busy = true;
       const live = () => runtime === current && !current.closed && !attempt.signal.aborted;
@@ -143,7 +143,7 @@ export function registerClipboardPaste(pi, { presentation, env = process.env, pa
         // Enforce the aggregate cap against what's still staged, after a clean
         // read. An image that doesn't fit never changes the queue or quarantine.
         if (pendingBytes(current.pending) + pngBytes(result.image) > MAX_PENDING_BYTES) {
-          notify(current, `This PNG would exceed the ${MAX_PENDING_MIB} MiB pending limit. Paste a smaller PNG, submit your prompt, or use /tmux-image-paste clear.`); return;
+          notify(current, `This PNG would exceed the ${MAX_PENDING_MIB} MiB pending limit. Paste a smaller PNG, submit your prompt, or use /tmux-image paste clear.`); return;
         }
         current.pending.push(result.image); update(current);
         const label = current.pending.length === 1 ? 'PNG' : pngCount(current.pending.length);
@@ -156,9 +156,9 @@ export function registerClipboardPaste(pi, { presentation, env = process.env, pa
       }
     },
   };
-  pi.registerCommand('tmux-image-paste', command);
   if (shortcut) pi.registerShortcut(shortcut, {
     description: 'Paste a clipboard PNG',
-    handler: (ctx) => command.handler('', ctx),
+    handler: (ctx) => clipboard.paste(ctx),
   });
+  return clipboard;
 }

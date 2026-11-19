@@ -54,7 +54,7 @@ For Pi API changes, read the installed Pi docs and extension examples, following
 1. Use Kitty Unicode placeholders (`U=1`), not ordinary positioned placements. Pixels bypass tmux; placeholder cells go through Pi text layout. Foreground color encodes the image ID: never restyle these rows or put cursor movement/upload escapes in transcript text.
 2. Use standard Pi image content from the built-in read pipeline. Do not filter image messages or change `images.blockImages`; local display must not depend on model blocking. Blocking does not prevent session storage.
 3. Keep uploads/placeholders out of model-facing content and session details. Tool-execution display messages use `triggerTurn: false`; preserve tool-call/result ordering without steering or starting another model turn. The overlay itself emits no messages/attachments/turns.
-4. Preserve `/tmux-image`, `/tmux-pdf`, `/tmux-image-view`, `/tmux-image-refresh`, `/tmux-image-stats`, `tmux_show_image` and `tmux_show_pdf` unless a breaking change is requested. New PDF imports submit one page-one standard preview; Keep embeds the captured original once in details, Temporary omits it. Exact original-byte threshold is 33,554,432; above it only the user chooses Keep/Temporary/Cancel. No fixed PDF-size ceiling, silent retention fallback, post-hoc excision or history rewrite.
+4. Preserve `/tmux-image <path>`, `/tmux-pdf <path>`, `/tmux-image view`, `/tmux-image refresh`, `/tmux-image stats`, `/tmux-image paste`, `tmux_show_image` and `tmux_show_pdf` unless a breaking change is requested. New PDF imports submit one page-one standard preview; Keep embeds the captured original once in details, Temporary omits it. Exact original-byte threshold is 33,554,432; above it only the user chooses Keep/Temporary/Cancel. No fixed PDF-size ceiling, silent retention fallback, post-hoc excision or history rewrite.
    PDF send is void submission, not display/disk ACK: finish all guards before staging/send; pre-send cancel/failure creates zero preview entries, accepted send is irreversible. No blind retry or failed-tool promise for later host errors. Reconcile staged Temporary only at final same-runtime boundaries against **all history**, never active-branch absence; preserve exact runtime/record/handle ownership across awaits.
 
 ### Capabilities and subprocesses
@@ -79,7 +79,7 @@ For Pi API changes, read the installed Pi docs and extension examples, following
 ### Metrics
 
 17. Derive payload identity from exact normalized PNG bytes. Count wrapped wire totals once per successful current-epoch write, including restored prototypes; preparation, failures, stale work and zero-byte reuse are not transport. Commit functional residency before accounting; report accounting errors without breaking rows/queue or forcing reuploads.
-18. Epoch reset clears local trust, not terminal resources. PNG/RGBA estimates are not terminal ACKs or global/GPU bounds; prior-runtime/external resources and overhead are unobservable. `/tmux-image-stats` must not query detectors, upload, emit messages, start turns or evict.
+18. Epoch reset clears local trust, not terminal resources. PNG/RGBA estimates are not terminal ACKs or global/GPU bounds; prior-runtime/external resources and overhead are unobservable. `/tmux-image stats` must not query detectors, upload, emit messages, start turns or evict.
 
 ## Verification and completion
 

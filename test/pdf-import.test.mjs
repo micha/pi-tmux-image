@@ -14,7 +14,7 @@ import test from "node:test";
 const root = process.env.PI_TEST_HOST_ROOT;
 const host = root ? await import(pathToFileURL(join(root, "dist/index.js"))) : undefined;
 const ui = root ? await import(pathToFileURL(createRequire(join(root, "dist/index.js")).resolve("@earendil-works/pi-tui"))) : undefined;
-const extensionPath = fileURLToPath(new URL("../extensions/tmux-image/index.ts", import.meta.url));
+const extensionPath = fileURLToPath(new URL("../extensions/tmux-image.ts", import.meta.url));
 function pngFixture() {
   const chunk = (type, payload) => {
     const header = Buffer.alloc(8); header.writeUInt32BE(payload.length); header.write(type, 4);
@@ -204,7 +204,7 @@ export default function(pi) { let sendCount = 0; production({...pi, sendMessage(
         let resolveChoice; h.setSelector(({ signal }) => new Promise((resolve) => { resolveChoice = resolve; signal.addEventListener("abort", () => resolve(undefined), { once: true }); }));
         const abort = new AbortController(), importing = h.execute(path, abort.signal); await until(() => h.selections.length);
         await assert.rejects(h.execute("missing.pdf"), /already in progress/);
-        await h.runtime.session.prompt("/tmux-image-view"); assert.ok(h.notifications.some((n) => /import is in progress/.test(n.message)));
+        await h.runtime.session.prompt("/tmux-image view"); assert.ok(h.notifications.some((n) => /import is in progress/.test(n.message)));
         abort.abort(); await assert.rejects(importing, (e) => e.name === "AbortError"); resolveChoice?.("Keep"); assert.equal(h.messages().length, 0);
         const modal = h.tui.showOverlay({ render: () => ["MODAL"], invalidate() {} });
         await assert.rejects(h.execute(path), /Close the image viewer|dialog/); modal.hide();
@@ -321,7 +321,7 @@ export default function(pi) { let sendCount = 0; production({...pi, sendMessage(
         h.manager.appendCustomMessageEntry("pi-tmux-image", [image], true, invalidDetails);
         h.manager.appendCustomMessageEntry("pi-tmux-image", [image], true, { ...invalidDetails, occurrence: "unknown", label: "UNKNOWN EXCLUDED", schema: "future-pdf-v99" });
         const before = JSON.stringify(h.manager.getEntries()), commandsBefore = (await commands()).length;
-        const viewing = h.runtime.session.prompt("/tmux-image-view"); await until(() => h.tui.hasOverlay()); h.tui.renderNow();
+        const viewing = h.runtime.session.prompt("/tmux-image view"); await until(() => h.tui.hasOverlay()); h.tui.renderNow();
         await until(() => { h.tui.renderNow(); return h.terminal.writes.join("").includes("SAFE PREVIEW"); });
         assert.equal(h.terminal.writes.join("").includes("UNKNOWN EXCLUDED"), false);
         h.terminal.input("n"); h.tui.renderNow(); h.terminal.input("\x1b"); await viewing;
@@ -332,8 +332,8 @@ export default function(pi) { let sendCount = 0; production({...pi, sendMessage(
       const h = await fixture({ choice: "Temporary" }); try {
         const path = join(h.cwd, "large.pdf"); await pdfFile(path, THRESHOLD + 1); const before = (await commands()).length;
         await h.execute(path); const captured = (await commands()).slice(before).find((c) => c.name === "pdfinfo").args.at(-1); await unlink(path);
-        await h.runtime.session.prompt("/tmux-image-refresh"); assert.equal(existsSync(captured), true);
-        h.manager.branch(h.seed); await h.runtime.session.prompt("/tmux-image-refresh"); assert.equal(existsSync(captured), true, "inactive branch occurrence still owns original");
+        await h.runtime.session.prompt("/tmux-image refresh"); assert.equal(existsSync(captured), true);
+        h.manager.branch(h.seed); await h.runtime.session.prompt("/tmux-image refresh"); assert.equal(existsSync(captured), true, "inactive branch occurrence still owns original");
         await h.runtime.session.reload(); assert.equal(existsSync(captured), false); assert.equal(h.messages().length, 1);
         const replacementPath = join(h.cwd, "replacement.pdf"); await pdfFile(replacementPath, THRESHOLD + 1); await setState({ holdInfo: true }); const marker = (await commands()).length;
         const pending = h.execute(replacementPath); const rejected = assert.rejects(pending, (e) => e.name === "AbortError");

@@ -14,7 +14,7 @@ const MESSAGE_TYPE = "pi-tmux-image";
 
 export default function (pi: ExtensionAPI, { createDocumentService = createPdfDocumentService } = {}) {
   const presentation = createPresentation();
-  registerClipboardPaste(pi, { presentation, parseKey, matchesKey, truncateToWidth });
+  const clipboard = registerClipboardPaste(pi, { presentation, parseKey, matchesKey, truncateToWidth });
   const native = createNativeRenderer({ convertToPng });
   const legacyOccurrences = new WeakMap<object, string>();
   const legacyEntryOccurrences = new Map<string, string>();
@@ -109,7 +109,7 @@ export default function (pi: ExtensionAPI, { createDocumentService = createPdfDo
     if (generation !== expected) throw new Error("Image capability query was superseded; retry after refresh");
     // Public policy may have changed while a bounded subprocess was running.
     const rejected = checkDisplayPolicy(capabilityContext(ctx)) || (!result.supported ? result : undefined);
-    capabilityFailure = rejected ? sanitizeDisplayText(`${rejected.message} Run /tmux-image-refresh after correcting the terminal path or display policy.`) : undefined;
+    capabilityFailure = rejected ? sanitizeDisplayText(`${rejected.message} Run /tmux-image refresh after correcting the terminal path or display policy.`) : undefined;
     if (capabilityFailure) throw new Error(capabilityFailure);
     for (const warning of result.warnings || []) {
       if (capabilityWarnings.has(warning)) continue;
@@ -360,63 +360,80 @@ export default function (pi: ExtensionAPI, { createDocumentService = createPdfDo
     }
   }
 
-  pi.registerCommand("tmux-image-stats", {
-    description: "Show local graphics measurement only; no uploads, probing, messages or eviction",
-    handler: async (_args, ctx) => {
-      const stats = native.stats(presentation.epoch);
-      if (stats.accounting.unavailable) {
-        ctx.ui.notify(`Graphics accounting unavailable: ${stats.accounting.lastError || "unknown error"}; display is unaffected`, "warning");
-        return;
-      }
-      ctx.ui.notify(
-        "Graphics: this runtime only; eviction disabled; terminal ACK: no\n" +
-        `Resident: ${stats.resident.imageIds} image IDs / ${stats.resident.payloads} payloads; PNG ${stats.resident.pngBytes} bytes; RGBA estimate ${stats.resident.estimatedRgbaBytes} bytes\n` +
-        `Placements: ${stats.placements.occurrences} occurrences / ${stats.placements.geometryVersions} prototypes; normalized ${stats.normalization.payloads} payloads / ${stats.normalization.pngBytes} PNG bytes\n` +
-        `Surfaces: ${stats.surfaces.inline} retained inline / ${stats.surfaces.viewer} tracked viewer (${stats.surfaces.liveViewer} live); viewer retirement pending: ${stats.viewer.retirementPending ? "yes" : "no"}\n` +
-        `Viewer operations: epoch ${stats.surfaceTransfer.replacementCommands} replacements / ${stats.surfaceTransfer.retirementCommands} retirements; runtime ${stats.runtimeSurfaceTransfer.replacementCommands} replacements / ${stats.runtimeSurfaceTransfer.retirementCommands} retirements\n` +
-        `Epoch transfer: ${stats.transfer.wireBytes} wire bytes / ${stats.transfer.uploadChunks} PNG chunks / ${stats.transfer.placementCommands} placement commands\n` +
-        `Runtime transfer: ${stats.runtimeTransfer.wireBytes} wire bytes / ${stats.runtimeTransfer.uploadChunks} PNG chunks / ${stats.runtimeTransfer.placementCommands} placement commands\n` +
-        `Uncounted: prior-runtime/external resources and terminal/GPU overhead; accounting errors: ${stats.accounting.errors}` +
-        (stats.accounting.errors ? ` (incomplete; display unaffected; ${stats.accounting.lastError})` : ""),
-        stats.accounting.errors ? "warning" : "info",
-      );
-    },
-  });
+  function showStats(ctx: ExtensionContext) {
+    const stats = native.stats(presentation.epoch);
+    if (stats.accounting.unavailable) {
+      ctx.ui.notify(`Graphics accounting unavailable: ${stats.accounting.lastError || "unknown error"}; display is unaffected`, "warning");
+      return;
+    }
+    ctx.ui.notify(
+      "Graphics: this runtime only; eviction disabled; terminal ACK: no\n" +
+      `Resident: ${stats.resident.imageIds} image IDs / ${stats.resident.payloads} payloads; PNG ${stats.resident.pngBytes} bytes; RGBA estimate ${stats.resident.estimatedRgbaBytes} bytes\n` +
+      `Placements: ${stats.placements.occurrences} occurrences / ${stats.placements.geometryVersions} prototypes; normalized ${stats.normalization.payloads} payloads / ${stats.normalization.pngBytes} PNG bytes\n` +
+      `Surfaces: ${stats.surfaces.inline} retained inline / ${stats.surfaces.viewer} tracked viewer (${stats.surfaces.liveViewer} live); viewer retirement pending: ${stats.viewer.retirementPending ? "yes" : "no"}\n` +
+      `Viewer operations: epoch ${stats.surfaceTransfer.replacementCommands} replacements / ${stats.surfaceTransfer.retirementCommands} retirements; runtime ${stats.runtimeSurfaceTransfer.replacementCommands} replacements / ${stats.runtimeSurfaceTransfer.retirementCommands} retirements\n` +
+      `Epoch transfer: ${stats.transfer.wireBytes} wire bytes / ${stats.transfer.uploadChunks} PNG chunks / ${stats.transfer.placementCommands} placement commands\n` +
+      `Runtime transfer: ${stats.runtimeTransfer.wireBytes} wire bytes / ${stats.runtimeTransfer.uploadChunks} PNG chunks / ${stats.runtimeTransfer.placementCommands} placement commands\n` +
+      `Uncounted: prior-runtime/external resources and terminal/GPU overhead; accounting errors: ${stats.accounting.errors}` +
+      (stats.accounting.errors ? ` (incomplete; display unaffected; ${stats.accounting.lastError})` : ""),
+      stats.accounting.errors ? "warning" : "info",
+    );
+  }
 
-  pi.registerCommand("tmux-image-refresh", {
-    description: "Re-upload stored image snapshots after terminal reconnect/reset without adding messages",
-    handler: async (_args, ctx) => {
-      try {
-        requireInteractive(ctx);
-        pdfRuntime?.importing?.controller.abort();
-        await viewer.close("refresh");
-        generation++;
-        detector.invalidate();
-        capabilityFailure = undefined;
-        capabilityWarnings.clear();
-        // Clear failed/ready records even if the fresh probe is still denied.
-        // Every resulting replay prepare independently checks capability first.
-        presentation.refresh();
-        await requireCapability(ctx);
-        await viewer.retryRetirement();
-        ctx.ui.notify("Capabilities refreshed; image residency reset and stored snapshots will repaint without rereading files", "info");
-      } catch (error) { notifyFailure(ctx, error); }
-    },
-  });
+  async function refreshImages(ctx: ExtensionContext) {
+    requireInteractive(ctx);
+    pdfRuntime?.importing?.controller.abort();
+    await viewer.close("refresh");
+    generation++;
+    detector.invalidate();
+    capabilityFailure = undefined;
+    capabilityWarnings.clear();
+    // Clear failed/ready records even if the fresh probe is still denied.
+    // Every resulting replay prepare independently checks capability first.
+    presentation.refresh();
+    await requireCapability(ctx);
+    await viewer.retryRetirement();
+    ctx.ui.notify("Capabilities refreshed; image residency reset and stored snapshots will repaint without rereading files", "info");
+  }
 
-  pi.registerCommand("tmux-image-view", {
-    description: "Open an existing stored image/PDF document; newest-first keyboard picker",
-    handler: async (_args, ctx) => {
-      try { requireInteractive(ctx); await openViewer(); }
-      catch (error) { notifyFailure(ctx, error); }
-    },
-  });
+  const subcommands: {
+    name: string;
+    description: string;
+    handler: (ctx: ExtensionContext, args: string) => void | Promise<void>;
+    actions?: string[];
+  }[] = [
+    { name: "view", description: "Open the stored image/PDF viewer", handler: async (ctx) => { requireInteractive(ctx); await openViewer(); } },
+    { name: "refresh", description: "Refresh capabilities and repaint stored snapshots", handler: refreshImages },
+    { name: "stats", description: "Show local graphics diagnostics", handler: showStats },
+    { name: "paste", description: "Paste a clipboard PNG for the next prompt", handler: clipboard.paste, actions: clipboard.actions },
+  ];
+  const usage = ["Usage: /tmux-image <image path> or:", ...subcommands.map(({ name, description, actions }) =>
+    `  /tmux-image ${name}${actions ? ` [${actions.join("|")}]` : ""} — ${description}`)].join("\n");
 
   pi.registerCommand("tmux-image", {
-    description: "Display an image through tmux; Pi's blockImages controls model access",
+    description: "Display an image file, or use view, refresh, stats or paste",
+    getArgumentCompletions(prefix) {
+      const input = prefix.trimStart();
+      const [name] = input.split(/\s+/, 1);
+      const rest = input.slice(name.length);
+      const actions = subcommands.find((command) => command.name === name)?.actions;
+      const items = rest && actions
+        ? actions.filter((action) => action.startsWith(rest.trimStart())).map((action) => ({ value: `${name} ${action}`, label: action }))
+        : subcommands.filter((command) => command.name.startsWith(input)).map(({ name, description }) => ({ value: name, label: name, description }));
+      return items.length ? items : null;
+    },
     handler: async (args, ctx) => {
-      try { await showImage(args, ctx); }
-      catch (error) { notifyFailure(ctx, error); }
+      const input = args.trim();
+      if (!input) { ctx.ui.notify(usage, "info"); return; }
+      const [name] = input.split(/\s+/, 1);
+      const subcommand = subcommands.find((command) => command.name === name);
+      try {
+        // A non-command argument is still a file path, including embedded spaces.
+        if (!subcommand) { await showImage(input, ctx); return; }
+        const rest = input.slice(name.length).trimStart();
+        if (rest && !subcommand.actions) throw new Error(`Usage: /tmux-image ${name}`);
+        await subcommand.handler(ctx, rest);
+      } catch (error) { notifyFailure(ctx, error); }
     },
   });
   pi.registerCommand("tmux-pdf", {

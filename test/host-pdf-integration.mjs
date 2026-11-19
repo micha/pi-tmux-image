@@ -239,7 +239,7 @@ async function pageReady(h, page, id) {
 }
 async function openViewer(h) {
   h.frameStart = h.terminal.writes.length;
-  h.command = h.runtime.session.prompt("/tmux-image-view");
+  h.command = h.runtime.session.prompt("/tmux-image view");
   await until(() => { h.tui.renderNow(); return h.tui.hasOverlay(); }, "PDF overlay");
   if (pdfMessages(h).length > 1) h.terminal.input("\r");
   await pageReady(h, 1);
@@ -558,7 +558,7 @@ if (process.env.PI_PDF_ACCEPTANCE_CHILD === "restore") {
         const before = await invariant(h); await rm(path);
         await openViewer(h); await inputPage(h, "n", 2); await closeViewer(h);
         await openViewer(h); await inputPage(h, "n", 2); await closeViewer(h);
-        await h.runtime.session.prompt("/tmux-image-refresh"); await openViewer(h); await inputPage(h, "n", 2); await closeViewer(h); await unchanged(h, before);
+        await h.runtime.session.prompt("/tmux-image refresh"); await openViewer(h); await inputPage(h, "n", 2); await closeViewer(h); await unchanged(h, before);
         // Public tree navigation excludes a custom target itself. Return by a
         // following user entry, preserving the same runtime Temporary registry.
         const manager = h.ctx.sessionManager; manager.appendMessage({ role: "user", content: "Branch anchor", timestamp: Date.now() });
@@ -685,7 +685,7 @@ if (process.env.PI_PDF_ACCEPTANCE_CHILD === "restore") {
           const start = h.terminal.writes.length, importing = h.runtime.session.prompt(`/tmux-pdf ${large}`);
           await until(() => { h.tui.renderNow(); return plain(h.terminal.writes.slice(start)).join("\n").includes("Temporary"); }, "active production selector");
           await h.runtime.session.prompt(`/tmux-pdf ${large}`);
-          await h.runtime.session.prompt("/tmux-image-view");
+          await h.runtime.session.prompt("/tmux-image view");
           assert.equal(h.tui.hasOverlay(), false, "competing viewer displaced import selector");
           h.terminal.input("\x1b"); await importing; await unchanged(h, before); assert.deepEqual(await pdfLog(scratch), log);
           const toolStart = h.terminal.writes.length;

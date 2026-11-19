@@ -2,7 +2,7 @@
 
 ## Current implementation status
 
-`/tmux-image-paste` now uses an explicitly accepted **visible
+`/tmux-image paste` uses an explicitly accepted **visible
 input-owning dialog** in the focused pane. It normalizes tmux CSI-u/xterm Alt-key
 markers and assembles bounded replies only while that dialog owns input. This
 supersedes the nonmodal implementation in `2493197`, whose first real trial
@@ -30,8 +30,9 @@ A second investigation found a separate blocker in the installed **Pi 1.5.2**
 input seam: delayed fragments of OSC 5522 are converted into legacy Alt-key and
 printable-text events before extensions receive them. No supported design was
 found that both bounds owned-response handling and preserves ordinary key
-semantics through the available public seams, even with no pane switch. See **Focused-pane host-input gate** below. `/tmux-image-paste` is
-was not implemented at that investigation stage. Ghostty 1.4 protocol support
+semantics through the available public seams, even with no pane switch. See
+**Focused-pane host-input gate** below. Clipboard paste was not implemented at
+that investigation stage. Ghostty 1.4 protocol support
 and the focused-pane agreement do not fix this separate host-input gate. The
 owner subsequently accepted experimental detection **after possible draft
 contamination**, rather than requiring prevention through public seams; the

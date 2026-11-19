@@ -96,7 +96,7 @@ Safety boundaries:
 | Async cancellation | Delayed read-only capability probes exercise Escape after mounting while selected-snapshot preparation is pending; the command completion is awaited, with unchanged storage/conversion/model counts. Detailed native reservation/partial-write races are covered separately in the host-enabled suite. |
 | Resize/cells/policy | Actual host compositor handles 80x40 → 30x16 → 12x6 → 80x40 and changed public cell pixels without overflow, lost Escape ownership or resident PNG retransmission; synchronous ready-policy disable hides cells with no probe/graphics. |
 | Lifecycle | SDK refresh/reload, owning widget removal, public tree navigation and new-session replacement close the viewer. Refresh must not replay the inactive private prototype; sources remain absent. |
-| Regular keyboard fallback | Regular SGR reports do not open transcript images. Editor Enter → public `getUserInput()` → `session.prompt('/tmux-image-view')` opens the actual viewer with no model work. |
+| Regular keyboard fallback | Regular SGR reports do not open transcript images. Editor Enter → public `getUserInput()` → `session.prompt('/tmux-image view')` opens the actual viewer with no model work. |
 | Offline background stream | One deliberate mocked stream remains the sole request; viewer input creates no additional messages, attachments or requests. |
 | Denied paths/non-TUI | Unsupported passthrough/client identities and print/JSON/RPC command modes produce no graphics/widget/model work. |
 

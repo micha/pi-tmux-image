@@ -286,7 +286,7 @@ a readable fallback. Correcting that failure requires explicit refresh rather
 than querying/retrying every frame. Name-only recognition warnings are sanitized
 and shown once per session/refresh, not inserted into model-facing content.
 
-`/tmux-image-refresh` first checks interactive tmux, invalidates detector/runtime
+`/tmux-image refresh` first checks interactive tmux, invalidates detector/runtime
 decisions and calls presentation refresh to replace residency epoch and clear
 failed/ready records, then probes fresh. This reset occurs **even if the fresh
 probe still rejects**. Every ensuing preparation independently gates transport;

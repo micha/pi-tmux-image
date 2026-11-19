@@ -151,7 +151,7 @@ hostTest("actual SDK package loading: reload/new/resume/quit lifecycle and non-T
         resourceLoaderOptions: {
           noExtensions: true, noSkills: true, noPromptTemplates: true,
           noThemes: true, noContextFiles: true,
-          additionalExtensionPaths: [new URL("../extensions/tmux-image/index.ts", import.meta.url).pathname],
+          additionalExtensionPaths: [new URL("../extensions/tmux-image.ts", import.meta.url).pathname],
           extensionFactories: [(pi) => {
             pi.on("session_start", (event) => { events.push([event.type, event.reason]); });
             pi.on("session_shutdown", (event) => { events.push([event.type, event.reason]); });
@@ -210,14 +210,14 @@ hostTest("actual Pi startup names the explicit index entrypoint tmux-image", asy
       const services = await host.createAgentSessionServices({ cwd, agentDir, modelRuntime,
         settingsManager: host.SettingsManager.inMemory({ quietStartup: false, theme: "dark", cacheWarming: "off", enableInstallTelemetry: false, enableAnalytics: false }),
         resourceLoaderOptions: { noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
-          additionalExtensionPaths: [new URL("../extensions/tmux-image/index.ts", import.meta.url).pathname] },
+          additionalExtensionPaths: [new URL("../extensions/tmux-image.ts", import.meta.url).pathname] },
       });
       const created = await host.createAgentSessionFromServices({ services, sessionManager, sessionStartEvent, model: modelRuntime.getModels()[0], noTools: "all" });
       assert.deepEqual(created.extensionsResult.errors, []);
       const loaded = services.resourceLoader.getExtensions().extensions;
       assert.equal(loaded.length, 1, "rename must not discover duplicate entrypoints");
-      assert.ok(loaded[0].commands.has("tmux-image-view"));
-      assert.ok(loaded[0].path.endsWith("/extensions/tmux-image/index.ts"));
+      assert.deepEqual([...loaded[0].commands.keys()].sort(), ["tmux-image", "tmux-pdf"]);
+      assert.ok(loaded[0].path.endsWith("/extensions/tmux-image.ts"));
       return { ...created, services, diagnostics: services.diagnostics };
     };
     runtime = await host.createAgentSessionRuntime(createRuntime, {

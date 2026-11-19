@@ -31,11 +31,14 @@ version on Pi 1.0.3, restart Pi and resume the session: `/reload` can retain old
 ```text
 /tmux-image /path/to/image.png
 /tmux-pdf /path/to/document.pdf
-/tmux-image-view
+/tmux-image view
 ```
 
-Use `/tmux-image-view` to open stored images/PDFs, or ask the assistant to display a file.
-Paths are relative to Pi's working directory; spaces need no quotes.
+Use `/tmux-image view` to open stored images/PDFs, or ask the assistant to display a file.
+Run `/tmux-image` by itself to list subcommands, or type it followed by a space
+and press Tab.
+Paths are relative to Pi's working directory; spaces need no quotes. Use `./` if a
+relative path begins with a subcommand as its first word.
 
 - `+` / `-`: zoom; `0`: fit and recenter.
 - `h` / `j` / `k` / `l`: pan left / down / up / right.
@@ -43,7 +46,8 @@ Paths are relative to Pi's working directory; spaces need no quotes.
 - Escape closes (or cancels a page jump).
 
 In **fullscreen mode**, click an image to open, wheel to zoom, drag to pan.
-Regular mode is keyboard-only. If images disappear, run `/tmux-image-refresh`.
+Regular mode is keyboard-only. If images disappear, run `/tmux-image refresh`.
+Use `/tmux-image stats` for local graphics diagnostics.
 Viewing uses stored copies, not live files. PDF zoom adds no extra detail.
 Closing or changing pages can require a fresh upload of the cached image; pan and zoom reuse the current upload.
 
@@ -62,12 +66,12 @@ Original PDF bytes and later pages are not sent to the model.
 
 ## Remote clipboard
 
-Press **Ctrl+V** or run `/tmux-image-paste` in interactive Pi inside tmux with
+Press **Ctrl+V** or run `/tmux-image paste` in interactive Pi inside tmux with
 **Ghostty ≥1.4**. Ghostty may ask for clipboard permission. Copy and paste images
 **one at a time**, waiting for each dialog to finish. You can stage up to **4 still,
 noninterlaced PNGs, 8 MiB each and 16 MiB total**. Your next interactive prompt
 attaches them in paste order after any existing attachments. Nothing is submitted
-automatically. Use `/tmux-image-paste clear` to remove all pending PNGs.
+automatically. Use `/tmux-image paste clear` to remove all pending PNGs.
 
 - **Stay in the same focused pane; do not type while the dialog is open.**
 - **Ctrl+C** cancels the current import, not earlier pastes, but keeps waiting.

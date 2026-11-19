@@ -5,7 +5,7 @@
 `src/metrics.mjs` provides measurement-only accounting, now integrated into
 `createNativeRenderer()`'s successful transport commit in `src/native.mjs`.
 `native.stats(presentationEpoch)` exposes a local aggregate snapshot, and
-`/tmux-image-stats` provides the extension's diagnostic command. Coordinator/seam
+`/tmux-image stats` provides the extension's diagnostic command. Coordinator/seam
 verification reports SDK 12/12 passing, including exact captured wire counters and
 no terminal/provider/session side effects. The metrics module
 has no terminal write or runtime non-built-in dependency and retains metadata,

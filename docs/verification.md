@@ -76,7 +76,7 @@ The harness:
   geometry, stable payload IDs and new placement IDs; geometry-only changes
   send no PNG uploads, and reversing a resize reuses cached geometry.
 - Injects a terminal write failure: no placeholder cells become visible. Invokes
-  the actual `/tmux-image-refresh` through `session.prompt()` and confirms a
+  the actual `/tmux-image refresh` through `session.prompt()` and confirms a
   requested repaint, new-residency upload and recovery of the existing component
   without adding messages or starting model work. The captured refresh wire also
   restores all earlier successful geometry-versioned placement IDs for each
@@ -104,11 +104,11 @@ The harness:
   source reads, without attachment messages or graphics.
 - Replays stored snapshots while passthrough is off or a query times out, with
   blocking both on and off. Denied replay emits no graphics. After correcting
-  the fixture, `/tmux-image-refresh` makes fresh readonly probes and recovers
+  the fixture, `/tmux-image refresh` makes fresh readonly probes and recovers
   the same component without changing stored messages or starting model work.
   A changed public `showImages` policy immediately hides already-ready cells;
   re-enabling unchanged cells does not repeat uploads.
-- Invokes actual `/tmux-image-stats` with blocking both on and off. It changes
+- Invokes actual `/tmux-image stats` with blocking both on and off. It changes
   no session content, starts no model request, writes no graphics, requests no
   repaint and runs no tmux probe. Diagnostics identify local-runtime successful
   writes, no terminal ACK and no eviction; prior-runtime/external resources and

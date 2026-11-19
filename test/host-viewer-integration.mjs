@@ -213,9 +213,9 @@ async function queries(scratch) {
   return (await readFile(join(scratch, "tmux-queries.log"), "utf8")).trim().split("\n").filter(Boolean).map(JSON.parse);
 }
 async function transportStats(h) {
-  const extension = h.runtime.services.resourceLoader.getExtensions().extensions.find((e) => e.commands.has("tmux-image-stats"));
+  const extension = h.runtime.services.resourceLoader.getExtensions().extensions.find((e) => e.commands.has("tmux-image"));
   let text;
-  await extension.commands.get("tmux-image-stats").handler("", { ...h.ctx, ui: { ...h.ctx.ui, notify(message) { text = message; } } });
+  await extension.commands.get("tmux-image").handler("stats", { ...h.ctx, ui: { ...h.ctx.ui, notify(message) { text = message; } } });
   assert.match(text, /Epoch transfer:/, "public stats command did not report transport accounting");
   return text.split("\n").filter((line) => /^(?:Epoch transfer:|Runtime transfer:|Viewer operations:)/.test(line));
 }
@@ -290,7 +290,7 @@ async function interactive(scratch, blocked, mode = "fullscreen", manager) {
     const loaded = services.resourceLoader.getExtensions(); assert.deepEqual(loaded.errors, []);
     const extension = loaded.extensions.find((e) => e.commands.has("tmux-image"));
     assert.ok(extension, "isolated installed package not discovered");
-    for (const name of ["tmux-image", "tmux-pdf", "tmux-image-view", "tmux-image-refresh", "tmux-image-stats"]) assert.ok(extension.commands.has(name), `missing ${name}`);
+    assert.deepEqual([...extension.commands.keys()].sort(), ["tmux-image", "tmux-pdf"]);
     for (const name of ["tmux_show_image", "tmux_show_pdf"]) {
       const tool = extension.tools.get(name)?.definition; assert.ok(tool);
       assert.equal(tool.executionMode, "sequential"); assert.equal(tool.parameters.properties.path.type, "string"); assert.ok(tool.parameters.required.includes("path"));
@@ -311,8 +311,9 @@ async function interactive(scratch, blocked, mode = "fullscreen", manager) {
     async cleanup() { offline.finishBackground(); app.stop(); await runtime.dispose(); await rm(directory, { recursive: true, force: true }); } };
 }
 async function seed(h, scratch, pdf = true) {
-  await writeFile(join(h.directory, "image.png"), pngFixture());
-  await h.runtime.session.prompt("/tmux-image image.png");
+  const image = "image with spaces.png";
+  await writeFile(join(h.directory, image), pngFixture());
+  await h.runtime.session.prompt(`/tmux-image ${image}`);
   assert.equal(snapshots(h).length, 1, "image source command failed");
   if (pdf) {
     await writeFile(join(h.directory, "two-pages.pdf"), pdfFixture());
@@ -340,7 +341,7 @@ async function seed(h, scratch, pdf = true) {
     return [imageId, { width: png.readUInt32BE(16), height: png.readUInt32BE(20) }];
   }));
   assert.deepEqual(images(await h.runtime.session.agent.convertToLlm(h.runtime.session.messages)), h.settings.getBlockImages() ? [] : attachments);
-  await rm(join(h.directory, "image.png")); if (pdf) await rm(join(h.directory, "two-pages.pdf"));
+  await rm(join(h.directory, image)); if (pdf) await rm(join(h.directory, "two-pages.pdf"));
   const rasterCalls = (await readFile(join(scratch, "pdf-queries.log"), "utf8")).trim().split("\n").filter(Boolean).map(JSON.parse);
   for (const args of rasterCalls) {
     const prefix = args.at(-1);
@@ -351,7 +352,7 @@ async function seed(h, scratch, pdf = true) {
 }
 async function open(h, pickerIndex = 0) {
   h.viewerStart = h.terminal.writes.length;
-  h.command = h.runtime.session.prompt("/tmux-image-view");
+  h.command = h.runtime.session.prompt("/tmux-image view");
   await until(() => { h.tui.renderNow(); return h.tui.hasOverlay(); }, "production viewer/picker");
   if (snapshots(h).length > 1) {
     for (let n = 0; n < pickerIndex; n++) h.terminal.input("\x1b[B");
@@ -799,7 +800,7 @@ test("production viewer: isolated installed public SDK + InteractiveMode accepta
         await until(() => !h.tui.hasOverlay(), "policy cancellation after uncertain write"); await h.command;
         h.settings.applyOverrides({ terminal: { showImages: true } });
         const refreshBase = (await queries(scratch)).length;
-        await h.runtime.session.prompt("/tmux-image-refresh");
+        await h.runtime.session.prompt("/tmux-image refresh");
         await open(h); assert.equal(mouseView(h).percent, 100, "refresh reopened with stale desired geometry");
         assert.ok((await queries(scratch)).length > refreshBase, "refresh failed to invalidate capability decisions");
         assert.ok(uploads(graphics(h.terminal)) > 1, "uncertain/refresh recovery incorrectly trusted old residency");
@@ -818,7 +819,7 @@ test("production viewer: isolated installed public SDK + InteractiveMode accepta
           assert.equal(await readFile(join(scratch, "pdf-queries.log"), "utf8"), seeded.pdfLog, "mouse viewer reread/rasterized a deleted source");
         };
         h.viewerStart = h.terminal.writes.length;
-        h.command = h.runtime.session.prompt("/tmux-image-view");
+        h.command = h.runtime.session.prompt("/tmux-image view");
         await until(() => { h.tui.renderNow(); return h.tui.hasOverlay(); }, "mouse picker");
         const pickerGraphics = graphics(h.terminal).length;
         for (const button of [64, 65, 72, 73]) h.terminal.mouse(button, 30, 12);
@@ -1006,7 +1007,7 @@ test("production viewer: isolated installed public SDK + InteractiveMode accepta
         h.ctx.ui.setEditorText("protected draft"); h.tui.renderNow();
         h.terminal.input("\x1b[102;6u"); h.tui.renderNow(); assert.match(plain(screen(h)).join("\n"), /Find in transcript/);
         const prior = graphics(h.terminal).length;
-        await h.runtime.session.prompt("/tmux-image-view"); h.tui.renderNow();
+        await h.runtime.session.prompt("/tmux-image view"); h.tui.renderNow();
         assert.equal(graphics(h.terminal).length, prior, "admission over search emitted graphics");
         h.terminal.input("\x1b"); h.tui.renderNow(); await open(h);
         const top = h.tui.viewportTop, privateId = h.viewerPair.placementId;
@@ -1020,9 +1021,9 @@ test("production viewer: isolated installed public SDK + InteractiveMode accepta
         h.terminal.input("\x1b"); h.tui.renderNow(); assert.equal(h.tui.hasOverlay(), false);
         // Delayed read-only probe blocks preparation; Escape races before its reply.
         await fixture(scratch, { delay: 150 });
-        await h.runtime.session.prompt("/tmux-image-refresh");
+        await h.runtime.session.prompt("/tmux-image refresh");
         h.terminal.writes.length = 0;
-        h.command = h.runtime.session.prompt("/tmux-image-view");
+        h.command = h.runtime.session.prompt("/tmux-image view");
         await until(() => { h.tui.renderNow(); return h.tui.hasOverlay(); }, "mount before pending preparation close");
         h.terminal.input("\x1b"); await h.command; await sleep(350); h.tui.renderNow();
         assert.equal(h.tui.hasOverlay(), false);
@@ -1072,7 +1073,7 @@ test("production viewer: isolated installed public SDK + InteractiveMode accepta
         await until(() => !h.tui.hasOverlay(), "display-policy close");
         await h.command; await open(h);
         h.terminal.writes.length = 0;
-        await h.runtime.session.prompt("/tmux-image-refresh"); await until(() => !h.tui.hasOverlay(), "refresh close");
+        await h.runtime.session.prompt("/tmux-image refresh"); await until(() => !h.tui.hasOverlay(), "refresh close");
         await sleep(150); h.tui.renderNow();
         assert.ok(placements(graphics(h.terminal)).every((p) => p.placementId !== privateId), "refresh resurrected an inactive viewer prototype");
         await open(h); await h.runtime.session.reload({ beforeSessionStart: () => h.settings.applyOverrides(h.overrides) });
@@ -1093,9 +1094,9 @@ test("production viewer: isolated installed public SDK + InteractiveMode accepta
       await fixture(scratch); const h = await interactive(scratch, true, "regular");
       try {
         await seed(h, scratch, false); const before = await invariant(h);
-        h.ctx.ui.setEditorText("/tmux-image-view"); h.tui.renderNow();
-        const input = h.app.getUserInput(); h.terminal.input("\r"); assert.equal(await input, "/tmux-image-view");
-        h.command = h.runtime.session.prompt("/tmux-image-view"); await viewerReady(h); await close(h); await unchanged(h, before);
+        h.ctx.ui.setEditorText("/tmux-image view"); h.tui.renderNow();
+        const input = h.app.getUserInput(); h.terminal.input("\r"); assert.equal(await input, "/tmux-image view");
+        h.command = h.runtime.session.prompt("/tmux-image view"); await viewerReady(h); await close(h); await unchanged(h, before);
       } finally { await h.cleanup(); }
     });
     await t.test("deliberate offline background model run: viewer adds no request/message/attachment", async () => {
@@ -1118,7 +1119,7 @@ test("production viewer: isolated installed public SDK + InteractiveMode accepta
           { schema: "pi-tmux-image/native-v1", occurrence: "denied-stored", label: "Deleted source", geometry: { columns: 40, rows: 10, cellWidthPx: 8, cellHeightPx: 16 } });
         const h = await interactive(scratch, true, "fullscreen", manager);
         try {
-          await h.runtime.session.prompt("/tmux-image-view"); await sleep(150); h.tui.renderNow();
+          await h.runtime.session.prompt("/tmux-image view"); await sleep(150); h.tui.renderNow();
           assert.equal(graphics(h.terminal).length, 0); assert.equal(h.offline.requests.length, 0);
           if (h.tui.hasOverlay()) await close(h);
         } finally { await h.cleanup(); }
@@ -1204,7 +1205,7 @@ test("production viewer: isolated installed public SDK + InteractiveMode accepta
         const { session } = await host.createAgentSession({ cwd: directory, agentDir: join(scratch, "agent"), resourceLoader: loader, settingsManager: settings, sessionManager: host.SessionManager.inMemory(directory), modelRuntime: offline, model, noTools: "all" });
         try {
           await session.bindExtensions({ mode, uiContext: { notify() {}, setWidget() { assert.fail("non-TUI installed viewer widget"); } } });
-          const before = JSON.stringify(session.messages); await session.prompt("/tmux-image-view");
+          const before = JSON.stringify(session.messages); await session.prompt("/tmux-image view");
           assert.equal(JSON.stringify(session.messages), before); assert.equal(offline.requests.length, 0);
         } finally { session.dispose(); }
       }

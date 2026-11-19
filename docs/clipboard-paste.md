@@ -2,7 +2,7 @@
 
 ## Current scope
 
-**Ctrl+V** (default in inherited valid tmux/pane context) or `/tmux-image-paste`
+**Ctrl+V** (default in inherited valid tmux/pane context) or `/tmux-image paste`
 opens a visible **Reading clipboard** dialog with a do-not-type instruction.
 Only while that owned dialog is visibly focused does clipboard assembly own
 ordinary input. It uses Pi's existing TUI loop, not an editor replacement,
@@ -50,7 +50,7 @@ of upstream limitations, not general-safe transport acceptance.
 
 ## Visible ownership and keys
 
-Ctrl+V or `/tmux-image-paste` is the explicit request: there is **no extension-level
+Ctrl+V or `/tmux-image paste` is the explicit request: there is **no extension-level
 first-use confirmation**. Capability preflight runs before the owned read dialog
 is installed/flushed and the single request is emitted. Startup/session events
 never initiate a read. Ghostty's own `clipboard-read=ask` permission prompt remains
@@ -67,8 +67,8 @@ routine UI.
 | **Ctrl+Q**, once | Cancel locally and show the explicit late-reply/leave-anyway warning. |
 | **Ctrl+Q**, again | Knowingly close the dialog; restore normal editing, retain unresolved request quarantine. Late replies may enter the draft. |
 | Escape | Does **not** leave the dialog; raw ESC may be part of a split reply delimiter. Use the documented control keys. |
-| `/tmux-image-paste cancel` (programmatic command invocation) | Same local cancellation/draining semantics; not cancellation of Ghostty permission. |
-| `/tmux-image-paste clear` | Remove all staged PNGs, not an outstanding terminal read. |
+| `/tmux-image paste cancel` (programmatic command invocation) | Same local cancellation/draining semantics; not cancellation of Ghostty permission. |
+| `/tmux-image paste clear` | Remove all staged PNGs, not an outstanding terminal read. |
 
 Timeout (30 seconds), cancellation, rejected/malformed data or transport loss
 **does not cancel the terminal permission prompt/read**. Accumulated image bytes
@@ -130,7 +130,7 @@ The value is sampled during the extension factory, when public
 default there, so an unresolved CLI flag cannot correctly select factory-time
 registration. Late `session_start` registration is not used. There is no always-
 registered disabled handler and no cross-extension dispatcher/global key listener.
-The shortcut directly invokes the **same command handler** with empty arguments;
+The shortcut directly invokes the **same paste handler** with no action;
 explicit invocation, topology, modal ownership, bounds, timeout/drain, exit, PNG validation,
 pending/clear and interactive handoff are unchanged. Existing draft text and
 attachments are neither erased nor submitted. The registered key is PNG-dialog-only:
@@ -173,8 +173,8 @@ none of these observations expands the accepted matrix.
 
 ## Separate modules and public seams
 
-- `src/clipboard.mjs`: public command, session lifecycle, input-transform handoff
-  and visible pending state. Uses the existing widget-injected TUI transport.
+- `src/clipboard.mjs`: shared paste handler, session lifecycle, input-transform
+  handoff and visible pending state. Uses the existing widget-injected TUI transport.
 - `src/clipboard-modal.mjs`: owned public `TUI.showOverlay` handle and passive
   width-fitted component; modal-only bounded frame assembler. Public `parseKey`
   and `matchesKey` normalize raw/CSI-u/xterm Alt markers. No private listener

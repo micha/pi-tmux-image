@@ -10,7 +10,7 @@ not current gesture policy. Core ownership/focus/search boundaries are unchanged
 
 `src/viewer.mjs` now implements the public policy proved below and
 `extensions/tmux-image/index.ts` wires it to immutable active-branch snapshot indexing,
-ready-cell-only fullscreen `MouseRegion` clicks and `/tmux-image-view`. A
+ready-cell-only fullscreen `MouseRegion` clicks and `/tmux-image view`. A
 newest-first keyboard picker shares the same owned overlay; one snapshot opens
 automatically. No viewer history/session fields, source rereads, new attachments,
 model turns or image-policy filters are introduced.

@@ -147,12 +147,12 @@ function observedWire(writes) {
     chunks: [...writes.join("").matchAll(/\x1bPtmux;/g)].length - commands, commands };
 }
 async function verifyStats(h, scratch, expected) {
-  assert.ok(h.loader.getExtensions().extensions[0].commands.has("tmux-image-stats"));
+  assert.ok(h.loader.getExtensions().extensions[0].commands.has("tmux-image"));
   const before = JSON.stringify(h.session.messages);
   const requests = h.requests.length, writes = h.writes.length, repaints = h.transport.repaints;
   const probes = await readFile(join(scratch, "tmux-queries.log"), "utf8");
   const notificationCount = h.notifications.length;
-  await h.session.prompt("/tmux-image-stats");
+  await h.session.prompt("/tmux-image stats");
   const diagnostic = h.notifications.slice(notificationCount).map((n) => n.message).join("\n");
   assert.equal(JSON.stringify(h.session.messages), before, "stats added or changed transcript content");
   assert.equal(h.requests.length, requests, "stats triggered model work");
@@ -227,7 +227,7 @@ async function verifyLiveLayoutAndRefresh(h, scratch, component, before) {
     assert.equal(h.writes.length, 0);
     assert.deepEqual(await verifyStats(h, scratch, {}), beforeFailureStats, "failed write changed successful transfer accounting");
     const repaints = h.transport.repaints;
-    await h.session.prompt("/tmux-image-refresh");
+    await h.session.prompt("/tmux-image refresh");
     assert.ok(h.transport.repaints > repaints, "refresh did not request repaint");
     const zero = await verifyStats(h, scratch, { imageIds: 0, payloads: 0, prototypes: 0, normalizedPayloads: 2,
       epoch: { wireBytes: 0, chunks: 0, commands: 0 }, runtime: beforeFailureStats.runtime });
@@ -300,7 +300,7 @@ async function verifyDeniedReplayRecovery(scratch, blockImages, scenario = { fix
     assert.equal(component.render(80).some((line) => line.includes(placeholder)), false);
     assert.equal(h.writes.length, 0, "denied replay emitted graphics");
     await writeTmuxFixture(scratch);
-    await h.session.prompt("/tmux-image-refresh");
+    await h.session.prompt("/tmux-image refresh");
     await waitCells([component], 80);
     assert.ok(h.writes.join("").includes("a=t"));
     const probes = await readFile(join(scratch, "tmux-queries.log"), "utf8");
