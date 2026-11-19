@@ -370,8 +370,7 @@ order after submission with model blocking both on and off. Private tmux 3.8
 transport regressions still exercise one read at a time. All 21 focused portable,
 19 SDK and 4 private tmux checks passed. `npm test`: 270 passed, 35 skipped, and the
 same two package entry-path failures reproduced on the unchanged baseline.
-Isolated Pi installation and public discovery passed. The multi-image workflow
-has not been verified on a physical Ghostty clipboard.
+Isolated Pi installation and public discovery passed.
 
 ## Coordinated human verification: owner-confirmed image paste
 
@@ -441,6 +440,15 @@ not establish exact process/handler ordering. The owner then explicitly requeste
 removing the extension's extra first-use confirmation; **that newer no-confirmation
 UX remains human-pending**, with automated actual-editor/private-tmux coverage.
 Native Ghostty permission prompts and unsafe-exit confirmation are unchanged.
+
+### Successive paste follow-up
+
+After the successive-paste change (`173fa4a`), the owner sent two distinct image
+attachments in one message. The assistant saw and distinguished both screenshots,
+and the owner confirmed **“great! it works!”**. This confirms two-image receipt
+in one prompt on the owner's setup, not the exact runtime configuration, storage,
+or the full limits and cancellation matrix. No screenshots or payloads are stored
+in this record.
 
 Remaining human-pending cases include broader attachment-handoff/submission cases, denial,
 Ctrl+C/drain, timeout, warned exit/late replies, cleanup failures, other PNG
