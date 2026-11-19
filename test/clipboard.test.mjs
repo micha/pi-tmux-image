@@ -8,6 +8,7 @@ import { createClipboardReader, strictBase64 } from '../src/clipboard-protocol.m
 import { validateClipboardPng } from '../src/clipboard-png.mjs';
 import { probeClipboardTopology } from '../src/clipboard-capabilities.mjs';
 import { registerClipboardPaste } from '../src/clipboard.mjs';
+import { registerImageShortcuts } from '../src/clipboard-shortcut.mjs';
 import { createClipboardAssembler } from '../src/clipboard-modal.mjs';
 
 function crc(bytes) {
@@ -220,7 +221,10 @@ function extensionHarness({ mode = 'tui', shortcutFile, tmuxEnv = env, probe = a
   const pi = { on(name, handler) { const list = handlers.get(name) || []; list.push(handler); handlers.set(name, list); }, registerShortcut(key, options) { shortcuts.set(key, options); } };
   const ctx = { mode, ui: { confirm: async () => { confirms++; throw new Error('Extension confirmation must not be called'); }, notify: (...args) => notices.push(args), setWidget: (key, lines) => widgets.set(key, lines), onTerminalInput: (listener) => { input = listener; return () => { unsubscribe++; }; } } };
   const presentation = { connection: { epoch: 1, tui }, write: (data) => { assert.ok(overlay && frames > 0, 'dialog rendered before emission'); writes.push(data); }, bind() {} };
-  const clipboard = registerClipboardPaste(pi, { presentation, env: tmuxEnv, shortcutFile, probe, parseKey, matchesKey: (data, key) => parseKey(data) === key, truncateToWidth: (text, width) => text.slice(0, width), createReader: (options) => createClipboardReader({ ...options, ...readerOptions }) });
+  const clipboard = registerClipboardPaste(pi, { presentation, env: tmuxEnv, probe, parseKey, matchesKey: (data, key) => parseKey(data) === key, truncateToWidth: (text, width) => text.slice(0, width), createReader: (options) => createClipboardReader({ ...options, ...readerOptions }) });
+  registerImageShortcuts(pi, { path: shortcutFile, env: tmuxEnv, invoke: (action, ctx) => {
+    assert.equal(action, 'paste'); return clipboard.paste(ctx);
+  } });
   const emit = async (name, event = {}) => { let result; for (const handler of handlers.get(name) || []) result = await handler(event, ctx); return result; };
   return { ctx, emit, notices, writes, widgets, keys, shortcuts, shortcut: (key = 'ctrl+v') => shortcuts.get(key).handler(ctx), get modal() { return overlay; }, input: (data) => { const result = input?.(data); if (!result?.consume) { if (overlay) overlay.handleInput(data); else keys.push(data); } return result; }, command: (args = '') => clipboard.paste(ctx, args), get confirms() { return confirms; }, get unsubscribe() { return unsubscribe; } };
 }
@@ -252,7 +256,7 @@ test('clipboard shortcut defaults only in valid tmux; off/outside register none 
   const defaults = extensionHarness({ shortcutFile }); await defaults.emit('session_start');
   assert.deepEqual([...defaults.shortcuts.keys()], ['ctrl+v']); assert.equal(defaults.notices.length, 0);
   assert.equal(defaults.writes.length, 0); await defaults.emit('session_shutdown');
-  for (const paste of ['off', '', 'ctrl+c', 'ctrl+q', 'escape', 'enter', 'v', 'CTRL+V', 'ctrl+v\nunsafe']) {
+  for (const paste of ['off', '', 'ctrl+ctrl+c', 'shift+q', 'escape', 'enter', 'v', 'CTRL+V', 'ctrl+v\nunsafe']) {
     writeFileSync(shortcutFile, JSON.stringify({ paste }));
     const h = extensionHarness({ shortcutFile }); await h.emit('session_start');
     assert.equal(h.shortcuts.size, 0); assert.equal(h.writes.length, 0);

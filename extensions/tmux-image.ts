@@ -1,7 +1,7 @@
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { Type } from "@earendil-works/pi-ai";
-import { getCapabilities, getCellDimensions, MouseRegion, matchesKey, parseKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { getCapabilities, getCellDimensions, Input, isKeyRepeat, MouseRegion, matchesKey, parseKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { convertToPng, createReadTool, defineTool, getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { captureLayout, createNativeRenderer, NATIVE_SCHEMA, readLegacyDetails, readNativeDetails, sanitizeDisplayText } from "../src/native.mjs";
 import { createPdfDocumentService, PDF_SCHEMA, readPdfDetails, readPdfPreviewDetails } from "../src/pdf-document.mjs";
@@ -9,15 +9,15 @@ import { createPresentation } from "../src/presentation.mjs";
 import { createViewerController, indexSnapshots } from "../src/viewer.mjs";
 import { checkDisplayPolicy, resolvePiDisplayPolicy, TmuxCapabilityDetector } from "../src/capabilities.mjs";
 import { registerClipboardPaste } from "../src/clipboard.mjs";
-import { CLIPBOARD_SHORTCUT_FILE } from "../src/clipboard-shortcut.mjs";
+import { CLIPBOARD_SHORTCUT_FILE, registerImageShortcuts } from "../src/clipboard-shortcut.mjs";
+import { createShortcutInput } from "../src/shortcut-input.mjs";
 
 const MESSAGE_TYPE = "pi-tmux-image";
 
 export default function (pi: ExtensionAPI, { createDocumentService = createPdfDocumentService } = {}) {
   const presentation = createPresentation();
   const clipboard = registerClipboardPaste(pi, { presentation, parseKey, matchesKey, truncateToWidth,
-    shortcutFile: join(getAgentDir(), CLIPBOARD_SHORTCUT_FILE),
-    hasActiveDialog: () => Boolean(pdfRuntime?.importing || viewer.isOpen),
+    isConfiguring: () => shortcuts.isConfiguring,
   });
   const native = createNativeRenderer({ convertToPng });
   const legacyOccurrences = new WeakMap<object, string>();
@@ -410,8 +410,21 @@ export default function (pi: ExtensionAPI, { createDocumentService = createPdfDo
     { name: "refresh", description: "Refresh capabilities and repaint stored snapshots", handler: refreshImages },
     { name: "stats", description: "Show local graphics diagnostics", handler: showStats },
     { name: "paste", description: "Paste a clipboard PNG for the next prompt", handler: clipboard.paste, actions: clipboard.actions },
-    { name: "configure", description: "Set or disable the clipboard paste shortcut", handler: clipboard.configure },
+    { name: "configure", description: "Set or remove tmux-image shortcuts", handler: (ctx) => shortcuts.configure(ctx) },
   ];
+  const shortcuts = registerImageShortcuts(pi, {
+    path: join(getAgentDir(), CLIPBOARD_SHORTCUT_FILE),
+    hasActiveDialog: () => clipboard.isBusy || Boolean(pdfRuntime?.importing || viewer.isOpen || presentation.connection?.tui.hasOverlay()),
+    hasPendingImages: () => clipboard.hasPendingImages,
+    invoke: async (name: string, ctx: ExtensionContext) => {
+      try { await subcommands.find((command) => command.name === name)?.handler(ctx, ""); }
+      catch (error) { notifyFailure(ctx, error); }
+    },
+    promptShortcut: (ctx: ExtensionContext, options: Pick<Parameters<typeof createShortcutInput>[0], "action" | "signal" | "suggest" | "validate">) =>
+      ctx.ui.custom<string | undefined>((tui, theme, keybindings, done) =>
+        createShortcutInput({ ...options, tui, theme, keybindings, done, Input, truncateToWidth, isKeyRepeat }),
+      { blocked: { kind: "question", message: "Set a tmux-image shortcut" } }),
+  });
   const usage = ["Usage: /tmux-image <image path> or:", ...subcommands.map(({ name, description, actions }) =>
     `  /tmux-image ${name}${actions ? ` [${actions.join("|")}]` : ""} — ${description}`)].join("\n");
 

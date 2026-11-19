@@ -63,7 +63,7 @@ else process.exitCode=1;
   if (config.tmuxEnv !== undefined) for (const key of ['TMUX', 'TMUX_PANE']) {
     if (config.tmuxEnv[key] === undefined) delete process.env[key]; else process.env[key] = config.tmuxEnv[key];
   }
-  let later = 'continue', confirmations = 0, unsubscribeCount = 0, nativePastes = 0, reservedActions = 0, shortcutWork;
+  let later = 'continue', confirmations = 0, unsubscribeCount = 0, nativePastes = 0, reservedActions = 0, shortcutWork, shortcutInput;
   const writes = [], keys = [], notices = [], requests = [], widgetMap = new Map();
   const input = new tuiModule.StdinBuffer();
   let terminalInput;
@@ -89,6 +89,14 @@ else process.exitCode=1;
   tui.start();
   const uiContext = {
     select: config.select,
+    custom: (factory) => new Promise((resolve) => {
+      const theme = { fg: (_color, text) => text, bold: (text) => text };
+      const component = factory(tui, theme, keybindings, (value) => {
+        component.dispose?.(); tui.removeChild(component); tui.setFocus(editor); shortcutInput = undefined;
+        resolve(value);
+      });
+      shortcutInput = component; tui.addChild(component); tui.setFocus(component);
+    }),
     confirm: async () => { confirmations++; throw new Error('Extension confirmation must not be called'); },
     notify: (message, level) => notices.push({ message, level }),
     onTerminalInput: (listener) => { const unsubscribe = tui.addInputListener(listener); return () => { unsubscribeCount++; unsubscribe(); }; },
@@ -138,6 +146,7 @@ else process.exitCode=1;
     assert.equal(reads(writes).length, 0); assert.equal(session.messages.length, 0); assert.equal(requests.length, 0);
     return { session, tui, writes, keys, notices, requests, input, widgetMap, editor, commands, shortcutFile,
       get shortcuts() { return shortcuts; },
+      get shortcutInput() { return shortcutInput; },
       async reload() { await session.reload(); shortcuts = session.extensionRunner.getShortcuts(keybindings.getResolvedBindings()); },
       get shortcutWork() { return shortcutWork; }, get nativePastes() { return nativePastes; }, get reservedActions() { return reservedActions; },
       set later(value) { later = value; },
@@ -197,30 +206,59 @@ test('public SDK: tmux-image subcommand usage, completion and validation are loc
   } finally { await h?.cleanup(); await rm(directory, { recursive: true, force: true }); }
 });
 
-test('public SDK: configure saves only the package preference; reload applies the chosen key or Off', options, async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'pi-clipboard-configure-')); let h;
+function selectAction(choices, action) {
+  return choices.find((label) => label.startsWith(`${action} — `));
+}
+
+async function editShortcut(h, action, type) {
+  const work = h.session.prompt('/tmux-image configure'); await until(() => Boolean(h.shortcutInput));
+  assert.ok(h.shortcutInput.render(80).join('\n').includes(`Shortcut for /tmux-image ${action}`));
+  await type(h.shortcutInput);
+  await work;
+}
+
+test('public SDK: two-step configure types keys, filters Tab suggestions and changes only package preferences', options, async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'pi-image-configure-')); let h;
   const keybindingsFile = join(directory, 'agent', 'keybindings.json');
-  let chosen, lastOptions;
+  const menus = [];
+  let chosen;
   try {
-    h = await setup(directory, true, 'regular', { select: async (title, choices) => {
-      assert.equal(title, 'Clipboard paste shortcut'); lastOptions = choices; return chosen;
+    h = await setup(directory, true, 'regular', { keybindings: { 'app.interrupt': ['escape', 'f8'] }, select: async (title, choices) => {
+      assert.equal(title, 'Configure a tmux-image shortcut');
+      menus.push(choices); const result = selectAction(choices, chosen); chosen = undefined; return result;
     } });
     const keybindings = await readFile(keybindingsFile, 'utf8');
     h.editor.setText('existing draft');
     await h.session.prompt('/tmux-image configure');
-    assert.deepEqual(lastOptions, ['ctrl+v (default)', 'ctrl+shift+v', 'ctrl+alt+v', 'Off']);
-    await assert.rejects(readFile(h.shortcutFile), { code: 'ENOENT' }, 'Escape does not write');
-    chosen = lastOptions[0]; await h.session.prompt('/tmux-image configure');
-    await assert.rejects(readFile(h.shortcutFile), { code: 'ENOENT' }, 'selecting current does not write');
-    chosen = 'ctrl+shift+v'; await h.session.prompt('/tmux-image configure');
-    assert.deepEqual(JSON.parse(await readFile(h.shortcutFile, 'utf8')), { paste: 'ctrl+shift+v' });
+    assert.deepEqual(menus[0], ['view — unbound', 'refresh — unbound', 'stats — unbound', 'paste — ctrl+v', 'configure — unbound']);
+    chosen = 'paste'; await editShortcut(h, 'paste', (input) => input.handleInput('\x1b'));
+    await assert.rejects(readFile(h.shortcutFile), { code: 'ENOENT' }, 'Escape does not save');
+    chosen = 'paste'; await editShortcut(h, 'paste', () => { for (const char of 'ctrl+v') h.input.process(char); h.input.process('\r'); });
+    await assert.rejects(readFile(h.shortcutFile), { code: 'ENOENT' }, 'keeping same key does not save');
+    chosen = 'stats'; await editShortcut(h, 'stats', async (input) => {
+      h.input.process('f'); h.input.process('8'); h.input.process('\t');
+      assert.match(input.render(80).join('\n'), /No matching shortcuts/);
+      h.input.process('\r'); assert.match(input.render(80).join('\n'), /already assigned to a Pi action/);
+      await assert.rejects(readFile(h.shortcutFile), { code: 'ENOENT' });
+      h.input.process('\x7f'); h.input.process('9'); h.input.process('\t');
+      assert.match(input.render(80).join('\n'), /→ f9/);
+      h.input.process('\r'); // Fill only, then save.
+      await assert.rejects(readFile(h.shortcutFile), { code: 'ENOENT' });
+      h.input.process('\r');
+    });
+    assert.deepEqual(JSON.parse(await readFile(h.shortcutFile, 'utf8')), { paste: 'ctrl+v', stats: 'f9' });
     assert.match(h.notices.at(-1).message, /Run \/reload to apply/);
     assert.deepEqual([...h.shortcuts.keys()], ['ctrl+v'], 'no reload or live registration');
-    await h.reload(); assert.deepEqual([...h.shortcuts.keys()], ['ctrl+shift+v']);
-    chosen = 'Off'; await h.session.prompt('/tmux-image configure');
-    assert.equal(lastOptions[0], 'ctrl+shift+v (saved)');
-    assert.deepEqual(JSON.parse(await readFile(h.shortcutFile, 'utf8')), { paste: 'off' });
-    await h.reload(); assert.equal(h.shortcuts.size, 0);
+    assert.ok(menus.at(-1).includes('stats — f9'));
+    await h.reload(); assert.deepEqual([...h.shortcuts.keys()], ['ctrl+v', 'f9']);
+    h.input.process('\x1b[20~'); await h.shortcutWork; assert.match(h.notices.at(-1).message, /Graphics: this runtime only/);
+    chosen = 'paste'; await editShortcut(h, 'paste', (input) => {
+      h.input.process('f'); h.input.process('9'); h.input.process('\r');
+      assert.match(input.render(80).join('\n'), /Already assigned to \/tmux-image stats/);
+      h.input.process('\x7f'); h.input.process('\x7f'); h.input.process('\r'); // Blank removes paste only.
+    });
+    assert.deepEqual(JSON.parse(await readFile(h.shortcutFile, 'utf8')), { paste: 'off', stats: 'f9' });
+    await h.reload(); assert.deepEqual([...h.shortcuts.keys()], ['f9']);
     assert.equal(await readFile(keybindingsFile, 'utf8'), keybindings);
     assert.equal(h.editor.getText(), 'existing draft');
     assert.equal(reads(h.writes).length, 0);
@@ -234,10 +272,10 @@ test('public SDK: configure refuses an unresolved read and does not overwrite an
   const directory = await mkdtemp(join(tmpdir(), 'pi-clipboard-configure-guards-')); let h;
   let selections = 0;
   try {
-    h = await setup(directory, true, 'regular', { select: async () => {
+    h = await setup(directory, true, 'regular', { select: async (_title, choices) => {
       selections++;
       await writeFile(h.shortcutFile, '{"paste":"off"}');
-      return 'ctrl+alt+v';
+      return selectAction(choices, 'paste');
     } });
     const reading = h.session.prompt('/tmux-image paste'); await until(() => reads(h.writes).length === 1);
     h.input.process('\x03'); await reading;
@@ -245,31 +283,32 @@ test('public SDK: configure refuses an unresolved read and does not overwrite an
     assert.equal(selections, 0); assert.equal(h.tui.hasOverlay(), true);
     assert.match(h.notices.at(-1).message, /Finish any clipboard read/);
     const id = /id=([A-Za-z0-9_.+-]+);/.exec(reads(h.writes)[0])[1]; h.input.process(packet(id, 'DONE'));
-    await h.session.prompt('/tmux-image configure');
+    await editShortcut(h, 'paste', () => { for (const char of 'ctrl+alt+v') h.input.process(char); h.input.process('\r'); });
     assert.equal(selections, 1); assert.match(h.notices.at(-1).message, /settings changed/);
     assert.deepEqual(JSON.parse(await readFile(h.shortcutFile, 'utf8')), { paste: 'off' });
   } finally { await h?.cleanup(); await rm(directory, { recursive: true, force: true }); }
 });
 
-test('public SDK: configure works outside tmux and ignores a selection from an aborted picker', options, async () => {
+test('public SDK: configure works outside tmux and aborts the input on branch change', options, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'pi-clipboard-configure-outside-')); let h;
-  let signal, choose;
+  let signal, selected = false;
   try {
-    h = await setup(directory, true, 'regular', { tmuxEnv: {}, select: (_title, _choices, opts) => {
-      signal = opts.signal; return new Promise((resolve) => { choose = resolve; });
+    h = await setup(directory, true, 'regular', { tmuxEnv: {}, select: async (_title, choices, opts) => {
+      signal = opts.signal;
+      if (!selected) { selected = true; return selectAction(choices, 'paste'); }
     } });
-    const stale = h.session.prompt('/tmux-image configure'); await until(() => Boolean(choose));
-    await h.session.extensionRunner.emit({ type: 'session_tree', newLeafId: null, oldLeafId: null });
-    assert.equal(signal.aborted, true);
-    choose('ctrl+alt+v'); await stale;
+    await editShortcut(h, 'paste', async (input) => {
+      await h.session.extensionRunner.emit({ type: 'session_tree', newLeafId: null, oldLeafId: null });
+      assert.equal(signal.aborted, true); assert.equal(h.shortcutInput, undefined);
+      input.handleInput('\r');
+    });
     await assert.rejects(readFile(h.shortcutFile), { code: 'ENOENT' });
-    choose = undefined;
-    const live = h.session.prompt('/tmux-image configure'); await until(() => Boolean(choose));
-    choose('ctrl+alt+v'); await live;
+    selected = false;
+    await editShortcut(h, 'paste', () => { for (const char of 'ctrl+alt+v') h.input.process(char); h.input.process('\r'); });
     assert.deepEqual(JSON.parse(await readFile(h.shortcutFile, 'utf8')), { paste: 'ctrl+alt+v' });
     await h.reload(); assert.equal(h.shortcuts.size, 0, 'saved preference does not register outside tmux');
     assert.equal(reads(h.writes).length, 0); assert.equal(h.requests.length, 0);
-  } finally { choose?.(undefined); await h?.cleanup(); await rm(directory, { recursive: true, force: true }); }
+  } finally { await h?.cleanup(); await rm(directory, { recursive: true, force: true }); }
 });
 
 test('public SDK/actual CustomEditor: off/outside/invalid pane preserves native paste dispatch and ordinary text paste', options, async () => {
@@ -332,12 +371,12 @@ test('public SDK/actual CustomEditor: default/custom shortcuts, native conflict/
 });
 
 test('public SDK/actual CustomEditor: invalid saved shortcut and user-reserved collision fail without clipboard read', options, async () => {
-  for (const config of [ { shortcut: 'ctrl+c' }, { shortcut: 'ctrl+v', keybindings: { 'app.clipboard.pasteImage': [], 'app.interrupt': 'ctrl+v' } } ]) {
+  for (const config of [ { shortcut: 'shift+c' }, { shortcut: 'ctrl+v', keybindings: { 'app.clipboard.pasteImage': [], 'app.interrupt': 'ctrl+v' } } ]) {
     const directory = await mkdtemp(join(tmpdir(), 'pi-clipboard-shortcut-invalid-')); let h;
     try {
       h = await setup(directory, true, 'regular', config); assert.equal(h.shortcuts.size, 0);
       h.editor.setText('unchanged'); h.input.process('\x16'); assert.equal(reads(h.writes).length, 0);
-      if (config.shortcut === 'ctrl+c') assert.ok(h.notices.some((n) => /Could not read tmux-image-shortcuts\.json/.test(n.message)));
+      if (config.shortcut === 'shift+c') assert.ok(h.notices.some((n) => /Could not read tmux-image-shortcuts\.json/.test(n.message)));
       else { assert.equal(h.reservedActions, 1); assert.ok(h.session.extensionRunner.getShortcutDiagnostics().some((d) => /Skipping/.test(d.message))); }
       await h.stage(); assert.equal(h.editor.getText(), 'unchanged'); assert.equal(h.confirmations, 0);
       await h.session.prompt('/tmux-image paste clear');

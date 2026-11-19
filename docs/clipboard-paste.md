@@ -111,15 +111,20 @@ just to decide registration. Actual read eligibility still uses the unchanged
 capability checks after explicit invocation. Outside that context **no shortcut
 is registered**, even with an override; native paste is unchanged.
 
-Run `/tmux-image configure` in idle interactive Pi to select `ctrl+v`,
-`ctrl+shift+v`, `ctrl+alt+v` or **Off**. Selecting the current value or pressing
-Escape writes nothing. The extension only writes `tmux-image-shortcuts.json` in
-Pi's agent directory. Pi's settings and keybindings are not modified. Saves are
-atomic and refuse a concurrently changed preference. A missing file uses the
-default; an unreadable or malformed file disables shortcut registration without
-breaking `/tmux-image paste`. Repair or remove the file and reload in that case.
-Valid configuration has **no startup toast**. No background read occurs. The
-old `PI_TMUX_IMAGE_PASTE_SHORTCUT` variable is ignored.
+Run `/tmux-image configure` in idle interactive Pi. Select a command, then type
+F1–F12 or a letter/digit with Ctrl, Alt, or Super (optionally Shift). Tab suggests
+keys; arrows navigate and Enter fills the selected suggestion. Enter saves, blank
+(or `off`) removes the binding, and Escape goes back without saving the edit.
+After saving, the picker shows the updated command list. Only `paste` has a
+built-in default; argument-taking actions such as `paste clear` are slash-only.
+
+The extension only writes `tmux-image-shortcuts.json` in Pi's agent directory.
+Pi's settings and keybindings are not modified. Saves are atomic and refuse a
+concurrently changed preference. A missing file uses the default; an unreadable
+or malformed file disables shortcut registration without breaking slash commands.
+Repair or remove the file and reload in that case. Valid configuration has **no
+startup toast**. No background read occurs. The old
+`PI_TMUX_IMAGE_PASTE_SHORTCUT` variable is ignored.
 
 The value is sampled during the extension factory, when public
 `pi.registerShortcut` participates in host discovery. `pi.getFlag()` yields its
@@ -139,9 +144,11 @@ then verified actual public `CustomEditor`/runner dispatch: the extension handle
 runs before native paste. **`app.clipboard.pasteImage` is nonreserved**; default
 Ctrl+V therefore causes a host conflict warning identifying the native action and
 saying `Using` the extension, not `Skipping`. This intentional replacement is
-supported without a config edit. Reserved actions—including user remaps of those
-actions onto the chosen key—remain host-skipped. Other extension collisions follow
-Pi's normal conflict rules; this package does not reorder or bypass them.
+supported without a config edit. The picker rejects conflicts with Pi's resolved
+bindings (including remaps and legacy key aliases) and other tmux-image commands.
+The only exception is assigning Ctrl+V to `paste` when Pi's native paste owns that
+key and no other action does. Other extensions' shortcuts are not exposed by the
+picker's API; those collisions still follow Pi's normal conflict rules.
 
 Optionally merge one of these **manually** into your agent directory's
 `keybindings.json` (`~/.pi/agent/keybindings.json` by default), retaining your other
@@ -173,7 +180,9 @@ none of these observations expands the accepted matrix.
 - `src/clipboard.mjs`: shared paste handler, session lifecycle, input-transform
   handoff and visible pending state. Uses the existing widget-injected TUI transport.
 - `src/clipboard-shortcut.mjs`: bounded package-owned preference reads and atomic,
-  stale-checked saves. The picker uses public `ctx.ui.select` and does not read the clipboard.
+  stale-checked saves. The command picker uses public `ctx.ui.select`.
+- `src/shortcut-input.mjs`: inline Pi `Input` for typing, completing and validating
+  shortcuts. Neither configuration step reads the clipboard.
 - `src/clipboard-modal.mjs`: owned public `TUI.showOverlay` handle and passive
   width-fitted component; modal-only bounded frame assembler. Public `parseKey`
   and `matchesKey` normalize raw/CSI-u/xterm Alt markers. No private listener
@@ -373,12 +382,13 @@ Isolated Pi installation and public discovery passed.
 
 ## Saved shortcut preferences: automated verification
 
-The offline Pi 1.5.2 SDK fixture verifies `/tmux-image configure`, cancellation and
-no-op selections, reload of the saved key, native handling after Off, refusal
-during an unresolved read, and a concurrent settings edit. The portable suite
-also exercises bounded file validation and atomic saves. These tests use private
-agent directories and synthetic clipboard traffic; no human verification of the
-picker is claimed.
+The offline Pi 1.5.2 SDK fixture verifies both configuration steps, Tab fill,
+rejection of Pi/user-remapped and tmux-image conflicts, cancellation, reload and
+dispatch of the saved shortcut, native handling after removal, refusal during an
+unresolved read, and a concurrent settings edit. The portable suite exercises
+shortcut syntax, normalized conflicts, bounded file validation and atomic saves.
+These tests use private agent directories and synthetic clipboard traffic; no
+human verification of the two-step picker is claimed.
 
 ## Coordinated human verification: owner-confirmed image paste
 

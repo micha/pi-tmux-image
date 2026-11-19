@@ -85,15 +85,21 @@ policy; `images.blockImages` blocks model access, not storage.
 
 ### Shortcut preferences
 
-Run `/tmux-image configure` to choose **Ctrl+V** (default), **Ctrl+Shift+V**,
-**Ctrl+Alt+V**, or **Off**. Escape leaves the setting unchanged. The preference
-is saved in `tmux-image-shortcuts.json` in Pi's agent directory and shared by
-instances using that directory. Run `/reload` in each running instance to apply
-it, after finishing any clipboard read and submitting or clearing staged PNGs.
-The old `PI_TMUX_IMAGE_PASTE_SHORTCUT` environment variable is no longer used.
+Run `/tmux-image configure`, select **view**, **refresh**, **stats**, **paste**, or
+**configure**, then type a shortcut such as `ctrl+shift+v` or `f8`. Press **Tab**
+for suggestions, use ↑/↓ and Enter to fill one, then press Enter to save. Submit
+an empty binding to remove it, or press Escape to go back without saving.
+Suggestions and saves reject keys already assigned to Pi or another tmux-image
+command, except for paste's intentional Ctrl+V overlap with Pi's native paste.
 
-The shortcut is only registered inside tmux with a valid pane context. **Off**
-restores Pi's native key handling; `/tmux-image paste` still works.
+Bindings are saved in `tmux-image-shortcuts.json` in Pi's agent directory. Run
+`/reload` in each instance using that directory after finishing any clipboard read
+and submitting or clearing staged PNGs. The old `PI_TMUX_IMAGE_PASTE_SHORTCUT`
+environment variable is no longer used.
+
+Shortcuts are only registered inside tmux with a valid pane context. Only paste
+has a default (**Ctrl+V**); removing it restores Pi's native key handling.
+`/tmux-image paste` still works without a shortcut.
 
 Pi's native Ctrl+V overlap warning is separate. Optionally **merge** this into your
 agent directory's `keybindings.json` to retain native paste on an unused alternative
