@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { deflateSync } from 'node:zlib';
 import test from 'node:test';
 import { createClipboardReader, strictBase64 } from '../src/clipboard-protocol.mjs';
@@ -201,7 +204,13 @@ test('clipboard topology bounds hung queries, malformed output and missing tmux'
   }
 });
 
-function extensionHarness({ mode = 'tui', shortcut, tmuxEnv = env, probe = async () => ({ fingerprint: 'same' }), readerOptions = {}, renderFailure = () => false, hideFailure = () => false } = {}) {
+function shortcutFixture(t) {
+  const directory = mkdtempSync(join(tmpdir(), 'pi-clipboard-shortcuts-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  return join(directory, 'tmux-image-shortcuts.json');
+}
+
+function extensionHarness({ mode = 'tui', shortcutFile, tmuxEnv = env, probe = async () => ({ fingerprint: 'same' }), readerOptions = {}, renderFailure = () => false, hideFailure = () => false } = {}) {
   const handlers = new Map(), shortcuts = new Map(), notices = [], writes = [], widgets = new Map();
   let input, overlay, confirms = 0, unsubscribe = 0, frames = 0;
   const keys = [];
@@ -211,7 +220,7 @@ function extensionHarness({ mode = 'tui', shortcut, tmuxEnv = env, probe = async
   const pi = { on(name, handler) { const list = handlers.get(name) || []; list.push(handler); handlers.set(name, list); }, registerShortcut(key, options) { shortcuts.set(key, options); } };
   const ctx = { mode, ui: { confirm: async () => { confirms++; throw new Error('Extension confirmation must not be called'); }, notify: (...args) => notices.push(args), setWidget: (key, lines) => widgets.set(key, lines), onTerminalInput: (listener) => { input = listener; return () => { unsubscribe++; }; } } };
   const presentation = { connection: { epoch: 1, tui }, write: (data) => { assert.ok(overlay && frames > 0, 'dialog rendered before emission'); writes.push(data); }, bind() {} };
-  const clipboard = registerClipboardPaste(pi, { presentation, env: { ...tmuxEnv, PI_TMUX_IMAGE_PASTE_SHORTCUT: shortcut }, probe, parseKey, matchesKey: (data, key) => parseKey(data) === key, truncateToWidth: (text, width) => text.slice(0, width), createReader: (options) => createClipboardReader({ ...options, ...readerOptions }) });
+  const clipboard = registerClipboardPaste(pi, { presentation, env: tmuxEnv, shortcutFile, probe, parseKey, matchesKey: (data, key) => parseKey(data) === key, truncateToWidth: (text, width) => text.slice(0, width), createReader: (options) => createClipboardReader({ ...options, ...readerOptions }) });
   const emit = async (name, event = {}) => { let result; for (const handler of handlers.get(name) || []) result = await handler(event, ctx); return result; };
   return { ctx, emit, notices, writes, widgets, keys, shortcuts, shortcut: (key = 'ctrl+v') => shortcuts.get(key).handler(ctx), get modal() { return overlay; }, input: (data) => { const result = input?.(data); if (!result?.consume) { if (overlay) overlay.handleInput(data); else keys.push(data); } return result; }, command: (args = '') => clipboard.paste(ctx, args), get confirms() { return confirms; }, get unsubscribe() { return unsubscribe; } };
 }
@@ -238,32 +247,35 @@ test('clipboard extension reads only on invocation without extra confirmation an
   await h.emit('session_shutdown'); assert.equal(h.unsubscribe, 1);
 });
 
-test('clipboard shortcut defaults only in valid tmux; off/outside register none and invalid keeps command available', async () => {
-  for (const value of [undefined, '']) {
-    const h = extensionHarness({ shortcut: value }); await h.emit('session_start');
-    assert.deepEqual([...h.shortcuts.keys()], ['ctrl+v']); assert.equal(h.notices.length, 0);
-    assert.equal(h.writes.length, 0); await h.emit('session_shutdown');
-  }
-  for (const value of ['off', 'ctrl+c', 'ctrl+q', 'escape', 'enter', 'v', 'CTRL+V', 'ctrl+v\nunsafe']) {
-    const h = extensionHarness({ shortcut: value }); await h.emit('session_start');
+test('clipboard shortcut defaults only in valid tmux; off/outside register none and invalid keeps command available', async (t) => {
+  const shortcutFile = shortcutFixture(t);
+  const defaults = extensionHarness({ shortcutFile }); await defaults.emit('session_start');
+  assert.deepEqual([...defaults.shortcuts.keys()], ['ctrl+v']); assert.equal(defaults.notices.length, 0);
+  assert.equal(defaults.writes.length, 0); await defaults.emit('session_shutdown');
+  for (const paste of ['off', '', 'ctrl+c', 'ctrl+q', 'escape', 'enter', 'v', 'CTRL+V', 'ctrl+v\nunsafe']) {
+    writeFileSync(shortcutFile, JSON.stringify({ paste }));
+    const h = extensionHarness({ shortcutFile }); await h.emit('session_start');
     assert.equal(h.shortcuts.size, 0); assert.equal(h.writes.length, 0);
-    if (value !== 'off') assert.ok(h.notices.some(([message]) => message.includes('Invalid PI_TMUX_IMAGE_PASTE_SHORTCUT')));
+    if (paste !== 'off') assert.ok(h.notices.some(([message]) => message.includes('Could not read tmux-image-shortcuts.json')));
     else assert.equal(h.notices.length, 0);
     await stage(h); await h.command('clear'); await h.emit('session_shutdown');
   }
+  writeFileSync(shortcutFile, JSON.stringify({ paste: 'ctrl+alt+v' }));
   for (const tmuxEnv of [{}, { TMUX: 'present' }, { TMUX_PANE: '%7' }, { TMUX: 'present', TMUX_PANE: 'invalid' }]) {
-    for (const shortcut of [undefined, 'ctrl+alt+v']) {
-      const h = extensionHarness({ tmuxEnv, shortcut }); await h.emit('session_start');
+    for (const path of [undefined, shortcutFile]) {
+      const h = extensionHarness({ tmuxEnv, shortcutFile: path }); await h.emit('session_start');
       assert.equal(h.shortcuts.size, 0); await h.command(); assert.equal(h.writes.length, 0);
       await h.emit('session_shutdown');
     }
   }
 });
 
-test('clipboard default/custom shortcuts append in order and still share busy/unresolved guards', async () => {
+test('clipboard default/custom shortcuts append in order and still share busy/unresolved guards', async (t) => {
   const second = png({ raw: Buffer.from([0, 0, 255, 0, 255]) });
+  const shortcutFile = shortcutFixture(t);
   for (const shortcut of [undefined, 'ctrl+v', 'ctrl+shift+v', 'ctrl+alt+v']) {
-    const h = extensionHarness({ shortcut }); await h.emit('session_start'); assert.equal(h.shortcuts.size, 1);
+    if (shortcut) writeFileSync(shortcutFile, JSON.stringify({ paste: shortcut }));
+    const h = extensionHarness({ shortcutFile }); await h.emit('session_start'); assert.equal(h.shortcuts.size, 1);
     const work = h.shortcut(shortcut); await h.shortcut(shortcut);
     for (let i = 0; i < 10 && !h.writes.length; i++) await Promise.resolve();
     assert.equal(h.confirms, 0); assert.equal(h.writes.length, 1);
@@ -285,7 +297,7 @@ test('clipboard default/custom shortcuts append in order and still share busy/un
     assert.equal(await h.emit('input', { source: 'interactive', text: 'next' }), undefined);
     await h.emit('session_shutdown');
   }
-  const rpc = extensionHarness({ shortcut: 'ctrl+v', mode: 'rpc' }); await rpc.emit('session_start'); await rpc.shortcut(); assert.equal(rpc.writes.length, 0);
+  const rpc = extensionHarness({ mode: 'rpc' }); await rpc.emit('session_start'); await rpc.shortcut(); assert.equal(rpc.writes.length, 0);
 });
 
 test('clipboard pending count cap blocks another read and clear removes the entire queue', async () => {

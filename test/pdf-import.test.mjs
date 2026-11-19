@@ -77,9 +77,11 @@ if (name === 'tmux') {
 } else fs.writeFileSync(args.at(-1)+'.png', Buffer.from(${JSON.stringify(png)}, 'base64'));
 `;
   for (const name of ["tmux", "pdfinfo", "pdftoppm"]) await writeFile(join(bin, name), script, { mode: 0o700 });
-  const savedEnv = { PATH: process.env.PATH, TMUX: process.env.TMUX, TMUX_PANE: process.env.TMUX_PANE };
+  const savedEnv = { PATH: process.env.PATH, TMUX: process.env.TMUX, TMUX_PANE: process.env.TMUX_PANE,
+    PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR };
   const savedCaps = { ...ui.getCapabilities() };
   process.env.PATH = `${bin}:${process.env.PATH}`; process.env.TMUX = "fixture,1,0"; process.env.TMUX_PANE = "%1";
+  process.env.PI_CODING_AGENT_DIR = directory;
   ui.setCapabilities({ images: null, trueColor: true, hyperlinks: false });
   const commands = async () => (await readFile(logPath, "utf8")).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
 

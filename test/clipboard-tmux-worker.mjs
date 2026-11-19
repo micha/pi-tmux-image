@@ -11,7 +11,7 @@ const entry = join(hostRoot, 'dist/index.js');
 const host = await import(pathToFileURL(entry).href);
 const tuiModule = await import(pathToFileURL(createRequire(entry).resolve('@earendil-works/pi-tui')).href);
 process.env.PATH = `${join(directory, 'bin')}:${process.env.PATH}`;
-delete process.env.PI_TMUX_IMAGE_PASTE_SHORTCUT; // Exercise default factory registration.
+process.env.PI_CODING_AGENT_DIR = join(directory, 'agent'); // No saved shortcut: exercise factory defaults.
 const keybindings = new tuiModule.KeybindingsManager({ ...tuiModule.TUI_KEYBINDINGS,
   'app.clipboard.pasteImage': { defaultKeys: 'ctrl+v' },
 }, JSON.parse(await readFile(join(directory, 'agent/keybindings.json'), 'utf8')));

@@ -1,6 +1,7 @@
 import { createClipboardReader } from './clipboard-protocol.mjs';
 import { probeClipboardTopology } from './clipboard-capabilities.mjs';
 import { openClipboardModal } from './clipboard-modal.mjs';
+import { CLIPBOARD_SHORTCUT_FILE, DEFAULT_PASTE_SHORTCUT, PASTE_SHORTCUT_CHOICES, readPasteShortcut, savePasteShortcut } from './clipboard-shortcut.mjs';
 
 const KEY = 'pi-tmux-image-clipboard';
 const MAX_PENDING_IMAGES = 4, MAX_PENDING_MIB = 16;
@@ -12,14 +13,17 @@ const pendingBytes = (images) => images.reduce((total, image) => total + pngByte
 
 /** Public extension API only. Separate from image rendering, PDF and viewer pacing. */
 export function registerClipboardPaste(pi, { presentation, env = process.env, parseKey, matchesKey, truncateToWidth,
-  probe = probeClipboardTopology, createReader = createClipboardReader } = {}) {
-  // Public factory-time registration uses only inherited context, never probes.
-  // Disabled/outside-tmux keys are not registered, preserving native dispatch.
-  const shortcutValue = env.PI_TMUX_IMAGE_PASTE_SHORTCUT || 'ctrl+v';
-  const supportedShortcut = ['ctrl+v', 'ctrl+shift+v', 'ctrl+alt+v'].includes(shortcutValue);
-  const shortcut = env.TMUX && /^%\d+$/.test(env.TMUX_PANE || '') && supportedShortcut ? shortcutValue : undefined;
-  const invalidShortcut = shortcutValue !== 'off' && !supportedShortcut;
-  let runtime;
+  shortcutFile, hasActiveDialog = () => false, probe = probeClipboardTopology, createReader = createClipboardReader } = {}) {
+  // Read the preference at factory time. No registration-time tmux probe and
+  // no shortcut outside inherited pane context, preserving native dispatch.
+  const inPane = () => Boolean(env.TMUX && /^%\d+$/.test(env.TMUX_PANE || ''));
+  let shortcut, invalidShortcut = false;
+  if (inPane()) {
+    try { shortcut = shortcutFile ? readPasteShortcut(shortcutFile).paste : DEFAULT_PASTE_SHORTCUT; }
+    catch { invalidShortcut = true; }
+  }
+  let runtime, configuring;
+  let tuiSession = false;
   function notify(current, message, level = 'warning') {
     if (runtime === current && !current.closed) {
       try { current.context.ui.notify(message, level); } catch {}
@@ -43,6 +47,9 @@ export function registerClipboardPaste(pi, { presentation, env = process.env, pa
     }
   }
   function close() {
+    tuiSession = false;
+    configuring?.abort();
+    configuring = undefined;
     const current = runtime;
     if (!current) return;
     if (current.reader.state.waiting) notify(current, 'Pi is leaving a runtime with an unresolved terminal clipboard read. This does not cancel Ghostty permission; late replies cannot be protected in another runtime/process.');
@@ -54,7 +61,9 @@ export function registerClipboardPaste(pi, { presentation, env = process.env, pa
   }
   pi.on('session_start', (_event, ctx) => {
     close();
-    if (ctx.mode !== 'tui' || typeof ctx.ui.onTerminalInput !== 'function' || !env.TMUX || !/^%\d+$/.test(env.TMUX_PANE || '')) return;
+    tuiSession = ctx.mode === 'tui';
+    if (tuiSession && invalidShortcut) notifyShortcutFile(ctx);
+    if (!tuiSession || typeof ctx.ui.onTerminalInput !== 'function' || !inPane()) return;
     const current = { context: ctx, closed: false, busy: false, pending: [], attempt: undefined, modal: undefined, removalFailed: false, focusWarning: false };
     runtime = current;
     current.reader = createReader({ parseKey, onChange: () => update(current), onWarning: (message) => notify(current, message) });
@@ -65,10 +74,11 @@ export function registerClipboardPaste(pi, { presentation, env = process.env, pa
       if (current.modal && current.reader.state.waiting) focusLost(current);
       return current.reader.input(data);
     });
-    if (invalidShortcut) notify(current, 'Invalid PI_TMUX_IMAGE_PASTE_SHORTCUT. Use ctrl+v, ctrl+shift+v, ctrl+alt+v or off; /tmux-image paste still works.');
   });
   pi.on('session_shutdown', close);
+  pi.on('agent_start', () => { configuring?.abort(); });
   pi.on('session_tree', () => {
+    configuring?.abort();
     if (!runtime) return;
     runtime.attempt?.abort(); runtime.reader.cancel(); runtime.pending = []; update(runtime);
   });
@@ -84,8 +94,43 @@ export function registerClipboardPaste(pi, { presentation, env = process.env, pa
     const images = current.pending; current.pending = []; update(current);
     return { action: 'transform', text: event.text, images: [...(event.images || []), ...images] };
   });
+  function notifyShortcutFile(ctx) {
+    ctx.ui.notify(`Could not read ${CLIPBOARD_SHORTCUT_FILE}. Repair or remove it, then run /reload. /tmux-image paste still works.`, 'warning');
+  }
+  function checkConfigure(ctx) {
+    if (!tuiSession || ctx.mode !== 'tui' || !ctx.hasUI || !ctx.isIdle() || ctx.hasPendingMessages()) {
+      throw new Error('Configure the paste shortcut from an idle interactive Pi session.');
+    }
+    if (runtime?.busy || runtime?.modal || runtime?.reader.state.waiting || hasActiveDialog() || presentation.connection?.tui.hasOverlay()) {
+      throw new Error('Finish any clipboard read and close the current dialog/viewer before configuring the paste shortcut.');
+    }
+  }
   const clipboard = {
     actions: ['clear', 'cancel'],
+    async configure(ctx) {
+      if (configuring) throw new Error('The paste shortcut picker is already open.');
+      checkConfigure(ctx);
+      let saved;
+      try { saved = readPasteShortcut(shortcutFile); }
+      catch { notifyShortcutFile(ctx); return; }
+      const controller = new AbortController();
+      configuring = controller;
+      try {
+        const current = saved.paste;
+        const keys = [current, ...PASTE_SHORTCUT_CHOICES.filter((key) => key !== current)];
+        const marker = saved.raw === null ? ' (default)' : ' (saved)';
+        const options = keys.map((key) => (key === 'off' ? 'Off' : key) + (key === current ? marker : ''));
+        const choice = await ctx.ui.select('Clipboard paste shortcut', options, { signal: controller.signal });
+        if (controller.signal.aborted || choice === undefined) return;
+        checkConfigure(ctx);
+        const key = keys[options.indexOf(choice)];
+        if (!key) throw new Error('Unknown paste shortcut selection.');
+        if (key === current) return;
+        savePasteShortcut(shortcutFile, saved.raw, key);
+        ctx.ui.notify('Paste shortcut saved. Run /reload to apply it.' +
+          (runtime?.pending.length ? ' Submit or clear staged PNGs first.' : ''), 'info');
+      } finally { if (configuring === controller) configuring = undefined; }
+    },
     async paste(ctx, args = '') {
       const current = runtime;
       if (!current || current.closed || ctx.mode !== 'tui') {
@@ -98,6 +143,7 @@ export function registerClipboardPaste(pi, { presentation, env = process.env, pa
         notify(current, 'Stopped importing locally only; the dialog keeps draining. Resolve any terminal permission prompt. Leaving the dialog explicitly can expose late replies.'); return;
       }
       if (action) { notify(current, `Usage: /tmux-image paste [${clipboard.actions.join('|')}]`); return; }
+      if (configuring) { notify(current, 'Close the paste shortcut picker before pasting.'); return; }
       if (current.busy || current.reader.state.waiting || current.modal) {
         notify(current, 'Clipboard import is still running or unresolved. Resolve any terminal permission prompt before pasting again.'); return;
       }
@@ -156,7 +202,7 @@ export function registerClipboardPaste(pi, { presentation, env = process.env, pa
       }
     },
   };
-  if (shortcut) pi.registerShortcut(shortcut, {
+  if (shortcut && shortcut !== 'off') pi.registerShortcut(shortcut, {
     description: 'Paste a clipboard PNG',
     handler: (ctx) => clipboard.paste(ctx),
   });

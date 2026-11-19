@@ -79,27 +79,25 @@ automatically. Use `/tmux-image paste clear` to remove all pending PNGs.
 - **Ctrl+Q twice** warns, then leaves anyway; late replies may enter your draft.
   Escape keeps the dialog open. New reads stay blocked while unresolved.
 
-Ctrl+V opens the PNG dialog, with no native/text-paste fallback. **Cmd+V remains
+The paste shortcut opens the PNG dialog, with no native/text-paste fallback. **Cmd+V remains
 ordinary terminal text paste.** Submitted images use normal Pi storage/model
 policy; `images.blockImages` blocks model access, not storage.
 
 ### Shortcut preferences
 
-Ctrl+V is registered by default only with inherited tmux/pane context; outside
-that context native paste is unchanged. To disable or choose another key, start
-a **fresh Pi process** (not `/reload`):
+Run `/tmux-image configure` to choose **Ctrl+V** (default), **Ctrl+Shift+V**,
+**Ctrl+Alt+V**, or **Off**. Escape leaves the setting unchanged. The preference
+is saved in `tmux-image-shortcuts.json` in Pi's agent directory and shared by
+instances using that directory. Run `/reload` in each running instance to apply
+it, after finishing any clipboard read and submitting or clearing staged PNGs.
+The old `PI_TMUX_IMAGE_PASTE_SHORTCUT` environment variable is no longer used.
 
-```sh
-PI_TMUX_IMAGE_PASTE_SHORTCUT=off pi
-PI_TMUX_IMAGE_PASTE_SHORTCUT=ctrl+shift+v pi
-```
-
-Accepted literal overrides: `ctrl+v`, `ctrl+shift+v`, `ctrl+alt+v`, `off`.
-Unset/empty uses the tmux default. Overrides do not enable shortcuts outside tmux.
+The shortcut is only registered inside tmux with a valid pane context. **Off**
+restores Pi's native key handling; `/tmux-image paste` still works.
 
 Pi's native Ctrl+V overlap warning is separate. Optionally **merge** this into your
 agent directory's `keybindings.json` to retain native paste on an unused alternative
-key (or use `[]` to disable it); the extension never edits your settings:
+key (or use `[]` to disable it); the extension never edits `keybindings.json`:
 
 ```json
 { "app.clipboard.pasteImage": "alt+v" }
