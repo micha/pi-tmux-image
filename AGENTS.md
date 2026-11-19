@@ -33,7 +33,7 @@ For Pi API changes, read the installed Pi docs and extension examples, following
 ## Code map
 
 - `extensions/tmux-image.ts`: commands/tools, standard image attachments, local renderer and public settings/capability wiring.
-- `src/clipboard.mjs`, `src/clipboard-modal.mjs`, `src/clipboard-protocol.mjs`, `src/clipboard-capabilities.mjs`, `src/clipboard-png.mjs`: explicitly invoked focused-pane PNG dialog, bounded raw/encoded frame assembly only under visible owned modal input, exact-ID validation, unresolved drain/quarantine and one pending interactive attachment handoff; no auto-submit or graphics/viewer policy coupling.
+- `src/clipboard.mjs`, `src/clipboard-modal.mjs`, `src/clipboard-protocol.mjs`, `src/clipboard-capabilities.mjs`, `src/clipboard-png.mjs`: explicitly invoked focused-pane PNG dialog, bounded raw/encoded frame assembly only under visible owned modal input, exact-ID validation, unresolved drain/quarantine and bounded, ordered pending PNG handoff on interactive input; no auto-submit or graphics/viewer policy coupling.
 - `src/viewer.mjs`: active-branch immutable snapshot/document picker, owned raw overlay, canonical desired viewport, admitted samples/ready frame and one latest native runner; injected PDF page access with exact page generations, one page-transition runner/latest target and serialized scoped retirement/rebind; no original-path reads, messages or model-policy changes.
 - `src/viewport.mjs`: pure viewport geometry, including pointer-anchored `zoomViewportAt`.
 - `src/viewer-pacing.mjs`: host-import-free scheduler with injected monotonic clock, one timer/ticket/demand bit, deferred cooldown and cancellation identities; no viewport/input queue, native reservations, terminal effects or chosen helper policy.

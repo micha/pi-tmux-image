@@ -7,8 +7,9 @@ opens a visible **Reading clipboard** dialog with a do-not-type instruction.
 Only while that owned dialog is visibly focused does clipboard assembly own
 ordinary input. It uses Pi's existing TUI loop, not an editor replacement,
 second terminal loop, host patch or keyboard-mode change. After a valid read,
-the dialog is removed/flushed and one standard PNG is staged for the next
-interactive user prompt. Nothing is submitted automatically.
+the dialog is removed/flushed and one standard PNG is added to the pending list
+for the next interactive user prompt. Copy and paste one image at a time. Nothing
+is submitted automatically.
 
 This supersedes the nonmodal best-effort implementation in `2493197`, following
 explicit owner approval of modal input capture. It does **not** solve tmux
@@ -54,9 +55,10 @@ first-use confirmation**. Capability preflight runs before the owned read dialog
 is installed/flushed and the single request is emitted. Startup/session events
 never initiate a read. Ghostty's own `clipboard-read=ask` permission prompt remains
 intact; there is no permission/settings change, automatic authorization or retry.
-Normal success says **PNG ready for your next prompt.**; the pending widget retains
-the clear command. Unsafe-exit/failure warnings and double-Ctrl+Q confirmation
-remain; handoff/storage details stay in this reference rather than routine UI.
+Success reports when PNGs are ready for the next prompt. The widget shows the
+pending count and clear command. Unsafe-exit/failure warnings and double-Ctrl+Q
+confirmation remain; handoff/storage details stay in this reference rather than
+routine UI.
 
 | Key/action | Meaning |
 | --- | --- |
@@ -66,7 +68,7 @@ remain; handoff/storage details stay in this reference rather than routine UI.
 | **Ctrl+Q**, again | Knowingly close the dialog; restore normal editing, retain unresolved request quarantine. Late replies may enter the draft. |
 | Escape | Does **not** leave the dialog; raw ESC may be part of a split reply delimiter. Use the documented control keys. |
 | `/tmux-image-paste cancel` (programmatic command invocation) | Same local cancellation/draining semantics; not cancellation of Ghostty permission. |
-| `/tmux-image-paste clear` | Remove a pending image, not an outstanding terminal read. |
+| `/tmux-image-paste clear` | Remove all staged PNGs, not an outstanding terminal read. |
 
 Timeout (30 seconds), cancellation, rejected/malformed data or transport loss
 **does not cancel the terminal permission prompt/read**. Accumulated image bytes
@@ -213,7 +215,7 @@ registered shortcut replaces its chosen key.
 | Deadline / active requests | 30 seconds / one |
 | Encoded frame / metadata / decoded DATA chunk | 8192 chars / 512 chars / 4096 bytes |
 | Read packet count | 4096 before rejecting import |
-| PNG / staged images | 8 MiB / one |
+| PNG / staged images | 8 MiB per image / 4 PNGs and 16 MiB total PNG bytes |
 | Pixels / inflated scanlines / PNG chunks | 16,777,216 / 64 MiB / 2048 |
 | Issued sequence | Canonical decimal 1 through 999,999,999 |
 | Outside-modal observer | One bounded prefix/frame count; 1-second inter-event gap |
@@ -240,12 +242,21 @@ automatically erased. Filtering cannot protect another pane or a fresh runtime.
 
 ## Pending handoff and privacy
 
-One pending PNG is visible in a separate widget. Commands, RPC and extension-
-authored input do not consume it. The next **interactive** input transform returns
-unchanged text plus existing attachments in order, followed by the standard PNG.
-It consumes pending state **at handoff, not a host storage/model-turn ACK**:
+A separate widget shows how many PNGs are staged. Each successful paste appends
+one PNG; a failed or cancelled paste does not discard earlier PNGs. If the count
+or byte cap is already reached, no read is sent. If a valid new PNG won't fit
+in the remaining budget, it is rejected after the read ends; a smaller one can
+still fit. The byte cap counts PNG data before base64 encoding and applies only to
+staged images, not to the in-flight read or to existing Pi attachments. `clear`
+only drops already-staged PNGs; a read that is still in progress can later stage
+its own PNG.
 
-- An earlier handler's `handled` prevents our handoff and retains the pending image.
+Commands, RPC and extension-authored input do not consume the list. The next
+**interactive** input transform returns unchanged text plus existing attachments
+in order, followed by the currently staged PNGs in paste order. It consumes the
+list **at handoff, not a host storage/model-turn ACK**:
+
+- An earlier handler's `handled` prevents our handoff and retains the pending PNGs.
 - A later handler's `handled` or replacement images may discard it; it is not
   restored/retried into another prompt. The tested Pi runner catches a later
   handler's thrown error and continues with the previous transform.
@@ -254,7 +265,7 @@ It consumes pending state **at handoff, not a host storage/model-turn ACK**:
 There is no native draft-image setter/chip promise and no renderer-only custom
 message substitute. No automatic submit/run is triggered. Normal Pi normalization,
 `images.blockImages` and session storage apply upon intentional submission.
-**Model blocking does not prevent storage.** Clearing drops the extension's reference,
+**Model blocking does not prevent storage.** Clearing drops the extension's references,
 not a secure-erasure guarantee, and cannot rewrite already-submitted session data.
 
 ## Automated verification
@@ -287,7 +298,7 @@ existing/covering overlays and malformed completion quarantine. Pure tests injec
 timeout clocks and verify limits/PNG/IDs/fragmentation/ownership. Historical
 framing/routing diagnostics still intentionally reproduce upstream hazards.
 
-Automated results on Pi/pi-tui **1.5.2**, private tmux **3.8**:
+Single-image feature results on Pi/pi-tui **1.5.2**, private tmux **3.8** (historical):
 
 | Gate | Passed | Failed | Skipped |
 | --- | ---: | ---: | ---: |
@@ -349,6 +360,18 @@ pass. No runtime host dependencies were installed in this checkout, no active
 user-server/config/package operation occurred, and these automated gates performed
 no real clipboard/provider access or push. Full older host-seam suites that assume
 another entry/package layout were not silently adapted.
+
+## Successive pastes: automated verification
+
+Portable coverage exercises the exact aggregate PNG-byte limit, the count limit,
+clear/lifecycle cleanup, and retention after cancel. The offline Pi 1.5.2 SDK
+fixture exercises repeated shortcuts in the actual editor and verifies attachment
+order after submission with model blocking both on and off. Private tmux 3.8
+transport regressions still exercise one read at a time. All 21 focused portable,
+19 SDK and 4 private tmux checks passed. `npm test`: 270 passed, 35 skipped, and the
+same two package entry-path failures reproduced on the unchanged baseline.
+Isolated Pi installation and public discovery passed. The multi-image workflow
+has not been verified on a physical Ghostty clipboard.
 
 ## Coordinated human verification: owner-confirmed image paste
 

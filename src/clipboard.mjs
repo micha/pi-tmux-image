@@ -3,6 +3,12 @@ import { probeClipboardTopology } from './clipboard-capabilities.mjs';
 import { openClipboardModal } from './clipboard-modal.mjs';
 
 const KEY = 'pi-tmux-image-clipboard';
+const MAX_PENDING_IMAGES = 4, MAX_PENDING_MIB = 16;
+const MAX_PENDING_BYTES = MAX_PENDING_MIB * 1024 * 1024;
+const pngCount = (count) => `${count} PNG${count === 1 ? '' : 's'}`;
+// The reader returns canonical padded base64; count PNG bytes without decoding again.
+const pngBytes = (image) => Buffer.byteLength(image.data, 'base64');
+const pendingBytes = (images) => images.reduce((total, image) => total + pngBytes(image), 0);
 
 /** Public extension API only. Separate from image rendering, PDF and viewer pacing. */
 export function registerClipboardPaste(pi, { presentation, env = process.env, parseKey, matchesKey, truncateToWidth,
@@ -26,7 +32,7 @@ export function registerClipboardPaste(pi, { presentation, env = process.env, pa
     const status = state.waiting ? state.unresolved
       ? 'Clipboard: read UNRESOLVED — check terminal permission; stay in this pane.'
       : 'Clipboard: reading PNG — do not type or leave this pane.'
-      : current.pending ? 'Clipboard: 1 PNG pending — /tmux-image-paste clear' : undefined;
+      : current.pending.length ? `Clipboard: ${pngCount(current.pending.length)} pending — /tmux-image-paste clear` : undefined;
     try { current.context.ui.setWidget(KEY, status ? [status] : undefined); } catch {}
   }
   function focusLost(current) {
@@ -42,14 +48,14 @@ export function registerClipboardPaste(pi, { presentation, env = process.env, pa
     if (current.reader.state.waiting) notify(current, 'Pi is leaving a runtime with an unresolved terminal clipboard read. This does not cancel Ghostty permission; late replies cannot be protected in another runtime/process.');
     current.closed = true;
     current.attempt?.abort(); current.reader.dispose(); current.modal?.dispose();
-    current.unsubscribe?.(); current.pending = undefined;
+    current.unsubscribe?.(); current.pending = [];
     try { current.context.ui.setWidget(KEY, undefined); } catch {}
     runtime = undefined;
   }
   pi.on('session_start', (_event, ctx) => {
     close();
     if (ctx.mode !== 'tui' || typeof ctx.ui.onTerminalInput !== 'function' || !env.TMUX || !/^%\d+$/.test(env.TMUX_PANE || '')) return;
-    const current = { context: ctx, closed: false, busy: false, pending: undefined, attempt: undefined, modal: undefined, removalFailed: false, focusWarning: false };
+    const current = { context: ctx, closed: false, busy: false, pending: [], attempt: undefined, modal: undefined, removalFailed: false, focusWarning: false };
     runtime = current;
     current.reader = createReader({ parseKey, onChange: () => update(current), onWarning: (message) => notify(current, message) });
     current.unsubscribe = ctx.ui.onTerminalInput((data) => {
@@ -64,7 +70,7 @@ export function registerClipboardPaste(pi, { presentation, env = process.env, pa
   pi.on('session_shutdown', close);
   pi.on('session_tree', () => {
     if (!runtime) return;
-    runtime.attempt?.abort(); runtime.reader.cancel(); runtime.pending = undefined; update(runtime);
+    runtime.attempt?.abort(); runtime.reader.cancel(); runtime.pending = []; update(runtime);
   });
   presentation.bind({ onDisconnect() {
     if (!runtime) return;
@@ -73,27 +79,30 @@ export function registerClipboardPaste(pi, { presentation, env = process.env, pa
   } });
   pi.on('input', (event) => {
     const current = runtime;
-    if (!current || current.closed || event.source !== 'interactive' || !current.pending) return;
+    if (!current || current.closed || event.source !== 'interactive' || !current.pending.length) return;
     // Consume AT HANDOFF, not at persistence/turn ACK. Later handlers may discard.
-    const image = current.pending; current.pending = undefined; update(current);
-    return { action: 'transform', text: event.text, images: [...(event.images || []), image] };
+    const images = current.pending; current.pending = []; update(current);
+    return { action: 'transform', text: event.text, images: [...(event.images || []), ...images] };
   });
   const command = {
-    description: 'Paste a clipboard PNG; clear removes pending image; cancel keeps waiting',
+    description: 'Paste a clipboard PNG; clear removes all pending PNGs; cancel keeps waiting',
     handler: async (args, ctx) => {
       const current = runtime;
       if (!current || current.closed || ctx.mode !== 'tui') {
         ctx.ui.notify('Clipboard import requires interactive Pi with public terminal-input support inside tmux.', 'error'); return;
       }
       const action = args.trim();
-      if (action === 'clear') { current.pending = undefined; update(current); notify(current, 'Pending clipboard image removed.', 'info'); return; }
+      if (action === 'clear') { current.pending = []; update(current); notify(current, 'Pending clipboard PNGs cleared.', 'info'); return; }
       if (action === 'cancel') {
         current.attempt?.abort(); current.reader.cancel();
         notify(current, 'Stopped importing locally only; the dialog keeps draining. Resolve any terminal permission prompt. Leaving the dialog explicitly can expose late replies.'); return;
       }
       if (action) { notify(current, 'Usage: /tmux-image-paste [clear|cancel]'); return; }
-      if (current.busy || current.reader.state.waiting || current.pending || current.modal) {
-        notify(current, 'Clipboard import is busy/unresolved, or a PNG is pending. Resolve the terminal prompt; submit or clear a pending image before another read.'); return;
+      if (current.busy || current.reader.state.waiting || current.modal) {
+        notify(current, 'Clipboard import is still running or unresolved. Resolve any terminal permission prompt before pasting again.'); return;
+      }
+      if (current.pending.length >= MAX_PENDING_IMAGES || pendingBytes(current.pending) >= MAX_PENDING_BYTES) {
+        notify(current, `Clipboard queue is full (${MAX_PENDING_IMAGES} PNGs or ${MAX_PENDING_MIB} MiB total). Submit your prompt or use /tmux-image-paste clear.`); return;
       }
       const attempt = new AbortController(); current.attempt = attempt; current.busy = true;
       const live = () => runtime === current && !current.closed && !attempt.signal.aborted;
@@ -131,8 +140,14 @@ export function registerClipboardPaste(pi, { presentation, env = process.env, pa
         const after = await probe({ mode: ctx.mode, env, signal: attempt.signal });
         if (!live()) return;
         if (before.fingerprint !== after.fingerprint || presentation.connection?.epoch !== connection.epoch || current.removalFailed || current.modal) throw new Error();
-        current.pending = result.image; update(current);
-        notify(current, 'PNG ready for your next prompt.', 'info');
+        // Enforce the aggregate cap against what's still staged, after a clean
+        // read. An image that doesn't fit never changes the queue or quarantine.
+        if (pendingBytes(current.pending) + pngBytes(result.image) > MAX_PENDING_BYTES) {
+          notify(current, `This PNG would exceed the ${MAX_PENDING_MIB} MiB pending limit. Paste a smaller PNG, submit your prompt, or use /tmux-image-paste clear.`); return;
+        }
+        current.pending.push(result.image); update(current);
+        const label = current.pending.length === 1 ? 'PNG' : pngCount(current.pending.length);
+        notify(current, `${label} ready for your next prompt.`, 'info');
       } catch {
         if (current.modal && !current.modal.emitted) current.modal.close();
         if (live()) notify(current, 'Clipboard import failed its focused Ghostty >=1.4/tmux, dialog or transport checks. No image staged; no setting changed.', 'error');

@@ -63,14 +63,15 @@ Original PDF bytes and later pages are not sent to the model.
 ## Remote clipboard
 
 Press **Ctrl+V** or run `/tmux-image-paste` in interactive Pi inside tmux with
-**Ghostty ≥1.4**. The read dialog opens directly; Ghostty may independently ask
-for clipboard permission. The dialog reads a **still, noninterlaced PNG up to 8 MiB**, then makes it ready
-for your next prompt. Your draft and existing attachments stay intact; nothing
-is submitted automatically. Remove a pending image with `/tmux-image-paste clear`.
+**Ghostty ≥1.4**. Ghostty may ask for clipboard permission. Copy and paste images
+**one at a time**, waiting for each dialog to finish. You can stage up to **4 still,
+noninterlaced PNGs, 8 MiB each and 16 MiB total**. Your next interactive prompt
+attaches them in paste order after any existing attachments. Nothing is submitted
+automatically. Use `/tmux-image-paste clear` to remove all pending PNGs.
 
 - **Stay in the same focused pane; do not type while the dialog is open.**
-- **Ctrl+C** cancels import but keeps waiting. It does not cancel terminal
-  permission/read; resolve that before leaving or restarting Pi.
+- **Ctrl+C** cancels the current import, not earlier pastes, but keeps waiting.
+  It does not cancel terminal permission/read; resolve that before leaving or restarting Pi.
 - **Ctrl+Q twice** warns, then leaves anyway; late replies may enter your draft.
   Escape keeps the dialog open. New reads stay blocked while unresolved.
 

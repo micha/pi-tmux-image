@@ -18,7 +18,7 @@ const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const options = { skip: !host && 'set PI_TEST_HOST_ROOT to installed coding-agent package root', timeout: 60000 };
 const model = { id: 'clipboard-offline', name: 'Clipboard offline', api: 'offline', provider: 'offline', reasoning: false, input: ['text','image'], contextWindow: 100000, maxTokens: 1000,
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
-function pngFixture() {
+function pngFixture(rgba = [255, 0, 0, 255]) {
   function chunk(type, data) {
     let crc = 0xffffffff;
     const named = Buffer.concat([Buffer.from(type), data]);
@@ -27,9 +27,9 @@ function pngFixture() {
     return Buffer.concat([head, named, tail]);
   }
   const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(1); ihdr.writeUInt32BE(1, 4); ihdr[8] = 8; ihdr[9] = 6;
-  return Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(Buffer.from([0,255,0,0,255]))), chunk('IEND', Buffer.alloc(0))]).toString('base64');
+  return Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(Buffer.from([0, ...rgba]))), chunk('IEND', Buffer.alloc(0))]).toString('base64');
 }
-const png = pngFixture();
+const png = pngFixture(), secondPng = pngFixture([0, 255, 0, 255]), existingPng = pngFixture([0, 0, 255, 255]);
 const packet = (id, status, payload, extra = '') => `\x1b]5522;type=read:status=${status}:id=${id}${extra}${payload === undefined ? '' : `;${payload}`}\x1b\\`;
 const reads = (writes) => writes.filter((data) => data.includes('5522;type=read'));
 const images = (messages) => messages.flatMap((m) => Array.isArray(m.content) ? m.content.filter((block) => block.type === 'image') : []);
@@ -136,13 +136,13 @@ else process.exitCode=1;
       get shortcutWork() { return shortcutWork; }, get nativePastes() { return nativePastes; }, get reservedActions() { return reservedActions; },
       set later(value) { later = value; },
       get confirmations() { return confirmations; }, get unsubscribeCount() { return unsubscribeCount; },
-      async stage() {
+      async stage(data = png) {
         const count = reads(writes).length, command = session.prompt('/tmux-image-paste');
         await until(() => reads(writes).length > count);
         const id = /id=([A-Za-z0-9_.+-]+);/.exec(reads(writes).at(-1))[1];
-        input.process(packet(id, 'OK')); input.process(packet(id, 'DATA', png, ':mime=aW1hZ2UvcG5n')); input.process(packet(id, 'DONE'));
+        input.process(packet(id, 'OK')); input.process(packet(id, 'DATA', data, ':mime=aW1hZ2UvcG5n')); input.process(packet(id, 'DONE'));
         await command; assert.equal(requests.length, 0);
-        assert.ok(notices.some((notice) => notice.message === 'PNG ready for your next prompt.'));
+        assert.match(notices.at(-1)?.message, /PNGs? ready for your next prompt/);
         assert.ok(widgetMap.get('pi-tmux-image-clipboard').render().join('').includes('/tmux-image-paste clear'));
         return id;
       },
@@ -188,22 +188,21 @@ test('public SDK/actual CustomEditor: default/custom shortcuts, native conflict/
       h.editor.setText('existing unsent draft');
       const diagnostics = h.session.extensionRunner.getShortcutDiagnostics();
       if (shortcutKey === 'ctrl+v' && !config.keybindings) assert.ok(diagnostics.some((d) => /app.clipboard.pasteImage.*Using/.test(d.message)));
-      async function stageShortcut() {
+      async function stageShortcut(data) {
         const count = reads(h.writes).length; h.input.process(encoded);
         await until(() => reads(h.writes).length > count);
         const id = /id=([A-Za-z0-9_.+-]+);/.exec(reads(h.writes).at(-1))[1];
         h.input.process(encoded); // Focused modal deliberately captures repeats.
-        h.input.process(packet(id, 'OK') + packet(id, 'DATA', png, ':mime=aW1hZ2UvcG5n') + packet(id, 'DONE'));
-        await h.shortcutWork;
+        h.input.process(packet(id, 'OK') + packet(id, 'DATA', data, ':mime=aW1hZ2UvcG5n') + packet(id, 'DONE'));
+        await h.shortcutWork; assert.equal(reads(h.writes).length, count + 1);
       }
-      await stageShortcut(); assert.equal(h.editor.getText(), 'existing unsent draft');
+      await stageShortcut(png); await stageShortcut(secondPng);
+      assert.ok(h.widgetMap.get('pi-tmux-image-clipboard').render().join('').includes('2 PNGs pending'));
       assert.equal(h.confirmations, 0); assert.equal(h.nativePastes, 0);
-      h.input.process(encoded); await h.shortcutWork; assert.equal(reads(h.writes).length, 1, 'pending blocks repeated shortcut');
-      await h.session.prompt('/tmux-image-paste clear'); assert.equal(h.widgetMap.has('pi-tmux-image-clipboard'), false);
-      await stageShortcut();
-      const existing = { type: 'image', mimeType: 'image/png', data: png }, attachments = [existing];
+      const existing = { type: 'image', mimeType: 'image/png', data: existingPng }, attachments = [existing];
       const handed = await h.session.extensionRunner.emitInput(h.editor.getText(), attachments, 'interactive');
-      assert.equal(handed.text, 'existing unsent draft'); assert.equal(handed.images.length, 2);
+      assert.equal(handed.text, 'existing unsent draft');
+      assert.deepEqual(handed.images.map((image) => image.data), [existingPng, png, secondPng]);
       assert.equal(handed.images[0], existing); assert.equal(attachments.length, 1);
       assert.equal(h.editor.getText(), 'existing unsent draft'); assert.equal(h.requests.length, 0); assert.equal(h.session.messages.length, 0);
       if (config.keybindings?.['app.clipboard.pasteImage'] === 'alt+v') { h.input.process('\x1bv'); assert.equal(h.nativePastes, 1); }
@@ -242,14 +241,16 @@ test('public SDK clipboard extension: intact request/staging/interactive submiss
     const directory = await mkdtemp(join(tmpdir(), 'pi-clipboard-host-')); let h;
     try {
       h = await setup(directory, blocked);
-      await h.stage(); assert.equal(h.confirmations, 0);
-      assert.ok(h.widgetMap.get('pi-tmux-image-clipboard').render().join('').includes('1 PNG pending'));
+      await h.stage(); await h.stage(secondPng); assert.equal(h.confirmations, 0);
+      assert.ok(h.widgetMap.get('pi-tmux-image-clipboard').render().join('').includes('2 PNGs pending'));
       h.input.process('normal typing'); h.input.process('\x1b[200~plain text paste\x1b[201~');
       assert.ok(h.keys.join('').includes('normal typing')); assert.ok(h.keys.at(-1).includes('plain text paste'));
-      const existing = { type: 'image', data: png, mimeType: 'image/png' };
+      const existing = { type: 'image', data: existingPng, mimeType: 'image/png' };
       await h.session.prompt('Intentional user prompt', { source: 'interactive', images: [existing] });
-      assert.equal(images(h.session.messages).length, 2);
-      assert.equal(h.requests.length, 1); assert.equal(images(h.requests[0].messages).length, blocked ? 0 : 2);
+      const expected = [existingPng, png, secondPng];
+      assert.deepEqual(images(h.session.messages).map((image) => image.data), expected);
+      assert.equal(h.requests.length, 1);
+      assert.deepEqual(images(h.requests[0].messages).map((image) => image.data), blocked ? [] : expected);
       assert.equal(h.session.messages.find((message) => message.role === 'user').content.find((block) => block.type === 'text').text, 'Intentional user prompt');
       assert.equal(h.widgetMap.has('pi-tmux-image-clipboard'), false);
       assert.equal(JSON.stringify(h.notices).includes(png), false);
@@ -261,10 +262,10 @@ test('public SDK clipboard extension: intact request/staging/interactive submiss
 test('public SDK clipboard: pending handoff semantics for earlier/later handlers, image replacement, clear and reload', options, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'pi-clipboard-chain-')); let h;
   try {
-    h = await setup(directory, true); await h.stage();
+    h = await setup(directory, true); await h.stage(); await h.stage(secondPng);
     assert.equal((await h.session.extensionRunner.emitInput('rpc input', undefined, 'rpc')).action, 'continue');
     assert.equal((await h.session.extensionRunner.emitInput('early-handled', undefined, 'interactive')).action, 'handled');
-    assert.ok(h.widgetMap.has('pi-tmux-image-clipboard'), 'earlier handler keeps pending image');
+    assert.ok(h.widgetMap.get('pi-tmux-image-clipboard').render().join('').includes('2 PNGs pending'), 'earlier handler keeps all pending images');
     h.later = 'handled';
     assert.equal((await h.session.extensionRunner.emitInput('later handles', undefined, 'interactive')).action, 'handled');
     assert.equal(h.widgetMap.has('pi-tmux-image-clipboard'), false, 'later handling does not restore consumed handoff');
@@ -276,8 +277,10 @@ test('public SDK clipboard: pending handoff semantics for earlier/later handlers
     const rejected = await h.session.extensionRunner.emitInput('handler throws', undefined, 'interactive');
     assert.equal(rejected.action, 'transform'); assert.equal(rejected.images.length, 1);
     h.later = 'continue'; assert.equal(h.widgetMap.has('pi-tmux-image-clipboard'), false);
-    await h.stage(); await h.session.prompt('/tmux-image-paste clear'); assert.equal(h.widgetMap.has('pi-tmux-image-clipboard'), false);
-    await h.stage(); await h.session.reload();
+    await h.stage(); await h.stage(secondPng);
+    await h.session.prompt('/tmux-image-paste clear'); assert.equal(h.widgetMap.has('pi-tmux-image-clipboard'), false);
+    assert.equal((await h.session.extensionRunner.emitInput('next', undefined, 'interactive')).action, 'continue');
+    await h.stage(); await h.stage(secondPng); await h.session.reload();
     assert.ok(h.unsubscribeCount > 0); assert.equal(h.widgetMap.has('pi-tmux-image-clipboard'), false);
     assert.equal(h.requests.length, 0); assert.equal(h.session.messages.length, 0);
   } finally { await h?.cleanup(); await rm(directory, { recursive: true, force: true }); }
@@ -385,6 +388,7 @@ test('public SDK clipboard: cancellation, late denial, missing/invalid PNG and b
     assert.ok(h.widgetMap.get('pi-tmux-image-clipboard').render().join('').includes('UNRESOLVED'), 'malformed terminal packets must not clear quarantine');
     await h.session.prompt('/tmux-image-paste'); assert.equal(reads(h.writes).length, count);
     h.input.process(packet(first.id, 'EPERM')); assert.equal(h.widgetMap.has('pi-tmux-image-clipboard'), false);
+    await h.stage(); count = reads(h.writes).length;
     for (const kind of ['EPERM', 'missing', 'badpng', 'oversize']) {
       const request = await begin();
       if (kind === 'EPERM') h.input.process(packet(request.id, 'EPERM'));
@@ -393,9 +397,10 @@ test('public SDK clipboard: cancellation, late denial, missing/invalid PNG and b
         if (kind !== 'missing') h.input.process(packet(request.id, 'DATA', kind === 'oversize' ? 'A'.repeat(9000) : 'YmFk', ':mime=aW1hZ2UvcG5n'));
         h.input.process(packet(request.id, 'DONE'));
       }
-      await request.done; assert.equal(h.widgetMap.has('pi-tmux-image-clipboard'), false, kind);
+      await request.done;
+      assert.ok(h.widgetMap.get('pi-tmux-image-clipboard').render().join('').includes('1 PNG pending'), kind);
     }
-    await h.stage();
+    await h.stage(secondPng);
     await h.session.extensionRunner.emit({ type: 'session_tree', newLeafId: null, oldLeafId: null });
     assert.equal(h.widgetMap.has('pi-tmux-image-clipboard'), false);
     assert.equal(h.requests.length, 0); assert.equal(h.session.messages.length, 0);

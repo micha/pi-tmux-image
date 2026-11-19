@@ -31,9 +31,9 @@ function reader(options = {}) {
   const instance = createClipboardReader({ prefix: 'runtime', setTimer: (fn) => { timer = fn; return 1; }, clearTimer() {}, onWarning: (message) => warnings.push(message), ...options });
   return { instance, warnings, timeout: () => timer() };
 }
-function success(input, id, bytes = PNG) {
+function success(input, id, bytes = PNG, chunkSize = 17) {
   input(packet(id, 'OK'));
-  for (let offset = 0; offset < bytes.length; offset += 17) input(packet(id, 'DATA', bytes.subarray(offset, offset + 17).toString('base64'), ':mime=aW1hZ2UvcG5n'));
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) input(packet(id, 'DATA', bytes.subarray(offset, offset + chunkSize).toString('base64'), ':mime=aW1hZ2UvcG5n'));
   input(packet(id, 'DONE'));
 }
 
@@ -215,11 +215,11 @@ function extensionHarness({ mode = 'tui', shortcut, tmuxEnv = env, probe = async
   const emit = async (name, event = {}) => { let result; for (const handler of handlers.get(name) || []) result = await handler(event, ctx); return result; };
   return { ctx, emit, notices, writes, widgets, keys, shortcuts, shortcut: (key = 'ctrl+v') => shortcuts.get(key).handler(ctx), get modal() { return overlay; }, input: (data) => { const result = input?.(data); if (!result?.consume) { if (overlay) overlay.handleInput(data); else keys.push(data); } return result; }, command: (args = '') => commands.get('tmux-image-paste').handler(args, ctx), get confirms() { return confirms; }, get unsubscribe() { return unsubscribe; } };
 }
-async function stage(h) {
-  const command = h.command();
-  for (let i = 0; i < 10 && !h.writes.length; i++) await Promise.resolve();
-  assert.equal(h.writes.length, 1);
-  success(h.input, idOf(h.writes[0])); await command;
+async function stage(h, bytes = PNG, chunkSize) {
+  const count = h.writes.length, command = h.command();
+  for (let i = 0; i < 10 && h.writes.length === count; i++) await Promise.resolve();
+  assert.equal(h.writes.length, count + 1);
+  success(h.input, idOf(h.writes[count]), bytes, chunkSize); await command;
 }
 
 test('clipboard extension reads only on invocation without extra confirmation and preserves attachment handoff', async () => {
@@ -260,23 +260,66 @@ test('clipboard shortcut defaults only in valid tmux; off/outside register none 
   }
 });
 
-test('clipboard default/custom shortcuts skip extra confirmation and share busy/pending/unresolved guards and handoff', async () => {
+test('clipboard default/custom shortcuts append in order and still share busy/unresolved guards', async () => {
+  const second = png({ raw: Buffer.from([0, 0, 255, 0, 255]) });
   for (const shortcut of [undefined, 'ctrl+v', 'ctrl+shift+v', 'ctrl+alt+v']) {
     const h = extensionHarness({ shortcut }); await h.emit('session_start'); assert.equal(h.shortcuts.size, 1);
     const work = h.shortcut(shortcut); await h.shortcut(shortcut);
     for (let i = 0; i < 10 && !h.writes.length; i++) await Promise.resolve();
     assert.equal(h.confirms, 0); assert.equal(h.writes.length, 1);
     success(h.input, idOf(h.writes[0])); await work;
-    await h.shortcut(shortcut); assert.equal(h.writes.length, 1, 'pending blocks repeat');
-    const existing = { type: 'image', data: 'existing', mimeType: 'image/png' };
-    const result = await h.emit('input', { source: 'interactive', text: 'unchanged draft', images: [existing] });
-    assert.equal(result.text, 'unchanged draft'); assert.equal(result.images[0], existing); assert.equal(result.images.length, 2);
-    const next = h.shortcut(shortcut);
+    const append = h.shortcut(shortcut);
     for (let i = 0; i < 10 && h.writes.length < 2; i++) await Promise.resolve();
-    h.input('\x03'); await next; await h.shortcut(shortcut); assert.equal(h.writes.length, 2, 'unresolved blocks repeat');
-    h.input(packet(idOf(h.writes[1]), 'DONE')); await h.command('clear'); await h.emit('session_shutdown');
+    assert.equal(h.writes.length, 2, 'a staged PNG no longer blocks another paste');
+    success(h.input, idOf(h.writes[1]), second); await append;
+    assert.ok([...h.widgets.values()].flat().some((text) => text?.includes('2 PNGs pending')));
+    const next = h.shortcut(shortcut);
+    for (let i = 0; i < 10 && h.writes.length < 3; i++) await Promise.resolve();
+    h.input('\x03'); await next; await h.shortcut(shortcut); assert.equal(h.writes.length, 3, 'unresolved blocks repeat');
+    h.input(packet(idOf(h.writes[2]), 'DONE'));
+    assert.equal(await h.emit('input', { source: 'rpc', text: 'ignore' }), undefined);
+    const existing = { type: 'image', data: 'existing', mimeType: 'image/png' }, attachments = [existing];
+    const result = await h.emit('input', { source: 'interactive', text: 'unchanged draft', images: attachments });
+    assert.equal(result.text, 'unchanged draft'); assert.equal(result.images[0], existing); assert.deepEqual(attachments, [existing]);
+    assert.deepEqual(result.images.map((image) => image.data), ['existing', PNG.toString('base64'), second.toString('base64')]);
+    assert.equal(await h.emit('input', { source: 'interactive', text: 'next' }), undefined);
+    await h.emit('session_shutdown');
   }
   const rpc = extensionHarness({ shortcut: 'ctrl+v', mode: 'rpc' }); await rpc.emit('session_start'); await rpc.shortcut(); assert.equal(rpc.writes.length, 0);
+});
+
+test('clipboard pending count cap blocks another read and clear removes the entire queue', async () => {
+  let probes = 0;
+  const h = extensionHarness({ probe: async () => { probes++; return { fingerprint: 'same' }; } });
+  await h.emit('session_start');
+  for (let i = 0; i < 4; i++) await stage(h);
+  assert.ok([...h.widgets.values()].flat().some((text) => text?.includes('4 PNGs pending')));
+  await h.shortcut(); await h.command();
+  assert.equal(h.writes.length, 4); assert.equal(probes, 8, 'full queue never probes or opens a dialog'); assert.equal(h.modal, undefined);
+  assert.match(h.notices.at(-1)[0], /queue is full/);
+  await h.command('clear');
+  assert.equal(await h.emit('input', { source: 'interactive', text: 'next' }), undefined);
+  await stage(h);
+  assert.ok([...h.widgets.values()].flat().some((text) => text?.includes('1 PNG pending')));
+  await h.emit('session_shutdown');
+});
+
+test('clipboard enforces the aggregate limit in PNG bytes and preserves earlier pastes on overflow', async () => {
+  const h = extensionHarness(); await h.emit('session_start');
+  const eightMiB = 8 * 1024 * 1024;
+  const padded = (size) => png({ extra: [chunk('paDd', Buffer.alloc(size - PNG.length - 12))] });
+  await stage(h, padded(eightMiB), 4096);
+  await stage(h, padded(eightMiB - PNG.length), 4096);
+  await stage(h, png({ extra: [chunk('paDd')] }));
+  assert.match(h.notices.at(-1)[0], /exceed the 16 MiB pending limit/);
+  assert.equal(h.modal, undefined);
+  assert.ok([...h.widgets.values()].flat().some((text) => text?.includes('2 PNGs pending')));
+  await stage(h); // Fits the remaining budget exactly, despite its padded base64 form.
+  await h.command(); assert.equal(h.writes.length, 4, 'at the byte cap before the count cap');
+  const handed = await h.emit('input', { source: 'interactive', text: 'next' });
+  assert.deepEqual(handed.images.map((image) => Buffer.byteLength(image.data, 'base64')), [eightMiB, eightMiB - PNG.length, PNG.length]);
+  await stage(h); // Handoff also resets the byte budget.
+  await h.emit('session_shutdown');
 });
 
 test('clipboard assembler handles split raw headers/terminators, coalesced records and bounded unknown frames', async () => {
@@ -357,7 +400,7 @@ test('clipboard failed preflight, clear, lifecycle and non-TUI do not submit or 
   assert.equal(no.writes.length, 0); assert.equal(no.modal, undefined); assert.equal(no.confirms, 0); await no.emit('session_shutdown');
   const rpc = extensionHarness({ mode: 'rpc' }); await rpc.emit('session_start'); await rpc.command(); assert.equal(rpc.writes.length, 0);
   for (const clear of ['clear', 'session_tree', 'session_shutdown']) {
-    const h = extensionHarness(); await h.emit('session_start'); await stage(h);
+    const h = extensionHarness(); await h.emit('session_start'); await stage(h); await stage(h);
     if (clear === 'clear') await h.command('clear'); else await h.emit(clear);
     assert.equal(await h.emit('input', { source: 'interactive', text: 'unchanged' }), undefined);
     await h.emit('session_shutdown');
